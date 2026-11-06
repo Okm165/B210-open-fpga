@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Generated build products.  The FPGA flow writes everything below build/.
+# ---------------------------------------------------------------------------
+/build/
+/sim/
+/out/
+
+# Yosys, nextpnr, and Project X-Ray outputs created at the repository root
+# when a stage is run by hand instead of through the Makefile.
+/*.bit
+/*.bin
+/*.fasm
+/*.frames
+/*.bba
+/*.json
+/*.ys
+/*.edif
+/*.dcp
+/*.rpt
+/*.log
+/*.jou
+/*.vcd
+/*.fst
+/*.lxt
+/*.lxt2
+/*.wdb
+/*.pb
+/*.str
+/*.history
+/abc.history
+
+# Simulation and waveform artifacts anywhere.
+*.vcd
+*.fst
+*.lxt
+*.lxt2
+*.gtkwave
+*.wdb
+*.wcfg
+
+# Local toolchains, Python environments, and editor state.
+/.tools/
+/.venv/
+/.opencode/
+/.context/
+/.cache/
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python bytecode and test caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Temporary downloads and fragments.
+*.tmp
+*.part

@@ -1,0 +1,12 @@
+# Preserve exact bytes.  The upstream B210 RTL uses a mix of CRLF and LF
+# line endings, and the vendored Project X-Ray database is consumed
+# byte-for-byte by the chip-database and bitstream tools.  Automatic EOL
+# conversion would make the source manifest and database non-reproducible.
+* -text
+
+# Keep true binary artifacts out of textual diffs if they are ever added.
+*.bit binary
+*.bin binary
+*.dcp binary
+*.frames binary
+*.bba binary
