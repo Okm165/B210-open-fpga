@@ -1,0 +1,14 @@
+.git
+build
+.tools
+.venv
+.opencode
+.context
+*.bin
+*.bit
+*.fasm
+*.frames
+*.bba
+*.dcp
+*.log
+*.jou
