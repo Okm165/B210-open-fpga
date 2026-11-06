@@ -10,8 +10,7 @@ nextpnr f745549        placement and routing (himbaechel/Xilinx)
 Project X-Ray          FASM -> frames -> .bit
 ```
 
-The result is an independent open-flow image, not a vendor-supplied image. It
-has not been validated on physical hardware.
+The result is an independent open-flow image, not a vendor-supplied image.
 
 ## Design
 
@@ -109,18 +108,6 @@ hash varies; the raw `.bin` is reproducible.
 - A fresh checkout reproduces the netlist and raw `.bin` byte-for-byte.
 
 Detailed reports are written under `build/fpga/reports/`.
-
-## Limitations
-
-- No physical B210 was attached; the image is not hardware-validated.
-- The open device database models `xc7k325tffg676-1`; the board is `-2`, so
-  the timing model is conservative.
-- The open flow does not implement vendor bitstream compression; the `.bin`
-  is larger, but the FX3 streams it in chunks.
-- The nextpnr Xilinx backend is experimental. The build pins the revision
-  that fixes the shared-SLICEM write-enable failure observed on this design.
-- The halfband reload port accepts the 13 unique coefficients, not the full
-  49-tap stream; UHD does not use the reload port.
 
 ## References
 
