@@ -82,6 +82,14 @@ Referred to one 16-bit output LSB (3.05e-5):
 Composition: 73.96 dB total against 74.00 dB for an ideal 12-bit converter, so
 the digital path costs 0.04 dB. The converter, not the pipeline, is the limit.
 
+Rate change and "lossy" operators: the receive path contains none. There is no
+decimator, no halfband, no CIC and no filter between the ADC pins and the USB
+words, so nothing can droop, alias or be discarded - the host receives every
+sample at the full 61.44 MSPS. The transmit path does contain halfband
+interpolators, but interpolation is not a lossy operation: it inserts samples
+the DAC needs at a higher rate and removes nothing; its filters run at the
+transmit rate and cannot affect the received data.
+
 Transmit rotator: the DUC's CORDIC has algorithmic gain 1.647 and an
 implementation gain of 0.5, so a rotated corner vector reaches 1.22x full
 scale - the condition the DUC header documents. The narrowing at its output
