@@ -90,17 +90,26 @@ interpolators, but interpolation is not a lossy operation: it inserts samples
 the DAC needs at a higher rate and removes nothing; its filters run at the
 transmit rate and cannot affect the received data.
 
-Transmit rotator: the DUC's CORDIC has algorithmic gain 1.647 and an
-implementation gain of 0.5, so a rotated corner vector reaches 1.22x full
-scale - the condition the DUC header documents. The narrowing at its output
-used to drop the guard bit, which WRAPS (a sign inversion) rather than clips.
-It now saturates. Measured at the rotator: 0 wraps over a full revolution of
-the corner, 1 404 saturated samples, worst adjacent step 15 015 counts (one
-sample of the ideal rotation) against 8 388 608 full scale; the previous slice
-produced 8 steps of up to 16 769 546 counts. At the DUC output, a full-scale
-tone with a rotating NCO differs in 25 of 1024 samples between the two
-versions, with rail-to-rail flips - so the wrap was reachable in the real TX
-path, not only in the unit.
+Transmit rotator: the DUC uses the same quarter-wave LUT oscillator and the
+same exact 18x18 complex mixer as the receive path, with round-half-even
+narrowing and saturation at 18 bits. Both directions therefore share one
+oscillator, one mixer and one gain convention, and neither contains a CORDIC.
+
+The CORDIC it replaced had algorithmic gain 1.647 and implementation gain 0.5
+(0.8234 net), so its output level depended on the algorithm rather than on the
+signal, and a rotated corner vector reached 1.22x full scale - the condition
+the DUC header documented. Its guard-bit slice wrapped there (a sign
+inversion): measured, 0 wraps with saturation against 8 steps of up to
+16 769 546 counts with the slice, and 25 of 1024 output samples differing with
+rail-to-rail flips in the DUC.
+
+Gain consequence, measured on the TX chain (DC, scale register at 0x1FFFF,
+16-bit input to 24-bit output): 1.77733 counts per input count, symmetric for
+both polarities (1 777 329 for +1000, -1 777 842 for -1000). The CORDIC path
+measured 1.46338 for the same settings, so the swap raises TX gain by 1.2145 =
+1/0.8234 exactly as the removed constant predicts. **The driver multiplies its
+TX scale by 0.8234 to keep a previous output level**; full-scale 16-bit input
+reaches full-scale 24-bit output at scale 0x8000.
 
 Clipping: the chain applies a 16x gain, so an output component reaches the
 16-bit rail only when the complex envelope exceeds 2048 counts, i.e. above the
@@ -121,6 +130,16 @@ So at any operating point that keeps the composite envelope inside full scale
 the pipeline clips nothing. Clipping appears only where the converter is already
 clipping the same signal. The 1/sqrt(2) alternative would remove it at the cost
 of 3 dB of host-visible level everywhere.
+
+## Two channels
+
+The B210 runs two radio instances. `tests/tb_pair.v` proves the property rather
+than assuming it: two receive chains programmed to the same LO are byte
+identical for 3 360 samples - dither included - while a third receive chain
+runs at a different LO beside them (so one channel cannot perturb another), a
+full-scale 24-bit quadrature input produces zero rail hits, and the two
+transmit chains produce the same sample sequence from the same input. The test
+fails if the reference chain is pointed at the wrong register address.
 
 ## Throughput
 
@@ -163,8 +182,21 @@ Each one fails loudly if a future change breaks it:
 1. FX3 slave-FIFO flag timing is modelled, not specified: the read/write
    arbitration of the real device could raise the sustained rate above the
    measured 245-260 MB/s but cannot lower the requirement below it.
-2. The UHD transmit scale convention is outside this repository; the DUC clips
-   above roughly -13 dBFS input at scale 0x1FFFF.
+2. The UHD transmit scale convention is outside this repository. The TX mixer
+   is unity gain, so the driver's scale needs 0.8234x its previous value for
+   the same output level; full-scale 16-bit input reaches full-scale 24-bit
+   output at scale 0x8000.
 3. A square-root-of-two output scale would remove corner-state saturation at no
    system-SNR cost but would lower the host-visible level by 3 dB. Not applied.
-4. No on-board FFT is implemented; the link carries the full rate losslessly.
+4. No on-board FFT is implemented (decided: the link already carries the full
+   rate losslessly, and a spectra path would need a new host format and its own
+   level-verification campaign). DSP 110 of 840, BRAM36 72 of 445, so it fits.
+5. A host stall deeper than ~200 us overruns the FIFOs; the framer then loses a
+   bounded number of samples and recovers by itself (measured: 350 us stall,
+   240 980 of 242 136 words delivered, last 100 000 clocks back at 0.616
+   words/clk). The loss is not reported to the host by design (decided):
+   the VITA sequence number counts packets, so a sample gap is invisible.
+6. The TX interpolator strobe phase depends on when each channel's rate
+   register is written, so the two transmit channels can start a few clocks
+   apart. Whether the TX timestamp path absorbs this is a bring-up measurement,
+   not a simulated result; it does not affect the receive path.

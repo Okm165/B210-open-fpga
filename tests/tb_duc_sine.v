@@ -102,6 +102,7 @@ module tb_duc_sine;
    reg signed [15:0] si, sq;
    real    arg, ph;
    reg signed [15:0] dc_out;
+   integer kdc;
    real    g_dc, g_tone, g_mirror, g_shift;
    real    g [0:2];
    real    g_8;
@@ -146,7 +147,15 @@ module tb_duc_sine;
       repeat ((64 + NOUT + 64) * 1) @(posedge clk);
       // after NOUT captures the block self-disabled; read the settled value
       repeat (6000) @(posedge clk);
-      dc_out = $signed(tx_i[WIDTH-1:WIDTH-16]);
+      // Average over one output period (INTERP clocks).  A single sample
+      // taken at an arbitrary pipeline phase measures the interpolated
+      // waveform at that phase, not the DC level, so the old single read made
+      // the "flatness vs DC" ratio meaningless.
+      dc_out = 0;
+      for (kdc = 0; kdc < INTERP; kdc = kdc + 1) begin
+         @(posedge clk);
+         dc_out = dc_out + $signed(tx_i[WIDTH-1:WIDTH-16]) / INTERP;
+      end
       g_dc = $itor(dc_out) / 4096.0;      // measured, no guessed compensation
       $display("  DC reference: I out %0d for 16-bit in 4096 -> gain %.4f",
                dc_out, g_dc);
@@ -188,11 +197,18 @@ module tb_duc_sine;
          g_tone = g[0];
          g_8 = g[2];   // full-amplitude bin-8 gain, linearity reference
          // in-passband flatness (bins 2/4/8 = 1/64 .. 1/16 of input rate)
-         if (g[0] < 0.85*g_dc || g[0] > 1.15*g_dc ||
-             g[1] < 0.85*g[0] || g[1] > 1.15*g[0] ||
-             g[2] < 0.75*g[0] || g[2] > 1.15*g[0])
-            $display("  NOTE: passband shape vs DC %.4f: %.4f / %.4f / %.4f",
-                     g_dc, g[0], g[1], g[2]);
+         // Tone gains share one normalisation, so they are comparable with
+         // each other; the DC reference is measured in output counts per
+         // input count and is NOT in the same units, so a "percent of DC"
+         // figure from these two numbers is meaningless.  Flatness against
+         // DC is therefore an open measurement (see .context/production-
+         // decisions.md), not something this bench asserts.
+         $display("  tone gains (same units): %.4f / %.4f / %.4f, bin 8 is %.0f%% of bin 2",
+                  g[0], g[1], g[2], 100.0*g[2]/g[0]);
+         if (g[2] < 0.50*g[0]) begin
+            $display("FAIL: TX response falls by more than 6 dB across the in-band sweep");
+            $finish;
+         end
          if (g_mirror > 0.10 * g_tone) begin
             $display("FAIL: mirror image holds %.1f%% of tone energy",
                      100.0 * g_mirror / g_tone);
@@ -252,8 +268,8 @@ module tb_duc_sine;
          $finish;
       end
 
-      $display("PASS: DUC linear (gain amplitude-independent), in-passband flat (%.0f%% of DC at bin 2), image %.1f%%, NCO shift correct",
-               100.0 * g[0] / g_dc, 100.0 * g_mirror / g_tone);
+      $display("PASS: DUC linear (gain amplitude-independent), in-band sweep within %.0f%%, image %.1f%%, NCO shift correct",
+               100.0 * g[2] / g[0], 100.0 * g_mirror / g_tone);
       $finish;
    end
 
