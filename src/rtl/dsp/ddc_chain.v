@@ -112,14 +112,31 @@ module ddc_chain
    wire signed [36:0] sum_i = p_ic + p_qs;   // 18b x 18b, exact: no overflow
    wire signed [36:0] sum_q = p_qc - p_is;
 
-   // Narrow the 37-bit accumulator to 24 bits with round-half-even.
-   // The multipliers take the top 18 bits (>>7) and the oscillator is Q15,
-   // so the product is input<<8; >>8 recovers exact unit gain.
+   // Narrow the 37-bit accumulator to 24 bits with round-half-even, and
+   // SATURATE rather than truncate the top bits.
+   //
+   // The multipliers take the top 18 bits (>>7) and the oscillator is Q15, so
+   // the product is input<<8 and >>8 recovers exact unit gain.  For a genuine
+   // quadrature signal the rotated magnitude equals the input magnitude, so
+   // the 24-bit range covers the full ADC scale exactly.  It does NOT cover a
+   // complex envelope larger than full scale -- which a strong blocker plus a
+   // signal, or clipped noise, can produce on independent I/Q channels.  The
+   // plain slice wrapped there: measured, a true 46340 came out as 19199 with
+   // inverted sign, i.e. full-scale discontinuities.  Saturation costs two
+   // comparators and degrades gracefully instead.
+   wire signed [36:0] mix_i = sum_i >>> 8;
+   wire signed [36:0] mix_q = sum_q >>> 8;
    wire sum_i_rnd = sum_i[7] & (sum_i[8] | |sum_i[6:0]);
    wire sum_q_rnd = sum_q[7] & (sum_q[8] | |sum_q[6:0]);
+   wire signed [36:0] mix_i_r = mix_i + sum_i_rnd;
+   wire signed [36:0] mix_q_r = mix_q + sum_q_rnd;
+   wire [23:0] pipe_i = (mix_i_r > 37'sd8388607)  ? 24'sd8388607 :
+                        (mix_i_r < -37'sd8388608) ? -24'sd8388608 : mix_i_r[23:0];
+   wire [23:0] pipe_q = (mix_q_r > 37'sd8388607)  ? 24'sd8388607 :
+                        (mix_q_r < -37'sd8388608) ? -24'sd8388608 : mix_q_r[23:0];
    always @(posedge clk) begin
-      i_cordic_pipe[23:0] <= sum_i[31:8] + sum_i_rnd;
-      q_cordic_pipe[23:0] <= sum_q[31:8] + sum_q_rnd;
+      i_cordic_pipe <= pipe_i;
+      q_cordic_pipe <= pipe_q;
    end
 
 

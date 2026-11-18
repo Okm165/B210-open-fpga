@@ -204,6 +204,43 @@ module tb_ddc_chain;
                   sq_i[0],sq_i[1],sq_q[0],sq_q[1],best_errs);
          check(best_errs == 0, "mixer down-converts (Q rotation sign) at fs/8");
       end
+      // ---- range: full-scale I and Q (complex envelope > full scale) -----
+      // A quadrature signal never does this, but independent channels can
+      // (blocker plus signal, clipped noise).  The output must saturate at the
+      // rail, never wrap: before the saturator this produced 19199 where the
+      // true value is 46340, with inverted sign.
+      rx_i = 24'sd32767 << 8;
+      rx_q = 24'sd32767 << 8;
+      repeat (40) @(posedge clk);
+      begin : range
+         integer k, idx, k0, best, errs, v;
+         reg signed [15:0] sq [0:7];
+         real ex;
+         idx = 0;
+         while (idx < 8) begin
+            @(posedge clk);
+            if (!rst && strobe) begin
+               sq[idx] = $signed(sample[31:16]);
+               idx = idx + 1;
+            end
+         end
+         best = 99;
+         for (k0 = 0; k0 < 8; k0 = k0 + 1) begin
+            errs = 0;
+            for (k = 0; k < 8; k = k + 1) begin
+               ex = 46340.0 * $cos(-(k + k0) * 0.7853981633974483);
+               if (ex >  32767.0) ex =  32767.0;   // saturate, as the RTL does
+               if (ex < -32768.0) ex = -32768.0;
+               v = sq[k];
+               if (v - ex > 2.0 || v - ex < -2.0) errs = errs + 1;
+            end
+            if (errs < best) best = errs;
+         end
+         $display("  full-scale I and Q: first samples %0d,%0d,%0d (saturating, %0d errors)",
+                  sq[0], sq[1], sq[2], best);
+         check(best == 0, "oversized complex envelope saturates at the rail, does not wrap");
+      end
+      rx_i = 24'sd0; rx_q = 24'sd0;
       set_reg(8'd0, 32'h0000_0000);
 
       // ---- full rate, independent of the (ignored) rate register ---------
@@ -219,7 +256,7 @@ module tb_ddc_chain;
                "output stays at one sample per clock (rate register ignored)");
       end
 
-      if (errors == 0) $display("PASS: ddc_chain sample path, I/Q independence, full-rate output (16 checks)");
+      if (errors == 0) $display("PASS: ddc_chain sample path, I/Q independence, full-rate output (17 checks)");
       else             $display("FAIL: %0d errors", errors);
       $finish;
    end
