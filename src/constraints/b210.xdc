@@ -12,10 +12,29 @@
 # OUTPUT (an ODDR driven by gpif_clk), so this declaration cannot constrain
 # anything: nextpnr derives timing domains from clock inputs, and the routed
 # design reports only rx_clk, rx_clk_bufr, radio_clk and bus_clk.  It is kept
-# to document the interface.  The GPIF and codec buses are source-synchronous,
-# and their clock-to-out / setup-hold windows are not checked by this
-# toolchain (nextpnr's XDC subset has no set_input_delay/set_output_delay).
-# See .context/19-build-alignment-audit.md, finding F24.
+# to document the interface.
+#
+# F24 - GPIF I/O timing (documented, not enforceable here).
+# The pinned nextpnr-himbaechel SDC parser implements set_false_path but has
+# no set_input_delay/set_output_delay, so source-synchronous I/O is timed by
+# hand from Infineon AN65974 Table 3 (synchronous slave FIFO, 100 MHz):
+#   FX3 input setup tDS = 2 ns, hold tDH = 0 ns      (FPGA -> FX3 data)
+#   FX3 clock-to-out tCO = 7 ns (data), tCFLG = 8 ns (flags)
+# Budgets at tCYC = 10 ns, same-clock-source (FPGA ODDR) on both sides:
+#   FPGA->FX3: Kintex-7 LVCMOS18 ODDR clk-to-out ~4.5 ns worst + flight ~0.5 ns
+#     leaves ~3-4 ns setup margin against tDS=2 ns.  Comfortable.
+#   FX3->FPGA: tCO/tCFLG 7-8 ns + flight ~0.5 ns + FPGA setup ~1.5 ns
+#     leaves ~0-1 ns margin.  TIGHT - the flag inputs (GPIF_CTL) are the
+#     critical interface.  Tolerated in practice because flags are watermarked
+#     FIFO levels consumed by flow control with deep buffering, not per-word
+#     strobes; but any board with longer flight time must re-check this first.
+# If this design is ever taken through Vivado, set:
+#   set_output_delay -clock IFCLK -max 2.0 [get_ports {GPIF_D[*]}]
+#   set_output_delay -clock IFCLK -min 0.0 [get_ports {GPIF_D[*]}]
+#   set_input_delay  -clock IFCLK -max 8.0 [get_ports {GPIF_D[*] GPIF_CTL*}]
+#   set_input_delay  -clock IFCLK -min 2.0 [get_ports {GPIF_D[*]}]
+# The codec DDR interface needs board-level flight data (unknown offline) and
+# remains unconstrained by anyone.  See .context/19, finding F24.
 create_clock -period 10.000 [get_ports IFCLK]
 # codec_data_clk_p is the 61.44 MHz codec capture clock.
 create_clock -period 16.276 [get_ports codec_data_clk_p]
