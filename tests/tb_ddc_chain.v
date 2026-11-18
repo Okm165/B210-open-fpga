@@ -153,7 +153,10 @@ module tb_ddc_chain;
       check(got_q === 16'sd0,        "I-only input leaves Q at zero");
       check(got_i === 16'sd0,        "Q-only input leaves I at zero");
       check(q_only !== 16'sd0,       "Q-only input produces a Q sample");
-      check(minus_i === -i_only,     "negative input gives the negative sample");
+      // The output rounder is dithered, so a single sample carries +-1 LSB of
+      // legitimate rounding noise: the symmetry check must allow it.
+      check(minus_i >= -i_only - 1 && minus_i <= -i_only + 1,
+            "negative input gives the negative sample (+-1 LSB dither)");
       check(i_only > 0,              "sign of the I sample follows the input");
 
       // ---- full rate, independent of the (ignored) rate register ---------

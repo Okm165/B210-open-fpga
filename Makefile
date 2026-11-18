@@ -362,6 +362,8 @@ verify:
 test:
 	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
 	@mkdir -p $(SIM_DIR)
+	@mkdir -p $(SIM_DIR)/src/rtl/dsp
+	@cp $(ROOT)/src/rtl/dsp/dds_lut_qw.mem $(SIM_DIR)/src/rtl/dsp/
 	@rm -f $(SIM_DIR)/elab_iverilog.log $(SIM_DIR)/tb_gray_roundtrip.log \
 	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
 	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log \

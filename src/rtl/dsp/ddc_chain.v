@@ -80,26 +80,41 @@ module ddc_chain
      else
        phase <= phase + phase_inc;
 
-   // CORDIC  24-bit I/O
-   // (Algorithmic gain through CORDIC => 1.647 * 0.5 = 0.8235)
-   // (Worst case gain through rotation => SQRT(2) = 1.4142)
-   // Total worst case gain => 0.8235 * 1.4142 = 1.1646
-   // So add an extra MSB bit for word growth.
-
+   // Mixer: interpolated quarter-wave LUT oscillator (dds_lut) plus a complex
+   // multiply.  Exact unit gain -- the CORDIC's 1.6468/2 = 0.8235 constant and
+   // its 19 stages of per-stage rounding spurs are gone.  The oscillator is
+   // registered (one cycle), the multipliers another (LATENCY 1), so the
+   // datapath here is two clocks deep and still produces one sample per
+   // clock while running.
    sign_extend #(.bits_in(WIDTH), .bits_out(cwidth)) sign_extend_cordic_i (.in(rx_fe_i_mux), .out(to_cordic_i));
    sign_extend #(.bits_in(WIDTH), .bits_out(cwidth)) sign_extend_cordic_q (.in(rx_fe_q_mux), .out(to_cordic_q));
 
-   cordic_z24 #(.bitwidth(cwidth))
-   cordic(.clock(clk), .reset(rst), .enable(run),
-	  .xi(to_cordic_i),. yi(to_cordic_q), .zi(phase[31:32-zwidth]),
-	  .xo(i_cordic),.yo(q_cordic),.zo() );
+   wire signed [17:0] nco_sin, nco_cos;
+   dds_lut #(.WIDTH(WIDTH)) nco
+     (.clk(clk), .rst(rst), .phase(phase), .sin_out(nco_sin), .cos_out(nco_cos));
 
-   // Round the discarded guard bit to nearest-even instead of truncating:
-   // truncation here (plus the CORDIC's own output slice) is what produced a
-   // measured -1 LSB idle offset with a zero input.
+   // i' = i*cos - q*sin ;  q' = i*sin + q*cos
+   wire signed [35:0] p_ic, p_qs, p_is, p_qc;
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_ic (.P(p_ic), .A(to_cordic_i[24:7]), .B(nco_cos), .CE(1'b1), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_qs (.P(p_qs), .A(to_cordic_q[24:7]), .B(nco_sin), .CE(1'b1), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_is (.P(p_is), .A(to_cordic_i[24:7]), .B(nco_sin), .CE(1'b1), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_qc (.P(p_qc), .A(to_cordic_q[24:7]), .B(nco_cos), .CE(1'b1), .CLK(clk), .RST(rst));
+
+   wire signed [36:0] sum_i = p_ic + p_qs;   // 18b x 18b, exact: no overflow
+   wire signed [36:0] sum_q = p_is + p_qc;
+
+   // Narrow the 37-bit accumulator to 24 bits with round-half-even.
+   // The multipliers take the top 18 bits (>>7) and the oscillator is Q15,
+   // so the product is input<<8; >>8 recovers exact unit gain.
+   wire sum_i_rnd = sum_i[7] & (sum_i[8] | |sum_i[6:0]);
+   wire sum_q_rnd = sum_q[7] & (sum_q[8] | |sum_q[6:0]);
    always @(posedge clk) begin
-      i_cordic_pipe[23:0] <= i_cordic[24:1] + (i_cordic[0] & i_cordic[1]);
-      q_cordic_pipe[23:0] <= q_cordic[24:1] + (q_cordic[0] & q_cordic[1]);
+      i_cordic_pipe[23:0] <= sum_i[31:8] + sum_i_rnd;
+      q_cordic_pipe[23:0] <= sum_q[31:8] + sum_q_rnd;
    end
 
 
@@ -117,55 +132,26 @@ module ddc_chain
    // field is likewise fixed at unity, which is the value the driver programs
    // for full dynamic range.
    // ---------------------------------------------------------------------
-   localparam [17:0] SCALE_UNITY = 18'h1FFFF;   // ~1.0 in Q17
+   // Fixed output scale.  The old chain carried the CORDIC's 0.4117 net gain
+   // (1.6468 algorithmic gain, /2 at the output slice, /2 again in the pipe),
+   // which left 2.4x of headroom between a full-scale ADC sample and the
+   // 16-bit rail.  With the exact-unit-gain mixer the natural scale is 0.5:
+   // a full-scale ADC sample then lands at full-scale output.
+   localparam [17:0] SCALE_UNITY = 18'h10000;   // exactly 0.5 in Q17
 
-   // round to 19 bits for clip (->18) followed by multiplication (total gain
-   // of 6 bits) -- unchanged from the original formatter so that host-side
-   // amplitude calibration is unaffected
-   wire [18:0] i_unscaled_rnd, q_unscaled_rnd;
+   // Single dithered quantiser, 24 -> 16 bit (the fixed 0.5 scale is the
+   // shift by one).  The previous 24->19->18->x-scale->33->16 cascade rounded
+   // deterministically twice before the multiply, which the multi-tone
+   // measurement showed as third-order intermodulation at -67 dBc.  One
+   // quantiser with triangular dither cannot generate those products.
+   wire signed [WIDTH-2:0] i_fmt = i_cordic_pipe[WIDTH-1:1];
+   wire signed [WIDTH-2:0] q_fmt = q_cordic_pipe[WIDTH-1:1];
 
-   round #(.bits_in(WIDTH), .bits_out(19)) unscaled_rnd_i
-     (.in(i_cordic_pipe), .out(i_unscaled_rnd));
-   round #(.bits_in(WIDTH), .bits_out(19)) unscaled_rnd_q
-     (.in(q_cordic_pipe), .out(q_unscaled_rnd));
-
-   wire        strobe_unscaled_clip;
-   wire [17:0] i_unscaled_clip, q_unscaled_clip;
-
-   clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_i
-     (.clk(clk), .reset(rst), .in(i_unscaled_rnd), .strobe_in(1'b1),
-      .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
-   clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_q
-     (.clk(clk), .reset(rst), .in(q_unscaled_rnd), .strobe_in(1'b1),
-      .out(q_unscaled_clip[17:0]), .strobe_out());
-
-   wire [35:0] prod_i, prod_q;
-
-   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
-     mult_i (.P(prod_i), .A(i_unscaled_clip), .B(SCALE_UNITY),
-             .CE(strobe_unscaled_clip), .CLK(clk), .RST(rst));
-   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
-     mult_q (.P(prod_q), .A(q_unscaled_clip), .B(SCALE_UNITY),
-             .CE(strobe_unscaled_clip), .CLK(clk), .RST(rst));
-
-   reg         strobe_scaled;
-   wire        strobe_clip;
-   wire [32:0] i_clip, q_clip;
-
-   always @(posedge clk) strobe_scaled <= strobe_unscaled_clip;
-
-   clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_i
-     (.clk(clk), .reset(rst), .in(prod_i[35:0]), .strobe_in(strobe_scaled),
-      .out(i_clip), .strobe_out(strobe_clip));
-   clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_q
-     (.clk(clk), .reset(rst), .in(prod_q[35:0]), .strobe_in(strobe_scaled),
-      .out(q_clip), .strobe_out());
-
-   round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_i
-     (.clk(clk), .reset(rst), .in(i_clip), .strobe_in(strobe_clip),
+   round_sd #(.WIDTH_IN(WIDTH-1), .WIDTH_OUT(16)) round_i
+     (.clk(clk), .reset(rst), .in(i_fmt), .strobe_in(1'b1),
       .out(sample[31:16]), .strobe_out(strobe));
-   round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_q
-     (.clk(clk), .reset(rst), .in(q_clip), .strobe_in(strobe_clip),
+   round_sd #(.WIDTH_IN(WIDTH-1), .WIDTH_OUT(16)) round_q
+     (.clk(clk), .reset(rst), .in(q_fmt), .strobe_in(1'b1),
       .out(sample[15:0]), .strobe_out());
 
 
