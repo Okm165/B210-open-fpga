@@ -12,6 +12,9 @@ Project X-Ray          FASM -> frames -> .bit
 
 The result is an independent open-flow image, not a vendor-supplied image.
 
+[AUDIT.md](AUDIT.md) records the measured receive-path claims: the distortion
+budget, the throughput at every stage, and the test that guards each one.
+
 ## Design
 
 | Item | Value |
@@ -52,6 +55,7 @@ container/           atomic toolchain images
 third_party/         Project X-Ray xc7k325t data (CC0)
 Makefile             build interface
 README.md            this file
+AUDIT.md             measured receive-path claims and their tests
 build/               generated output; ignored by Git
 ```
 
