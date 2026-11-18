@@ -70,6 +70,37 @@ module new_rx_framer
    // FIXME need to handle case where hdr fifo is full (i.e. too many tiny packets)
    assign full = (sample_space == 16'd0) | (sample_space == 16'd1) | ~hdr_tready;
 
+   // ---------------------------------------------------------------------
+   // Overflow recovery.
+   //
+   // When the sample FIFO runs out of room the packet in progress is closed
+   // (that is what `full` does in eop).  If framing simply continued, every
+   // following packet would immediately hit `full` again and be closed after
+   // one or two samples, and the header overhead of those tiny packets drops
+   // the payload rate below the ADC rate - so the FIFO can never drain.  That
+   // is a self-sustaining collapse, not a transient: measured on the full
+   // chain, one 350 us host stall left every subsequent packet at four
+   // samples or fewer and the link at 0.15 words/clk (60 MB/s) for the rest
+   // of the run, with the producer still running at 0.6144.
+   //
+   // Instead, after an overflow the framer stops accepting samples until the
+   // FIFO has drained back to half full, then resumes full-length packets.
+   // The samples that arrive during that window are lost - they would be lost
+   // anyway, the FIFO is full - but the loss is bounded by the drain time and
+   // the link returns to full rate on its own.  Recovery takes about
+   // 2**(SAMPLE_FIFO_SIZE-1) clocks, i.e. 10 us with the shipped 2048-word
+   // FIFO, because the FIFO drains one word per clock.
+   wire fifo_full = (sample_space == 16'd0) | (sample_space == 16'd1);
+   localparam [15:0] DRAIN_LEVEL = (16'd1 << (SAMPLE_FIFO_SIZE-1));
+   reg draining;
+   always @(posedge clk)
+     if(reset | clear)
+       draining <= 1'b0;
+     else if(fifo_full)
+       draining <= 1'b1;
+     else if(sample_space >= DRAIN_LEVEL)
+       draining <= 1'b0;
+
    setting_reg #(.my_addr(BASE), .width(16)) sr_maxlen
      (.clk(clk),.rst(reset),.strobe(set_stb),.addr(set_addr),
       .in(set_data),.out(maxlen_reg),.changed());
@@ -96,7 +127,7 @@ module new_rx_framer
 	  nearly_eop <= 0;
 
        end
-     else if (run)
+     else if (run & ~draining)
        case(instate)
 	 //
 	 // Start a new packet in this state
@@ -169,7 +200,7 @@ module new_rx_framer
      if(reset | clear)
        len <= 5;
      else
-       if(strobe && run)
+       if(strobe && run && ~draining)
 	 if(sample_tlast)
 	   len <= 5;
 	 else
@@ -188,7 +219,7 @@ module new_rx_framer
 
    wire [63:0] 	  sample_tdata = (instate == SECOND) ? {holding, sample} : {sample, 32'h0};
    assign sample_tlast = eop;
-   wire 	  sample_tvalid = run & strobe & ( (instate == SECOND) | eop );
+   wire 	  sample_tvalid = run & strobe & ~draining & ( (instate == SECOND) | eop );
    wire 	  sample_tready;
 
    wire [80:0] 	  hdr_tdata = {eob,len[13:0],2'b0,(instate == START) ? vita_time : hold_time};

@@ -225,6 +225,15 @@ module tb_e2e_rx;
       if (full && !full_d) full_events = full_events + 1;
    end
    integer max_i = 0, max_q = 0, wi, wq;
+`ifdef E2E_RECOVERY
+   // An overflow is deliberately provoked in this run; what must hold is that
+   // the stream comes back to full rate by itself.
+   integer clk_cnt = 0, tail_words = 0;
+   always @(posedge bus_clk) if (!reset) begin
+      clk_cnt = clk_cnt + 1;
+      if (clk_cnt > RUNCLK - 100000 && slwr === 1'b0) tail_words = tail_words + 1;
+   end
+`endif
 `ifdef E2E_DUMP
    integer fd;
    initial fd = $fopen("e2e_words.txt", "w");
@@ -289,6 +298,10 @@ module tb_e2e_rx;
                packets, short_packets, max_i, max_q, 16*AMP, rail_hits);
 `endif
       $display("E2E: framer full events (dropped samples) = %0d", full_events);
+`ifdef E2E_RECOVERY
+      $display("E2E: last 100000 clocks carried %0d words (%.3f words/clk)",
+               tail_words, tail_words/100000.0);
+`endif
       fails = 0;
 `ifndef STALL
       // under deliberate USB stalls the average rate is lower by construction
@@ -297,6 +310,13 @@ module tb_e2e_rx;
          fails = fails + 1;
       end
 `endif
+`ifdef E2E_RECOVERY
+      // The overflow itself is expected here; the link must return to rate.
+      if (tail_words < 60000) begin
+         $display("E2E: FAIL - stream did not recover after the overflow");
+         fails = fails + 1;
+      end
+`else
       if (full_events != 0) begin
          $display("E2E: FAIL - USB backpressure dropped samples");
          fails = fails + 1;
@@ -305,6 +325,7 @@ module tb_e2e_rx;
          $display("E2E: FAIL - packetisation broken");
          fails = fails + 1;
       end
+`endif
 `ifdef TWOTONE
       if (max_i < 16*1000 + 8 || max_i > 16*1002 + 16) begin
          $display("E2E: FAIL - weak tone lost or crest distorted");
