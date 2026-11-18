@@ -35,8 +35,21 @@ module tb_e2e_rx;
 `else
    localparam [31:0] PHINC = `PHINC;
 `endif
+`ifndef E2E_MAXLEN
    localparam integer MAXLEN   = 66;        // samples per VITA packet
+`else
+   localparam integer MAXLEN   = `E2E_MAXLEN;   // request; the framer clamps it
+`endif
+`ifndef E2E_EXPECT
+   localparam integer EXPECT   = MAXLEN;    // length the framer must deliver
+`else
+   localparam integer EXPECT   = `E2E_EXPECT;
+`endif
+`ifndef E2E_RUNCLK
    localparam integer RUNCLK   = 80000;     // bus clocks of measurement
+`else
+   localparam integer RUNCLK   = `E2E_RUNCLK;
+`endif
 
    reg rx_clk = 0;   always #8.138 rx_clk = ~rx_clk;    // 61.44 MHz DATA_CLK
    reg bus_clk = 0;  always #5.0   bus_clk = ~bus_clk;  // 100 MHz GPIF clock
@@ -242,7 +255,7 @@ module tb_e2e_rx;
          $fwrite(fd, "e\n");
 `endif
          packets = packets + 1;
-         if (pkt_words != 2*2 + MAXLEN) short_packets = short_packets + 1;
+         if (pkt_words != 2*2 + EXPECT) short_packets = short_packets + 1;
          pkt_words = 0;
       end
    end

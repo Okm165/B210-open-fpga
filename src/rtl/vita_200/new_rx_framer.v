@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
 
+// Packet length (register BASE+0) is clamped to 2**SAMPLE_FIFO_SIZE samples,
+// i.e. half the sample FIFO.  See the MAXLEN_MAX declaration below.
 module new_rx_framer
   #(
     parameter BASE=0,
@@ -50,7 +52,18 @@ module new_rx_framer
 
    wire [15:0] 	  sample_space;
 
-   wire [15:0] 	  maxlen;
+   wire [15:0] 	  maxlen_reg;
+   // A packet is buffered in the whole-packet FIFO before it is handed on, so
+   // a packet longer than half that FIFO leaves no slack: the FIFO sits one
+   // word from full, the framing state machine falls into its "FIFO full"
+   // emergency exit - one sample per packet - and the stream collapses.
+   // Measured on this design (tests/tb_e2e_rx.v, 2^11-word FIFO): maxlen 512
+   // and 2048 deliver 246.6 / 242.1 MB/s with zero short packets; maxlen 4092
+   // - which UHD is allowed to request - collapsed to 61.4 MB/s with 9545
+   // short packets and repeated full events.  Clamping to half the FIFO in
+   // samples keeps every legal request robust and changes nothing below it.
+   localparam [15:0] MAXLEN_MAX = (16'd1 << SAMPLE_FIFO_SIZE);
+   wire [15:0] 	  maxlen = (maxlen_reg > MAXLEN_MAX) ? MAXLEN_MAX : maxlen_reg;
    reg [31:0] 	  holding;
 
 
@@ -59,7 +72,7 @@ module new_rx_framer
 
    setting_reg #(.my_addr(BASE), .width(16)) sr_maxlen
      (.clk(clk),.rst(reset),.strobe(set_stb),.addr(set_addr),
-      .in(set_data),.out(maxlen),.changed());
+      .in(set_data),.out(maxlen_reg),.changed());
 
    wire sid_changed;
    setting_reg #(.my_addr(BASE+1), .width(32)) sr_sid

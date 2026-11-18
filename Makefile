@@ -283,10 +283,13 @@ pnr: tools
 	# A fixed seed makes placement and routing reproducible.  Without one,
 	# nextpnr draws a new seed every run: the routed result changes, and some
 	# seeds fail to converge at all (measured: one run's overused-wire count
-	# climbed from 7.5k to 12.8k monotonically instead of falling).
+	# climbed from 7.5k to 12.8k monotonically instead of falling).  Seed 4 was
+	# chosen by sweep on the committed netlist: it converges (overused wires -> 0
+	# after 68 router iterations) and closes every clock - bus_clk 109.33 MHz
+	# against 100 required, radio_clk 87.12 against 61.44.
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
-	  --seed 1 \
+	  --seed 4 \
 	  --report "$(CFPGA)/reports/pnr-report.json" --detailed-timing-report)
 	if [ "$(FPGA_ALLOW_TIMING_FAIL)" = "1" ]; then args+=(--timing-allow-fail); fi
 	set +e
@@ -489,7 +492,7 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_adc_pins.log tb_adc_pins.vvp
 	@grep -q 'ADC-PINS: PASS' $(SIM_DIR)/tb_adc_pins.log || \
 	  { echo "ERROR: AD9361 pin-level I/Q capture broken; see $(SIM_DIR)/tb_adc_pins.log"; exit 1; }
-	@for run in base fs fslo two noisy stall; do \
+	@for run in base fs fslo two noisy stall oversize; do \
 	  case $$run in \
 	    base)  flags="";; \
 	    fs)    flags="-DAMP=2047";; \
@@ -497,6 +500,9 @@ test:
 	    two)   flags="-DTWOTONE";; \
 	    noisy) flags="-DNOISY";; \
 	    stall) flags="-DSTALL -DSTALL_CLKS=10000 -DSTALL_PERIOD=40000";; \
+	    # UHD may request up to 4092 samples per packet; the framer clamps
+	    # that to half its sample FIFO (2048) instead of collapsing the stream.
+	    oversize) flags="-DE2E_MAXLEN=4092 -DE2E_EXPECT=2048 -DE2E_RUNCLK=400000";; \
 	  esac; \
 	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	    $$flags -s tb_e2e_rx -o tb_e2e_$$run.vvp $(E2E_TEST_SRCS); \
