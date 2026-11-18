@@ -129,6 +129,10 @@ RX_STREAM_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_rx_stream.v
 
+USB_RATE_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_usb_rate.v
+
 DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_sine.v
@@ -437,6 +441,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_dds_lut.log tb_dds_lut.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_dds_lut.log || \
 	  { echo "ERROR: LUT oscillator test failed; see $(SIM_DIR)/tb_dds_lut.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_usb_rate -o tb_usb_rate.vvp $(USB_RATE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_usb_rate.log tb_usb_rate.vvp
+	@grep -q 'delivered 24' $(SIM_DIR)/tb_usb_rate.log || \
+	  { echo "ERROR: USB-level throughput below requirement; see $(SIM_DIR)/tb_usb_rate.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_rx_stream -o tb_rx_stream.vvp $(RX_STREAM_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_stream.log tb_rx_stream.vvp
