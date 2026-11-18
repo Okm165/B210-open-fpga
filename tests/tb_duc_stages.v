@@ -38,7 +38,7 @@ module tb_duc_stages;
 
    duc_chain #(
       .BASE(0), .DSPNO(0), .WIDTH(WIDTH),
-      .NEW_HB_INTERP(1), .DEVICE("7SERIES")
+      .DEVICE("7SERIES")
    ) dut (
       .clk(clk), .rst(rst), .clr(clr),
       .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
@@ -132,7 +132,11 @@ module tb_duc_stages;
          if (dut.strobe_hb1)
             $fwrite(f_hb1, "%0d %0d\n",
                     $signed(dut.hb1_i[17:3]), $signed(dut.hb1_q[17:3]));
-         if (dut.strobe_hb2)
+         // hb2's OUTPUT rate is strobe_cic (clk/2); strobe_hb2 is clk/4 and
+         // undersamples the stage, aliasing its interpolation images into any
+         // spectral analysis of this dump.  Measured: the same capture read
+         // with the wrong tap showed a -17.6 dB image that does not exist.
+         if (dut.strobe_cic)
             $fwrite(f_hb2, "%0d %0d\n",
                     $signed(dut.hb2_i[17:3]), $signed(dut.hb2_q[17:3]));
          $fwrite(f_cic, "%0d %0d\n",
