@@ -135,6 +135,9 @@ USB_RATE_TEST_SRCS := $(ELAB_SRCS) \
 ADC_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_adc_pins.v
+E2E_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_e2e_rx.v
 
 DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
@@ -454,6 +457,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_adc_pins.log tb_adc_pins.vvp
 	@grep -q 'ADC-PINS: PASS' $(SIM_DIR)/tb_adc_pins.log || \
 	  { echo "ERROR: AD9361 pin-level I/Q capture broken; see $(SIM_DIR)/tb_adc_pins.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_e2e_rx -o tb_e2e_rx.vvp $(E2E_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_e2e_rx.log tb_e2e_rx.vvp
+	@grep -q 'E2E: PASS' $(SIM_DIR)/tb_e2e_rx.log || \
+	  { echo "ERROR: end-to-end RX path failed; see $(SIM_DIR)/tb_e2e_rx.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_rx_stream -o tb_rx_stream.vvp $(RX_STREAM_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_stream.log tb_rx_stream.vvp
