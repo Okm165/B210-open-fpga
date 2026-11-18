@@ -14,13 +14,8 @@ src/rtl/control/simple_spi_core.v
 src/rtl/control/synchronizer_impl.v
 src/rtl/control/synchronizer.v
 src/rtl/control/user_settings.v
-src/rtl/dsp/acc.v
 src/rtl/dsp/add2_and_clip_reg.v
 src/rtl/dsp/add2_and_clip.v
-src/rtl/dsp/add2_and_round_reg.v
-src/rtl/dsp/add2_and_round.v
-src/rtl/dsp/add2_reg.v
-src/rtl/dsp/add2.v
 src/rtl/dsp/add_then_mac.v
 src/rtl/dsp/cic_comp.v
 src/rtl/dsp/cic_interp.v
@@ -36,7 +31,6 @@ src/rtl/dsp/round_reg.v
 src/rtl/dsp/round_sd.v
 src/rtl/dsp/round.v
 src/rtl/dsp/sign_extend.v
-src/rtl/dsp/srl.v
 src/rtl/fifo_200/axi_fifo_legacy.v
 src/rtl/fifo/axi_demux4.v
 src/rtl/fifo/axi_fifo_2clk_sim.v

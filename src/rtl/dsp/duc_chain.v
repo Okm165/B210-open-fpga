@@ -97,7 +97,6 @@ module duc_chain
    // `hb_interp`/`small_hb_int` path is gone: it could not even be simulated
    // (it instantiates MULT18X18S, which has no model here), so keeping it was
    // untested legacy.
-   begin: new_hb
 	 // First stage of halfband interpolation filters. These run at a max CPO of 2 when CIC is bypassed and HB2 enabled.
 	 hb47_int
 	   #(.WIDTH(18),
@@ -160,7 +159,6 @@ module duc_chain
 		.data_out(hb2_q)
 		);
 
-   end // block: new_hb
 
    wire [17:0] i_cic_out, q_cic_out;
 
