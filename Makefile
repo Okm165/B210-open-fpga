@@ -368,8 +368,10 @@ doctor:
 verify:
 	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
 	@cd $(ROOT) && git diff --exit-code HEAD -- src scripts tests container third_party .github Makefile README.md .gitignore .gitattributes .dockerignore LICENSE
-	@cd $(ROOT) && test "$$(wc -l < scripts/sources.txt)" -eq 93
-	@cd $(ROOT) && test "$$(sort -u scripts/sources.txt | wc -l)" -eq 93
+	@cd $(ROOT) && test "$$(wc -l < scripts/sources.txt)" -eq "$$(find src -name '*.v' | wc -l)" || \
+	  { echo "ERROR: scripts/sources.txt does not list every RTL file"; exit 1; }
+	@cd $(ROOT) && test "$$(sort -u scripts/sources.txt | wc -l)" -eq "$$(wc -l < scripts/sources.txt)" || \
+	  { echo "ERROR: scripts/sources.txt has duplicate entries"; exit 1; }
 	@cd $(ROOT) && bash -c 'diff -u <(find src -name "*.v" -printf "%p\n" | sort) <(sort scripts/sources.txt)'
 	@cd $(ROOT) && while IFS= read -r f; do \
 	  test -f "$$f" || { echo "ERROR: missing source $$f"; exit 1; }; \
