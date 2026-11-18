@@ -293,14 +293,16 @@ pnr: tools
 	python3 $(CR)/scripts/check_netlist.py $(CSYNTH_JSON)
 	# A fixed seed makes placement and routing reproducible.  Without one,
 	# nextpnr draws a new seed every run: the routed result changes, and some
-	# seeds fail to converge at all (measured: one run's overused-wire count
-	# climbed from 7.5k to 12.8k monotonically instead of falling).  Seed 4 was
-	# chosen by sweep on the committed netlist: it converges (overused wires -> 0
-	# after 68 router iterations) and closes every clock - bus_clk 109.33 MHz
-	# against 100 required, radio_clk 87.12 against 61.44.
+	# seeds do not converge at all (measured: one run's overused-wire count
+	# climbed from 7.5k to 12.8k monotonically instead of falling).
+	#
+	# Seed 5 is the one that both converges and clears the 5 % margin on the
+	# committed netlist.  Post-route, post-legalisation: bus_clk 116.96 MHz
+	# (need 100), radio_clk 88.30 (need 61.44).  Seed 2 converged too but at
+	# bus_clk 100.30, which the margin policy correctly rejects.
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
-	  --seed 4 \
+	  --seed 5 \
 	  --report "$(CFPGA)/reports/pnr-report.json" --detailed-timing-report)
 	if [ "$(FPGA_ALLOW_TIMING_FAIL)" = "1" ]; then args+=(--timing-allow-fail); fi
 	set +e
