@@ -280,8 +280,13 @@ pnr: tools
 	test -s $(CHIPDB) || { echo "ERROR: missing chip database: $(CHIPDB)"; exit 1; }
 	test -s $(CXDC) || { echo "ERROR: missing constraints: $(CXDC)"; exit 1; }
 	python3 $(CR)/scripts/check_netlist.py $(CSYNTH_JSON)
+	# A fixed seed makes placement and routing reproducible.  Without one,
+	# nextpnr draws a new seed every run: the routed result changes, and some
+	# seeds fail to converge at all (measured: one run's overused-wire count
+	# climbed from 7.5k to 12.8k monotonically instead of falling).
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
+	  --seed 1 \
 	  --report "$(CFPGA)/reports/pnr-report.json" --detailed-timing-report)
 	if [ "$(FPGA_ALLOW_TIMING_FAIL)" = "1" ]; then args+=(--timing-allow-fail); fi
 	set +e
