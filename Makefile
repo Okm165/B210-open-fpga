@@ -183,6 +183,12 @@ DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
 
+# Two-channel symmetry: the RX and TX chains instantiated twice, compared
+# byte for byte, with a third RX chain as an untouched reference.
+PAIR_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_pair.v
+
 FRAMER_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_rx_framer.v
@@ -303,6 +309,14 @@ pnr: tools
 	set -e
 	test $$rc -eq 0 || { echo "ERROR: nextpnr failed (rc=$$rc)"; exit 1; }
 	! grep -q '^ERROR:' $(CFPGA)/logs/pnr.log
+	# Shipping policy: every clock must close with at least 5 % margin, not
+	# merely meet its constraint.  Routing quality depends on the seed (the
+	# same netlist closed at 109.33 MHz on one seed and 60.88 MHz on another),
+	# so a route that squeaks past the constraint is a lucky route.  Use
+	# FPGA_ALLOW_TIMING_FAIL=1 for experiments.
+	if [ "$(FPGA_ALLOW_TIMING_FAIL)" != "1" ]; then
+	  python3 $(CR)/scripts/check_timing.py $(CFPGA)/reports/pnr-report.json 1.05
+	fi
 	test -s $(CFASM)
 	{ echo "# NOTE: the FIRST block is the pre-route estimate and is not signoff."; \
 	  echo "#       The LAST block is post-route. Compare that one to the constraint."; \
@@ -570,6 +584,11 @@ test:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_duc_chain -o tb_duc_chain.vvp $(DUC_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_duc_chain.log tb_duc_chain.vvp
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_pair -o tb_pair.vvp $(PAIR_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_pair.log tb_pair.vvp
+	@grep -q '^PASS: channels byte identical' $(SIM_DIR)/tb_pair.log || \
+	  { echo "ERROR: two-channel symmetry test failed; see $(SIM_DIR)/tb_pair.log"; exit 1; }
 	@grep -q '^PASS:' $(SIM_DIR)/tb_duc_chain.log || \
 	  { echo "ERROR: DUC chain test failed; see $(SIM_DIR)/tb_duc_chain.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \

@@ -33,7 +33,7 @@ UHD driver internals, RF performance of the AD9361 itself.
  gpif2_slave_fifo32: 64->32 + CDC + gate + FIFO         tb_usb_rate, tb_e2e_rx
    v
  GPIF @ bus_clk (100 MHz constraint, 105.42 MHz met) -> FX3 -> USB 3.0
-                                                         tb_e2e_rx x4 configs
+                                                         tb_e2e_rx x8 configs
  AD9361 TX  <- b200_io ODDR SAME_EDGE: I rising half, Q falling half
                                                          tb_tx_pins
 ```
@@ -130,8 +130,12 @@ of 3 dB of host-visible level everywhere.
 | pin -> fabric | 245.76 MB/s | 1 pair/clk |
 | CDC alone / 64->32 alone | 245.76 | 404 / 402 MB/s |
 | packet gate | 245.76 | 252 MB/s at demand |
-| full path | 245.76 | 259.9 MB/s, 0 words lost |
-| USB stall tolerance | - | 100 us absorbed, overflow 100-150 us |
+| full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
+| full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
+| packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
+| USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
+| USB stall, sustained | - | 25 % duty absorbed; the interface ceiling is 400 MB/s against 246 MB/s of payload |
+| USB stall, over-long | - | 350 us overflows; bounded loss, link returns to 0.616 words/clk by itself |
 | bus_clk / radio_clk | 100 / 61.44 MHz | 105.42 / 96.17 MHz |
 
 ## Invariants that guard the claims
@@ -142,8 +146,10 @@ Each one fails loudly if a future change breaks it:
 - `tb_tx_pins`    Q(rise) - I(fall) = 2048 for every clock period
 - `tb_rx_static`  no dead-register write changes a sample
 - `tb_e2e_rx`     rate, packet completeness, unity gain (exactly 16x when the
-                  LO is zero), rail hits = 0, zero `full` events; five
-                  configurations: base, fs, fslo, two, stall
+                  LO is zero), rail hits = 0, zero `full` events; eight
+                  configurations: base, fs, fslo, two, noisy, stall, oversize
+                  (packet length clamped to 2048), overrun (350 us stall must
+                  recover)
 - `tb_rx_stream`  tag contiguity through the framer
 - `tb_dds_lut`    sin(t) = cos(t - 90 degrees) bit-exactly
 - `tb_usb_rate`   words per beat = 2.000 and delivered rate >= requirement

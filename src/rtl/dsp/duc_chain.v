@@ -197,29 +197,64 @@ module duc_chain
      (.clk(clk), .rst(rst), .stb_in(1'b1), .data_in(q_cic_out),
       .stb_out(), .data_out(q_interp));
 
-   localparam  cwidth = WIDTH;  // was 18
-   localparam  zwidth = 24;  // was 16
-
-   wire [cwidth-1:0] da_c, db_c;
-
-   // The multiplier takes the top 18 bits; round to nearest-even instead of
-   // truncating, so the discarded 7 bits do not add a constant negative
-   // offset (the CORDIC's own rounding fixes the other half of the bias).
-   localparam DAC_SHIFT = cwidth - 18;
-   wire [17:0] da_r = da_c[cwidth-1:DAC_SHIFT] +
-                      (da_c[DAC_SHIFT-1] & (da_c[DAC_SHIFT-2] | |da_c[DAC_SHIFT-3:0]));
-   wire [17:0] db_r = db_c[cwidth-1:DAC_SHIFT] +
-                      (db_c[DAC_SHIFT-1] & (db_c[DAC_SHIFT-2] | |db_c[DAC_SHIFT-3:0]));
+   // ---------------------------------------------------------------------
+   // Up-conversion mixer.
    //
-   // Note. No head room has been added to the CORDIC to accomodate gain in excess of the input signals dynamic range.
-   // The CORDIC has algorithmic gain of 1.647, implementation gain of 0.5 and potential gain associated with rotation of 1.414.
-   // Thus the CORDIC will overflow when rotating and an input CW with (clipped) effective amplitude of 1.22 is applied.
+   // Same oscillator and same arithmetic as the receive path (dds_lut plus
+   // four exact 18x18 multiplies), so both directions share one verified
+   // NCO and one verified gain convention.  It replaces the 24-bit CORDIC,
+   // whose algorithmic gain of 1.6468 was neither unity nor amplitude
+   // independent: the upstream note in this file recorded that it overflows
+   // for a constant envelope above 1.22, and the guard-bit slice used to wrap
+   // there (a sign inversion, measured at 8 wraps and a 16 769 546-count step
+   // per corner revolution; see tests/tb_cordic_overflow.v).
    //
-   cordic_z24 #(.bitwidth(cwidth))
-     cordic(.clock(clk), .reset(rst), .enable(run),
-	    .xi({i_interp,{(cwidth-18){1'b0}}}),.yi({q_interp,{(cwidth-18){1'b0}}}),
-	    .zi(phase[31:32-zwidth]),
-	    .xo(da_c),.yo(db_c),.zo() );
+   // Rotation direction matches the CORDIC exactly: out = in * exp(+j*theta),
+   // i.e. i' = i*cos - q*sin and q' = i*sin + q*cos.
+   //
+   // Gain is exactly 1.0: in Q15 both 18-bit operands give a 36-bit product,
+   // so >>15 returns the input scaling.  Saturation replaces wrap, so a
+   // complex envelope larger than full scale clips honestly instead of
+   // folding.  NOTE for the driver: the old path multiplied by 1.6468, so the
+   // TX scale register (BASE+1) now needs 0.6073x its previous value to keep
+   // the same output level; a full-scale 16-bit input reaches full-scale DAC
+   // output at scale 0x8000.
+   // ---------------------------------------------------------------------
+   wire signed [17:0] nco_sin, nco_cos;
+   dds_lut #(.WIDTH(18)) nco
+     (.clk(clk), .rst(rst), .phase(phase), .sin_out(nco_sin), .cos_out(nco_cos));
+
+   wire signed [35:0] p_ic, p_qs, p_is, p_qc;
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_ic (.P(p_ic), .A(i_interp), .B(nco_cos), .CE(1'b1), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_qs (.P(p_qs), .A(q_interp), .B(nco_sin), .CE(1'b1), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_is (.P(p_is), .A(i_interp), .B(nco_sin), .CE(1'b1), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mix_qc (.P(p_qc), .A(q_interp), .B(nco_cos), .CE(1'b1), .CLK(clk), .RST(rst));
+
+   wire signed [36:0] sum_i = p_ic - p_qs;
+   wire signed [36:0] sum_q = p_is + p_qc;
+
+   // Round half even, then saturate at 18 bits (the input's own range).
+   //
+   // The shift and the rounding add are written as separate signed
+   // expressions on purpose.  Written as one expression
+   // (sum_i >>> 15) + sum_i_rnd, the unsigned 1-bit rounding term makes the
+   // whole addition unsigned, and this toolchain then evaluates >>> as a
+   // LOGICAL shift: measured, a -6183 sample became +4189104 and saturated to
+   // the positive rail, i.e. every negative TX sample came out at full scale.
+   wire        sum_i_rnd = sum_i[14] & (sum_i[15] | |sum_i[13:0]);
+   wire        sum_q_rnd = sum_q[14] & (sum_q[15] | |sum_q[13:0]);
+   wire signed [36:0] mix_i = sum_i >>> 15;
+   wire signed [36:0] mix_q = sum_q >>> 15;
+   wire signed [36:0] mix_i_r = mix_i + sum_i_rnd;
+   wire signed [36:0] mix_q_r = mix_q + sum_q_rnd;
+   wire [17:0] da_r = (mix_i_r > 37'sd131071)  ? 18'sd131071 :
+                      (mix_i_r < -37'sd131072) ? -18'sd131072 : mix_i_r[17:0];
+   wire [17:0] db_r = (mix_q_r > 37'sd131071)  ? 18'sd131071 :
+                      (mix_q_r < -37'sd131072) ? -18'sd131072 : mix_q_r[17:0];
 
    MULT_MACRO #(.DEVICE(DEVICE),  // Target Device: "VIRTEX5", "VIRTEX6", "SPARTAN6","7SERIES"
 		.LATENCY(1),         // Desired clock cycle latency, 0-4
