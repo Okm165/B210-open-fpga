@@ -14,8 +14,6 @@ module radio_legacy
     parameter RADIO_FIFO_SIZE = 13,
     parameter SAMPLE_FIFO_SIZE = 11,
     parameter FP_GPIO = 0,
-    parameter NEW_HB_INTERP = 0,
-    parameter NEW_HB_DECIM = 0,
     parameter SOURCE_FLOW_CONTROL = 0,
     parameter USER_SETTINGS = 0,
     parameter DEVICE = "SPARTAN6"
@@ -391,7 +389,7 @@ endgenerate
       .o_tdata(txresp_tdata_r), .o_tlast(txresp_tlast_r), .o_tvalid(txresp_tvalid_r), .o_tready(txresp_tready_r));
 
    wire [31:0]       debug_duc_chain;
-   duc_chain #(.BASE(SR_TX_DSP), .DSPNO(0), .WIDTH(24), .NEW_HB_INTERP(NEW_HB_INTERP),.DEVICE(DEVICE)) duc_chain
+   duc_chain #(.BASE(SR_TX_DSP), .DSPNO(0), .WIDTH(24), .DEVICE(DEVICE)) duc_chain
      (.clk(radio_clk), .rst(radio_rst), .clr(1'b0),
       .set_stb(set_stb),.set_addr(set_addr),.set_data(set_data),
       .tx_fe_i(tx_fe_i),.tx_fe_q(tx_fe_q),

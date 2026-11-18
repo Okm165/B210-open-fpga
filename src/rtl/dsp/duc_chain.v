@@ -13,7 +13,6 @@ module duc_chain
     parameter BASE = 0,
     parameter DSPNO = 0,
     parameter WIDTH = 24,
-    parameter NEW_HB_INTERP = 0,
     parameter DEVICE = "7SERIES"
   )
   (input clk, input rst, input clr,
@@ -92,10 +91,13 @@ module duc_chain
    wire [17:0] hb1_i, hb1_q, hb2_i, hb2_q;
 
    wire [7:0]  cpo = enable_hb2 ? ({interp_rate,1'b0}) : interp_rate;
-   // Note that max CIC rate is 128, which would give an overflow on cpo if enable_hb2 is true,
-   //   but the default case inside hb_interp handles this
-   generate
-      if (NEW_HB_INTERP == 1) begin: new_hb
+   // Note that max CIC rate is 128, which would give an overflow on cpo if
+   //   enable_hb2 is true; hb47_int clamps it.
+   // Halfband interpolation, 47-tap stages (hb47_int).  The previous 6-tap
+   // `hb_interp`/`small_hb_int` path is gone: it could not even be simulated
+   // (it instantiates MULT18X18S, which has no model here), so keeping it was
+   // untested legacy.
+   begin: new_hb
 	 // First stage of halfband interpolation filters. These run at a max CPO of 2 when CIC is bypassed and HB2 enabled.
 	 hb47_int
 	   #(.WIDTH(18),
@@ -158,22 +160,7 @@ module duc_chain
 		.data_out(hb2_q)
 		);
 
-      end else begin: old_hb
-
-	 hb_interp #(.IWIDTH(18),.OWIDTH(18),.ACCWIDTH(WIDTH)) hb_interp_i
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb1),.cpo(cpo),.stb_in(strobe_hb1),.data_in({sample[31:16], 2'b0}),.stb_out(strobe_hb2),.data_out(hb1_i));
-	 hb_interp #(.IWIDTH(18),.OWIDTH(18),.ACCWIDTH(WIDTH)) hb_interp_q
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb1),.cpo(cpo),.stb_in(strobe_hb1),.data_in({sample[15:0], 2'b0}),.stb_out(strobe_hb2),.data_out(hb1_q));
-
-	 small_hb_int #(.WIDTH(18)) small_hb_interp_i
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb2),.stb_in(strobe_hb2),.data_in(hb1_i),
-	    .output_rate(interp_rate),.stb_out(strobe_cic),.data_out(hb2_i));
-	 small_hb_int #(.WIDTH(18)) small_hb_interp_q
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb2),.stb_in(strobe_hb2),.data_in(hb1_q),
-	    .output_rate(interp_rate),.stb_out(strobe_cic),.data_out(hb2_q));
-
-      end // block: old_hb
-   endgenerate
+   end // block: new_hb
 
    wire [17:0] i_cic_out, q_cic_out;
 

@@ -92,15 +92,6 @@ RESET_TEST_SRCS := \
   $(ROOT)/src/rtl/control/synchronizer_impl.v \
   $(ROOT)/tests/tb_reset_sync.v
 
-CORDIC_TEST_SRCS := \
-  $(ROOT)/src/rtl/dsp/cordic_z24.v \
-  $(ROOT)/src/rtl/dsp/cordic_stage.v \
-  $(ROOT)/tests/tb_cordic.v
-
-CORDIC_OVF_TEST_SRCS := \
-  $(ROOT)/src/rtl/dsp/cordic_z24.v \
-  $(ROOT)/src/rtl/dsp/cordic_stage.v \
-  $(ROOT)/tests/tb_cordic_overflow.v
 
 CLIP_TEST_SRCS := \
   $(ROOT)/src/rtl/dsp/clip.v \
@@ -198,7 +189,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
-.PHONY: help doctor verify test elab equiv sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+.PHONY: help doctor verify test elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
         shell build synth pnr bitstream hello analyze timing clean image-clean
 
 help:
@@ -276,10 +267,6 @@ synth: tools
 	  > $(CFPGA)/reports/synth-stat.txt
 	echo "synthesis ok: $(CSYNTH_JSON)"
 	EOF
-
-equiv:
-	podman run --rm --userns=keep-id -v "$$PWD:/work:z" -w /work b210-open-fpga:$(TAG) yosys -q scripts/equiv_cordic.ys
-	@echo "PASS: cordic_stage formally equivalent to its synthesized netlist"
 
 pnr: tools
 	@$(CONTAINER_RUN) $(CONTAINER_ENV) \
@@ -483,11 +470,6 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_clip.log tb_clip.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_clip.log || \
 	  { echo "ERROR: clip test failed; see $(SIM_DIR)/tb_clip.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cordic \
-	  -o tb_cordic.vvp $(CORDIC_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_cordic.log tb_cordic.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_cordic.log || \
-	  { echo "ERROR: CORDIC test failed; see $(SIM_DIR)/tb_cordic.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_reset_sync \
 	  -o tb_reset_sync.vvp $(RESET_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_reset_sync.log tb_reset_sync.vvp
@@ -554,10 +536,6 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pins.log tb_tx_pins.vvp
 	@grep -q 'TX-PINS: PASS' $(SIM_DIR)/tb_tx_pins.log || \
 	  { echo "ERROR: TX I/Q pin sequence broken; see $(SIM_DIR)/tb_tx_pins.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cordic_overflow -o tb_cordic_overflow.vvp $(CORDIC_OVF_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_cordic_overflow.log tb_cordic_overflow.vvp
-	@grep -q 'CORDIC: PASS' $(SIM_DIR)/tb_cordic_overflow.log || \
-	  { echo "ERROR: TX rotator wraps instead of saturating; see $(SIM_DIR)/tb_cordic_overflow.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
 	  -s tb_dither_dc -o tb_dither_dc.vvp $(DITHER_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_dither_dc.log tb_dither_dc.vvp

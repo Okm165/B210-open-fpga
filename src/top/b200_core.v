@@ -303,9 +303,7 @@ module b200_core
    radio_legacy #(
       .RADIO_FIFO_SIZE(RADIO_FIFO_SIZE),
       .SAMPLE_FIFO_SIZE(SAMPLE_FIFO_SIZE),
-      .FP_GPIO(1),
-      .NEW_HB_INTERP(1),
-      .NEW_HB_DECIM(1),
+      .FP_GPIO(1),
       .SOURCE_FLOW_CONTROL(0),
       .USER_SETTINGS(0),
       .DEVICE("7SERIES")
@@ -335,9 +333,7 @@ module b200_core
    radio_legacy #(
       .RADIO_FIFO_SIZE(RADIO_FIFO_SIZE),
       .SAMPLE_FIFO_SIZE(SAMPLE_FIFO_SIZE),
-      .FP_GPIO(0),
-      .NEW_HB_INTERP(1),
-      .NEW_HB_DECIM(1),
+      .FP_GPIO(0),
       .SOURCE_FLOW_CONTROL(0),
       .USER_SETTINGS(0),
       .DEVICE("7SERIES")
