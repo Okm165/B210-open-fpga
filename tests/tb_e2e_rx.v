@@ -52,6 +52,23 @@ module tb_e2e_rx;
 
    always @(posedge rx_clk) begin #1 rx_data <= ci[11:0]; end   // I(n)
    always @(negedge rx_clk) begin #1 rx_data <= cq[11:0]; n <= n + 1; end
+`ifdef NOISY
+   // Realistic composite: a -6 dBFS tone plus band-limited noise at -24 dBc,
+   // each component clipped to the ADC's own 12-bit rails exactly as the
+   // converter does.  This is the operating point where a gain-staging error
+   // would show up as clipping long before a pure tone does.
+   reg [31:0] nlfsr = 32'h1357_9BDF;
+   integer ni, nq;
+   always @(posedge rx_clk) nlfsr <= {nlfsr[30:0], nlfsr[31] ^ nlfsr[21] ^ nlfsr[1] ^ nlfsr[0]};
+   always @(*) begin
+      ni = $rtoi(1024.0*$cos(2.0*3.14159265358979*410*n/NSAMP))
+                 + $signed({1'b0, nlfsr[8:1]}) - 128;
+      nq = $rtoi(1024.0*$sin(2.0*3.14159265358979*410*n/NSAMP))
+                 + $signed({1'b0, nlfsr[16:9]}) - 128;
+      ci = (ni >  2047) ?  2047 : (ni < -2048) ? -2048 : ni;
+      cq = (nq >  2047) ?  2047 : (nq < -2048) ? -2048 : nq;
+   end
+`else
 `ifdef TWOTONE
    // Strong blocker + weak tone at the smallest level a 12-bit ADC can carry
    // (2 counts, ~ -54 dBc).  The weak tone is what a low-SNR measurement would
@@ -68,6 +85,7 @@ module tb_e2e_rx;
       ci  = $rtoi(AMP*$cos(arg));
       cq  = $rtoi(AMP*$sin(arg));
    end
+`endif
 `endif
 
    // ---- chain -------------------------------------------------------------
@@ -277,6 +295,12 @@ module tb_e2e_rx;
 `ifdef TWOTONE
       if (max_i < 16*1000 + 8 || max_i > 16*1002 + 16) begin
          $display("E2E: FAIL - weak tone lost or crest distorted");
+         fails = fails + 1;
+      end
+`elsif NOISY
+      // tone 1024 + noise up to +127 -> crest 1151 counts, so 16x is 18416
+      if (max_i < 16*1120 || max_i > 16*1160) begin
+         $display("E2E: FAIL - composite crest wrong (gain or clipping)");
          fails = fails + 1;
       end
 `else

@@ -47,6 +47,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | full-scale tone, LO = fs/8 (run "fslo") | 51 980 words | captured peak 32 742 (phase grid), rail hits 0 |
 | blocker 1000 counts + tone 2 counts (run "two") | 48 840 samples | weak tone preserved to -0.002 dB, IMD = stimulus's own |
 | 100 us USB stalls, repeated (run "stall") | 584 packets | 0 dropped samples, 0 framer full events |
+| tone -6 dBFS + noise -24 dBc (run "noisy") | 51 980 words | crest 18 416 = 16 x 1151, rail hits 0, no drops |
 | dead-register hammering | 60 100 samples | 0 mismatches, LO still functional |
 | RX pins, I=n / Q=n+2048 | 4291 strobes | pair from one sample period |
 | TX pins, counter / counter+2048 | 4000 periods | Q - I = 2048 exactly |
@@ -81,6 +82,21 @@ Clipping: the chain applies a 16x gain, so an output component reaches the
 16-bit rail only when the complex envelope exceeds 2048 counts, i.e. above the
 ADC's own full scale. A circular full-scale signal never clips at any LO; the
 rail-corner state (I = Q = 2047) saturates and never wraps.
+
+Measured clipping statistics over 1 M samples, separating what the ADC clips
+from what the pipeline alone would clip:
+
+| stimulus | ADC clips | pipeline-only clips |
+|---|---|---|
+| single tone at full scale | 0.00 % | 0.00 % |
+| tone -6 dBFS + noise -20 dBc | 0.00 % | 0.00 % |
+| noise, 3-sigma at the rails | 0.54 % | 0.57 % |
+| tone at full scale + noise -20 dBc | 23.48 % | 28.36 % |
+
+So at any operating point that keeps the composite envelope inside full scale
+the pipeline clips nothing. Clipping appears only where the converter is already
+clipping the same signal. The 1/sqrt(2) alternative would remove it at the cost
+of 3 dB of host-visible level everywhere.
 
 ## Throughput
 

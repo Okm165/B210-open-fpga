@@ -479,12 +479,13 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_adc_pins.log tb_adc_pins.vvp
 	@grep -q 'ADC-PINS: PASS' $(SIM_DIR)/tb_adc_pins.log || \
 	  { echo "ERROR: AD9361 pin-level I/Q capture broken; see $(SIM_DIR)/tb_adc_pins.log"; exit 1; }
-	@for run in base fs fslo two stall; do \
+	@for run in base fs fslo two noisy stall; do \
 	  case $$run in \
 	    base)  flags="";; \
 	    fs)    flags="-DAMP=2047";; \
 	    fslo)  flags="-DAMP=2047 -DPHINC=536870912";; \
 	    two)   flags="-DTWOTONE";; \
+	    noisy) flags="-DNOISY";; \
 	    stall) flags="-DSTALL -DSTALL_CLKS=10000 -DSTALL_PERIOD=40000";; \
 	  esac; \
 	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
