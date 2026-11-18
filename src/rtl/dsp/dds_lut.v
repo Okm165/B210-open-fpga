@@ -23,17 +23,11 @@ module dds_lut #(
   output reg  signed [17:0] cos_out
 );
 
-  // {slope[15:0], value[15:0]} per entry, 1025 entries
+  // {slope[15:0], value[15:0]} per entry, 1025 entries.  A single 32-bit
+  // memory, read directly: splitting it into two copied arrays is not
+  // synthesizable (yosys rejects a memory initialised from another memory).
   reg [31:0] rom [0:1024];
-  reg [15:0] rom_v [0:1024];
-  reg [15:0] rom_d [0:1024];
-  initial begin
-    $readmemh("src/rtl/dsp/dds_lut_qw.mem", rom);
-    for (integer i = 0; i < 1025; i = i + 1) begin
-      rom_v[i] = rom[i][15:0];
-      rom_d[i] = rom[i][31:16];
-    end
-  end
+  initial $readmemh("src/rtl/dsp/dds_lut_qw.mem", rom);
 
   wire [1:0]  quad  = phase[31:30];
   wire [9:0]  index = phase[29:20];
@@ -46,10 +40,10 @@ module dds_lut #(
   wire [9:0]  sidx = quad[0] ? 10'd1023 - index : index;
   wire [19:0] sfr  = quad[0] ? ~frac : frac;
 
-  wire signed [15:0] sv  = rom_v[sidx];
-  wire signed [15:0] sd  = rom_d[sidx];
-  wire signed [15:0] cv  = rom_v[cidx];
-  wire signed [15:0] cd  = rom_d[cidx];
+  wire signed [15:0] sv  = rom[sidx][15:0];
+  wire signed [15:0] sd  = rom[sidx][31:16];
+  wire signed [15:0] cv  = rom[cidx][15:0];
+  wire signed [15:0] cd  = rom[cidx][31:16];
 
   // interpolation: value + slope * fraction  (fraction/2^20, Q0.20)
   // NOTE: the sine interpolation must use sfr, not frac: in the mirrored

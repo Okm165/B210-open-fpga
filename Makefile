@@ -125,6 +125,10 @@ LOSSLESS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_ddc_lossless.v
 
+RX_STREAM_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_rx_stream.v
+
 DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_sine.v
@@ -433,6 +437,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_dds_lut.log tb_dds_lut.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_dds_lut.log || \
 	  { echo "ERROR: LUT oscillator test failed; see $(SIM_DIR)/tb_dds_lut.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_rx_stream -o tb_rx_stream.vvp $(RX_STREAM_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_rx_stream.log tb_rx_stream.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_rx_stream.log || \
+	  { echo "ERROR: RX stream integrity test failed; see $(SIM_DIR)/tb_rx_stream.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_ddc_lossless -o tb_ddc_lossless.vvp $(LOSSLESS_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_lossless.log tb_ddc_lossless.vvp
