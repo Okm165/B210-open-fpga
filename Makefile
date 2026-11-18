@@ -159,7 +159,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
-.PHONY: help doctor verify test elab equiv sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+.PHONY: help doctor verify test elab equiv stages sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
         shell build synth pnr bitstream hello analyze timing clean image-clean
 
 help:
@@ -239,6 +239,19 @@ synth: tools
 	  > $(CFPGA)/reports/synth-stat.txt
 	echo "synthesis ok: $(CSYNTH_JSON)"
 	EOF
+
+# Full-chain per-stage capture (2^21 clocks, ~6 min): writes I/Q dumps for
+# every DDC stage to $(SIM_DIR)/stages for external spectral analysis.
+# Analysis tooling is deliberately NOT in this repo (see bench header).
+stages: tools
+	@mkdir -p $(SIM_DIR)/stages
+	@iverilog -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control -s tb_ddc_stages \
+	  -o $(SIM_DIR)/ddc_stages.vvp $(addprefix $(ROOT)/,$(shell cat scripts/sources.txt)) \
+	  $(ROOT)/tests/sim/xilinx_prim_sim.v $(ROOT)/tests/tb_ddc_stages.v
+	cd $(SIM_DIR) && $(VVP) -n -l ddc_stages.log ddc_stages.vvp +DIR=$(SIM_DIR)/stages
+	@grep -q '^PASS:' $(SIM_DIR)/ddc_stages.log || \
+	  { echo "ERROR: stage capture failed; see $(SIM_DIR)/ddc_stages.log"; exit 1; }
+	@echo "PASS: per-stage capture written to $(SIM_DIR)/stages"
 
 equiv:
 	podman run --rm --userns=keep-id -v "$$PWD:/work:z" -w /work b210-open-fpga:$(TAG) yosys -q scripts/equiv_cordic.ys
