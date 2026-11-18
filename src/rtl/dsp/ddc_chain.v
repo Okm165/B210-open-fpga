@@ -107,9 +107,12 @@ module ddc_chain
 	  .xi(to_cordic_i),. yi(to_cordic_q), .zi(phase[31:32-zwidth]),
 	  .xo(i_cordic),.yo(q_cordic),.zo() );
 
+   // Round the discarded guard bit to nearest-even instead of truncating:
+   // truncation here (plus the CORDIC's own output slice) is what produced a
+   // measured -1 LSB idle offset with a zero input.
    always @(posedge clk) begin
-      i_cordic_pipe[23:0] <= i_cordic[24:1];
-      q_cordic_pipe[23:0] <= q_cordic[24:1];
+      i_cordic_pipe[23:0] <= i_cordic[24:1] + (i_cordic[0] & i_cordic[1]);
+      q_cordic_pipe[23:0] <= q_cordic[24:1] + (q_cordic[0] & q_cordic[1]);
    end
 
 
@@ -129,6 +132,17 @@ module ddc_chain
      decim_q (.clock(clk),.reset(rst),.enable(run),
 	      .rate(cic_decim_rate),.strobe_in(1'b1),.strobe_out(strobe_cic),
 	      .signal_in(q_cordic_pipe),.signal_out(q_cic));
+
+   // Inverse-sinc CIC droop compensation (fixed, rate-independent: see
+   // cic_comp.v).  Applied at the CIC output rate, before the halfbands.
+   wire [WIDTH-1:0] i_cic_c, q_cic_c;
+   wire             strobe_cic_c;
+   cic_comp #(.WIDTH(WIDTH)) cic_comp_i
+     (.clk(clk), .rst(rst), .stb_in(strobe_cic), .data_in(i_cic),
+      .stb_out(strobe_cic_c), .data_out(i_cic_c));
+   cic_comp #(.WIDTH(WIDTH)) cic_comp_q
+     (.clk(clk), .rst(rst), .stb_in(strobe_cic), .data_in(q_cic),
+      .stb_out(), .data_out(q_cic_c));
 
    //////////////////////////////////////////////////////////////////////////
    //
@@ -161,7 +175,7 @@ module ddc_chain
 	 assign strobe_hb1 = data_valid1;
 	 assign strobe_hb2 = data_valid2;
 
-	 assign nd1 = strobe_cic;
+	 assign nd1 = strobe_cic_c;
 	 assign nd2 = strobe_hb1;
 
 	 // Default Coeffs have gain of ~1.0
@@ -174,8 +188,8 @@ module ddc_chain
 	    .coef_din(coef_din), // input [17 : 0] coef_din
 	    .rfd(rfd1), // output rfd
 	    .nd(nd1), // input nd
-	    .din_1(i_cic), // input [23 : 0] din_1
-	    .din_2(q_cic), // input [23 : 0] din_2
+	    .din_1(i_cic_c), // input [23 : 0] din_1
+	    .din_2(q_cic_c), // input [23 : 0] din_2
 	    .rdy(rdy1), // output rdy
 	    .data_valid(data_valid1), // output data_valid
 	    .dout_1(i_hb1), // output [46 : 0] dout_1
@@ -208,16 +222,16 @@ module ddc_chain
 	     // No Halfbands enabled, no decimation.
 	     2'd0 :
 	       begin
-		  strobe_unscaled <= strobe_cic;
-		  i_unscaled <= i_cic;
-		  q_unscaled <= q_cic;
+		  strobe_unscaled <= strobe_cic_c;
+		  i_unscaled <= i_cic_c;
+		  q_unscaled <= q_cic_c;
 	       end
 	     // ILLEGAL. Only half sample rate half band enabled.
 	     2'd1 :
 	       begin
-		  strobe_unscaled <= strobe_cic;
-		  i_unscaled <= i_cic;
-		  q_unscaled <= q_cic;
+		  strobe_unscaled <= strobe_cic_c;
+		  i_unscaled <= i_cic_c;
+		  q_unscaled <= q_cic_c;
 	       end
 	     // One Halfband enabled, decimate by 2.
 	     2'd2 :
@@ -325,11 +339,11 @@ module ddc_chain
 	 // First (small) halfband  24 bit I/O
 	 small_hb_dec #(.WIDTH(WIDTH),.DEVICE(DEVICE)) small_hb_i
 	   (.clk(clk),.rst(rst),.bypass(~enable_hb1),.run(run),
-	    .stb_in(strobe_cic),.data_in(i_cic),.stb_out(strobe_hb1),.data_out(i_hb1));
+	    .stb_in(strobe_cic_c),.data_in(i_cic_c),.stb_out(strobe_hb1),.data_out(i_hb1));
 
 	 small_hb_dec #(.WIDTH(WIDTH),.DEVICE(DEVICE)) small_hb_q
 	   (.clk(clk),.rst(rst),.bypass(~enable_hb1),.run(run),
-	    .stb_in(strobe_cic),.data_in(q_cic),.stb_out(),.data_out(q_hb1));
+	    .stb_in(strobe_cic_c),.data_in(q_cic_c),.stb_out(),.data_out(q_hb1));
 
 	 // Second (large) halfband  24 bit I/O
 	 wire [8:0] 	  cpi_hb = enable_hb1 ? {cic_decim_rate,1'b0} : {1'b0,cic_decim_rate};

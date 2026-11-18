@@ -106,8 +106,12 @@ module cordic_z24(clock, reset, enable, xi, yi, zi, xo, yo, zo );
    cordic_stage #(bitwidth+2,zwidth-1,18) cordic_stage18 (clock,reset,enable,x18,y18,z18,c18,x19,y19,z19);
    cordic_stage #(bitwidth+2,zwidth-1,19) cordic_stage19 (clock,reset,enable,x19,y19,z19,c19,x20,y20,z20);
 
-   assign xo = x20[bitwidth:1];  
-   assign yo = y20[bitwidth:1];
+   // Round the discarded guard bit to nearest-even.  A plain slice truncates
+   // toward -infinity, which adds a systematic -0.5 LSB offset to every
+   // output; after the chain's second narrowing this was measured as a
+   // -1 LSB idle bias with a zero input, i.e. a DC spur in the passband.
+   assign xo = x20[bitwidth:1] + (x20[0] & x20[1]);
+   assign yo = y20[bitwidth:1] + (y20[0] & y20[1]);
    assign zo = z20;		  
 
 endmodule // cordic

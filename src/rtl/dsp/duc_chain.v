@@ -175,20 +175,41 @@ module duc_chain
       end // block: old_hb
    endgenerate
 
+   wire [17:0] i_cic_out, q_cic_out;
+
    cic_interp  #(.bw(18),.N(4),.log2_of_max_rate(7))
      cic_interp_i(.clock(clk),.reset(rst),.enable(run & ~rate_change),.rate(interp_rate),
 		  .strobe_in(strobe_cic),.strobe_out(1'd1),
-		  .signal_in(hb2_i),.signal_out(i_interp));
+		  .signal_in(hb2_i),.signal_out(i_cic_out));
 
    cic_interp  #(.bw(18),.N(4),.log2_of_max_rate(7))
      cic_interp_q(.clock(clk),.reset(rst),.enable(run & ~rate_change),.rate(interp_rate),
 		  .strobe_in(strobe_cic),.strobe_out(1'd1),
-		  .signal_in(hb2_q),.signal_out(q_interp));
+		  .signal_in(hb2_q),.signal_out(q_cic_out));
+
+   // Inverse-sinc CIC droop compensation (fixed, rate-independent: see
+   // cic_comp.v).  Applied at the CIC output (full clk rate), exactly as in
+   // the RX chain.  strobe_out is open: the CIC emits one sample per clk.
+   cic_comp #(.WIDTH(18)) cic_comp_i
+     (.clk(clk), .rst(rst), .stb_in(1'b1), .data_in(i_cic_out),
+      .stb_out(), .data_out(i_interp));
+   cic_comp #(.WIDTH(18)) cic_comp_q
+     (.clk(clk), .rst(rst), .stb_in(1'b1), .data_in(q_cic_out),
+      .stb_out(), .data_out(q_interp));
 
    localparam  cwidth = WIDTH;  // was 18
    localparam  zwidth = 24;  // was 16
 
    wire [cwidth-1:0] da_c, db_c;
+
+   // The multiplier takes the top 18 bits; round to nearest-even instead of
+   // truncating, so the discarded 7 bits do not add a constant negative
+   // offset (the CORDIC's own rounding fixes the other half of the bias).
+   localparam DAC_SHIFT = cwidth - 18;
+   wire [17:0] da_r = da_c[cwidth-1:DAC_SHIFT] +
+                      (da_c[DAC_SHIFT-1] & (da_c[DAC_SHIFT-2] | |da_c[DAC_SHIFT-3:0]));
+   wire [17:0] db_r = db_c[cwidth-1:DAC_SHIFT] +
+                      (db_c[DAC_SHIFT-1] & (db_c[DAC_SHIFT-2] | |db_c[DAC_SHIFT-3:0]));
    //
    // Note. No head room has been added to the CORDIC to accomodate gain in excess of the input signals dynamic range.
    // The CORDIC has algorithmic gain of 1.647, implementation gain of 0.5 and potential gain associated with rotation of 1.414.
@@ -205,7 +226,7 @@ module duc_chain
 		.WIDTH_A(18),        // Multiplier A-input bus width, 1-25
 		.WIDTH_B(18))        // Multiplier B-input bus width, 1-18
    mult_i (.P(prod_i),             // Multiplier output bus, width determined by WIDTH_P parameter
-	   .A(da_c[cwidth-1:cwidth-18]),// Multiplier input A bus, width determined by WIDTH_A parameter
+	   .A(da_r),               // Multiplier input A bus (rounded)
 	   .B(scale_factor),       // Multiplier input B bus, width determined by WIDTH_B parameter
 	   .CE(1'b1),              // 1-bit active high input clock enable
 	   .CLK(clk),              // 1-bit positive edge clock input
@@ -216,7 +237,7 @@ module duc_chain
 		.WIDTH_A(18),        // Multiplier A-input bus width, 1-25
 		.WIDTH_B(18))        // Multiplier B-input bus width, 1-18
    mult_q (.P(prod_q),             // Multiplier output bus, width determined by WIDTH_P parameter
-	   .A(db_c[cwidth-1:cwidth-18]),// Multiplier input A bus, width determined by WIDTH_A parameter
+	   .A(db_r),               // Multiplier input A bus (rounded)
 	   .B(scale_factor),       // Multiplier input B bus, width determined by WIDTH_B parameter
 	   .CE(1'b1),              // 1-bit active high input clock enable
 	   .CLK(clk),              // 1-bit positive edge clock input

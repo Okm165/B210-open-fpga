@@ -33,8 +33,14 @@ module cordic_stage( clock, reset, enable, xi,yi,zi,constant,xo,yo,zo);
    // while Icarus refuses to elaborate.  The two tools therefore saw
    // different low bits in the last three rotations.  >>> is defined
    // for any shift: past the width it yields the sign bit alone.
-   wire [bitwidth-1:0] yi_shr = $signed(yi) >>> shift;
-   wire [bitwidth-1:0] xi_shr = $signed(xi) >>> shift;
+   // Round the shifted operand to nearest (add half an LSB before the
+   // arithmetic shift) instead of flooring it.  Each floor() rounds toward
+   // -infinity; nineteen stages in series add up to a systematic negative
+   // offset, measured as a DC component at the CORDIC output.
+   wire signed [bitwidth:0] yi_rnd = $signed(yi) + ((shift == 0) ? 0 : (65'sd1 <<< (shift-1)));
+   wire signed [bitwidth:0] xi_rnd = $signed(xi) + ((shift == 0) ? 0 : (65'sd1 <<< (shift-1)));
+   wire [bitwidth-1:0] yi_shr = yi_rnd >>> shift;
+   wire [bitwidth-1:0] xi_shr = xi_rnd >>> shift;
 
    reg [bitwidth-1:0] 	 xo,yo;
    reg [zwidth-1:0] zo;
