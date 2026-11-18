@@ -193,6 +193,17 @@ module ODDR #(
    output Q
 );
    reg q = INIT;
+   reg q1 = INIT;      // SAME_EDGE: both halves captured on the rising edge
+   reg q2 = INIT;
+
+   // UG471: in SAME_EDGE mode D1 and D2 are BOTH clocked on the rising edge and
+   // the output mux selects D1 for the first half of the cycle and D2 for the
+   // second.  In OPPOSITE_EDGE mode D1 is captured on the rise and D2 on the
+   // fall, which is what the always block below implements.
+   always @(posedge C) if (CE && !R && !S) begin
+      q1 <= D1;
+      q2 <= D2;
+   end
 
    always @(posedge C) begin
       if (R) q <= 1'b0;
@@ -204,7 +215,7 @@ module ODDR #(
      if (DDR_CLK_EDGE != "SAME_EDGE" && CE && !R && !S) q <= D2;
    else if (DDR_CLK_EDGE == "SAME_EDGE" && CE && !R && !S) q <= D2;
 
-   assign Q = q;
+   assign Q = (DDR_CLK_EDGE == "SAME_EDGE") ? (C ? q1 : q2) : q;
 endmodule
 
 // -------------------------------------------------------- distributed memory ---
