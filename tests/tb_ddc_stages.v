@@ -67,7 +67,7 @@ module tb_ddc_stages;
    integer seed = 32'hD1CE;
 
    // capture files
-   integer f_in, f_cic, f_hb1, f_hb2, f_out;
+   integer f_in, f_cic, f_hb1, f_hb2, f_out, f_cor;
    reg [8*128-1:0] dir;
    integer dir_len;
 
@@ -86,6 +86,7 @@ module tb_ddc_stages;
       f_hb1 = $fopen({dir, "/hb1.txt"}, "w");
       f_hb2 = $fopen({dir, "/hb2.txt"}, "w");
       f_out = $fopen({dir, "/out.txt"}, "w");
+      f_cor = $fopen({dir, "/cordic.txt"}, "w");
 
       repeat (8) @(posedge clk);
       rst <= 1'b0;
@@ -113,6 +114,8 @@ module tb_ddc_stages;
          rx_i <= {q12_i[15:0], 8'd0};
          rx_q <= {q12_q[15:0], 8'd0};
          $fwrite(f_in, "%0d %0d\n", $signed(rx_i[23:8]), $signed(rx_q[23:8]));
+         $fwrite(f_cor, "%0d %0d\n",
+                 $signed(dut.i_cordic[24:9]), $signed(dut.q_cordic[24:9]));
          if (dut.strobe_cic)
             $fwrite(f_cic, "%0d %0d\n",
                     $signed(dut.i_cic[23:8]), $signed(dut.q_cic[23:8]));
@@ -128,6 +131,7 @@ module tb_ddc_stages;
       end
 
       $fclose(f_in); $fclose(f_cic); $fclose(f_hb1); $fclose(f_hb2); $fclose(f_out);
+      $fclose(f_cor);
       $display("PASS: stage capture complete (%0d input clocks, nco_inc=%0d)",
                1 << NCLK, dut.phase_inc);
       $finish;
