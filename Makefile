@@ -139,6 +139,10 @@ DDC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_ddc_sine.v
 
+DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_duc_sine.v
+
 GPIF_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/tb_gpif2_error.v
 
@@ -376,7 +380,7 @@ test:
 	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
 	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log \
 	       $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log $(SIM_DIR)/tb_axi_fifo_2clk_rate.log \
-	       $(SIM_DIR)/tb_ddc_sine.log
+	       $(SIM_DIR)/tb_ddc_sine.log $(SIM_DIR)/tb_duc_sine.log
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -o elab_iverilog.vvp $(ELAB_SRCS) $(ROOT)/tests/sim/xilinx_prim_sim.v \
 	  > elab_iverilog.log 2>&1 || \
@@ -461,6 +465,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_sine.log tb_ddc_sine.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_sine.log || \
 	  { echo "ERROR: DDC tone-fidelity test failed; see $(SIM_DIR)/tb_ddc_sine.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_duc_sine -o tb_duc_sine.vvp $(DUC_SINE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_duc_sine.log tb_duc_sine.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_duc_sine.log || \
+	  { echo "ERROR: DUC tone-fidelity test failed; see $(SIM_DIR)/tb_duc_sine.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_ddc_chain -o tb_ddc_chain.vvp $(DDC_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_chain.log tb_ddc_chain.vvp
