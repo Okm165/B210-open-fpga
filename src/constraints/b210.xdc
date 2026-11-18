@@ -35,6 +35,24 @@
 #   set_input_delay  -clock IFCLK -min 2.0 [get_ports {GPIF_D[*]}]
 # The codec DDR interface needs board-level flight data (unknown offline) and
 # remains unconstrained by anyone.  See .context/19, finding F24.
+#
+# F24b - codec DDR interface budget, from AD9361 datasheet Rev. G Table 4
+# (CMOS DDR, VDD_INTERFACE = 2.5 V, tCP = 16.276 ns - our exact 61.44 MHz):
+#   RX (AD9361 is clock master): tDDRX DATA_CLK->data skew 0..1.2 ns,
+#     tDDDV DATA_CLK->RX_FRAME 0..1.0 ns.  FPGA captures with IDDR clocked by
+#     a BUFR on the input clock (b200_io.v:78) - correct source-synchronous
+#     topology.  Half-period 8.138 ns vs skew+setup ~2 ns => ~6 ns margin.
+#   TX (FPGA launches both): tSTX = 1 ns setup, tHTX = 0 ns hold at AD9361.
+#     Data and FB_CLK are launched from the SAME rx_clk_bufr through matched
+#     ODDRs (b200_io.v:120-133), so their skew is process-matched (~0.2 ns);
+#     clk-to-out ~4.5 ns vs 16.276 ns period => ~10 ns margin.  The AD9361
+#     requires FB_CLK = same freq/duty as DATA_CLK, no phase relation - the
+#     D1=1/D2=0 ODDR gives exactly 50 % duty.  Compliant.
+#   Unlike ADI reference designs (which sweep IO delays at 245.76 MHz LVDS),
+#   this fixed-timing design does not need tuning at 61.44 MHz CMOS: the
+#   capture window is ~4x wider than the entire source skew.  Caveat: flight
+#   times are estimates for a ~10 cm class PCB; the analysis bounds the risk,
+#   it does not measure the board.
 create_clock -period 10.000 [get_ports IFCLK]
 # codec_data_clk_p is the 61.44 MHz codec capture clock.
 create_clock -period 16.276 [get_ports codec_data_clk_p]
