@@ -85,8 +85,8 @@ module tb_duc_stages;
       rst <= 1'b0;
       repeat (4) @(posedge clk);
 
-      // prime + reset: hb47_int emits x for its first outputs and the CIC
-      // integrators latch x permanently (bench-only; silicon powers up 0)
+      // prime + reset: the CIC integrators must start from a known-zero
+      // state (bench-only; silicon powers up 0)
       set_reg(8'd0, 32'h0000_0000);
       set_reg(8'd1, 32'h0001_FFFF);
       set_reg(8'd2, (2'b11 << 8) | 8'd2);
@@ -124,12 +124,17 @@ module tb_duc_stages;
             arg   = 2.0 * 3.14159265358979 * $itor(n_in) / 16.0;
             n_in  = n_in + 1;
             dith  = $itor(($random(seed) % 3));
-            q12_i = $rtoi(($itor(a16) * $cos(arg) + dith) / 8.0) * 8;
-            q12_q = $rtoi(($itor(a16) * $sin(arg) + dith) / 8.0) * 8;
+            // TX input is 16-bit USB data, not a 12-bit ADC sample: quantise
+            // at 1 LSB.  The old step-8 rounding injected -75 dBc spurs into
+            // the stimulus that were then mistaken for chain distortion.
+            q12_i = $rtoi($itor(a16) * $cos(arg) + dith);
+            q12_q = $rtoi($itor(a16) * $sin(arg) + dith);
             sample <= {q12_i[15:0], q12_q[15:0]};
             $fwrite(f_in, "%0d %0d\n", q12_i, q12_q);
          end
-         if (dut.strobe_hb1)
+         // hb1's OUTPUT rate is strobe_hb2 (clk/4); strobe_hb1 is its input
+         // rate and undersamples the stage exactly as the old hb2 tap did.
+         if (dut.strobe_hb2)
             $fwrite(f_hb1, "%0d %0d\n",
                     $signed(dut.hb1_i[17:3]), $signed(dut.hb1_q[17:3]));
          // hb2's OUTPUT rate is strobe_cic (clk/2); strobe_hb2 is clk/4 and
