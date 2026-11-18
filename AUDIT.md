@@ -151,11 +151,12 @@ fails if the reference chain is pointed at the wrong register address.
 | packet gate | 245.76 | 252 MB/s at demand |
 | full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
 | full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
+| shipped bitstream | - | b200.bin sha256 5ac2552d..., idcode 0x3651093, from seed 5, margin policy enforced |
 | packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
 | USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
 | USB stall, sustained | - | 25 % duty absorbed; the interface ceiling is 400 MB/s against 246 MB/s of payload |
 | USB stall, over-long | - | 350 us overflows; bounded loss, link returns to 0.616 words/clk by itself |
-| bus_clk / radio_clk | 100 / 61.44 MHz | 105.42 / 96.17 MHz |
+| bus_clk / radio_clk | 100 / 61.44 MHz | 116.95 (x1.169) / 92.49 MHz (x1.505) |
 
 ## Invariants that guard the claims
 
