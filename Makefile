@@ -428,6 +428,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_hello_led.log tb_hello_led.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_hello_led.log || \
 	  { echo "ERROR: hello-world test failed; see $(SIM_DIR)/tb_hello_led.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_dds_lut \
+	  -o tb_dds_lut.vvp $(ROOT)/src/rtl/dsp/dds_lut.v $(ROOT)/tests/tb_dds_lut.v
+	cd $(SIM_DIR) && $(VVP) -l tb_dds_lut.log tb_dds_lut.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_dds_lut.log || \
+	  { echo "ERROR: LUT oscillator test failed; see $(SIM_DIR)/tb_dds_lut.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_ddc_lossless -o tb_ddc_lossless.vvp $(LOSSLESS_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_lossless.log tb_ddc_lossless.vvp

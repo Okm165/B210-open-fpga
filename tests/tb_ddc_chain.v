@@ -150,14 +150,61 @@ module tb_ddc_chain;
 
       check(strobes > 0,             "chain emits output strobes");
       check(i_only !== 16'sd0,       "I-only input produces an I sample");
-      check(got_q === 16'sd0,        "I-only input leaves Q at zero");
-      check(got_i === 16'sd0,        "Q-only input leaves I at zero");
+      // The output quantiser is dithered with +-1 LSB (triangular), so a
+      // zero-valued channel legitimately reads -1, 0 or +1: leakage-free means
+      // "no signal-dependent component", not "bit-zero".
+      check(got_q >= -16'sd1 && got_q <= 16'sd1, "I-only input leaves Q at zero (+-1 LSB dither)");
+      check(got_i >= -16'sd1 && got_i <= 16'sd1, "Q-only input leaves I at zero (+-1 LSB dither)");
       check(q_only !== 16'sd0,       "Q-only input produces a Q sample");
       // The output rounder is dithered, so a single sample carries +-1 LSB of
       // legitimate rounding noise: the symmetry check must allow it.
       check(minus_i >= -i_only - 1 && minus_i <= -i_only + 1,
             "negative input gives the negative sample (+-1 LSB dither)");
       check(i_only > 0,              "sign of the I sample follows the input");
+
+      // ---- rotation direction: down-conversion, not up-conversion -------
+      // LO = fs/8, DC input of 512 ADC counts.  The output must be
+      // 512*cos(-k*45deg), 512*sin(-k*45deg) -- i.e. the Q channel must lead
+      // with the opposite sign to the I channel's sine term.  With +i*sin in
+      // the Q path the rotation runs backwards (sideband at f_in+f_lo instead
+      // of f_in-f_lo), which a DC test with LO parked at zero cannot detect.
+      set_reg(8'd0, 32'h2000_0000);
+      rx_i = 24'sd131072;   // 512 counts in the top 16 bits
+      rx_q = 24'sd0;
+      repeat (40) @(posedge clk);   // let the pipeline fill with the new input
+      begin : rot
+         integer k, idx, k0, best_errs, errs;
+         reg signed [15:0] sq_i [0:7];
+         reg signed [15:0] sq_q [0:7];
+         real ex_i, ex_q;
+         idx = 0;
+         while (idx < 8) begin
+            @(posedge clk);
+            if (!rst && strobe) begin
+               sq_i[idx] = $signed(sample[31:16]);
+               sq_q[idx] = $signed(sample[15:0]);
+               idx = idx + 1;
+            end
+         end
+         // The absolute phase at capture time is wherever the accumulator
+         // happens to be; try every 45-degree start and require ONE of them to
+         // match exactly.  Up-conversion (the opposite rotation) matches none.
+         best_errs = 99;
+         for (k0 = 0; k0 < 8; k0 = k0 + 1) begin
+            errs = 0;
+            for (k = 0; k < 8; k = k + 1) begin
+               ex_i = 512.0 * $cos(-(k + k0) * 0.7853981633974483);
+               ex_q = 512.0 * $sin(-(k + k0) * 0.7853981633974483);
+               if (sq_i[k] - ex_i >  2.0 || sq_i[k] - ex_i < -2.0) errs = errs + 1;
+               if (sq_q[k] - ex_q >  2.0 || sq_q[k] - ex_q < -2.0) errs = errs + 1;
+            end
+            if (errs < best_errs) best_errs = errs;
+         end
+         $display("  rotation at fs/8: first samples I=%0d,%0d Q=%0d,%0d (down-conversion: best match %0d errors)",
+                  sq_i[0],sq_i[1],sq_q[0],sq_q[1],best_errs);
+         check(best_errs == 0, "mixer down-converts (Q rotation sign) at fs/8");
+      end
+      set_reg(8'd0, 32'h0000_0000);
 
       // ---- full rate, independent of the (ignored) rate register ---------
       // One sample per clock is the defining property of the lossless path.

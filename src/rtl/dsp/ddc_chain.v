@@ -93,7 +93,12 @@ module ddc_chain
    dds_lut #(.WIDTH(WIDTH)) nco
      (.clk(clk), .rst(rst), .phase(phase), .sin_out(nco_sin), .cos_out(nco_cos));
 
-   // i' = i*cos - q*sin ;  q' = i*sin + q*cos
+   // Down-conversion by the NCO phase theta:
+   //   i' = i*cos + q*sin
+   //   q' = q*cos - i*sin
+   // (The Q channel's sign matters: with +i*sin the Q output rotates the
+   // opposite way and the spectrum splatters to both f_in+/-f_lo, which the
+   // tuned end-to-end test showed as four lines at +/-9 and +/-15 MHz.)
    wire signed [35:0] p_ic, p_qs, p_is, p_qc;
    MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
      mix_ic (.P(p_ic), .A(to_cordic_i[24:7]), .B(nco_cos), .CE(1'b1), .CLK(clk), .RST(rst));
@@ -105,7 +110,7 @@ module ddc_chain
      mix_qc (.P(p_qc), .A(to_cordic_q[24:7]), .B(nco_cos), .CE(1'b1), .CLK(clk), .RST(rst));
 
    wire signed [36:0] sum_i = p_ic + p_qs;   // 18b x 18b, exact: no overflow
-   wire signed [36:0] sum_q = p_is + p_qc;
+   wire signed [36:0] sum_q = p_qc - p_is;
 
    // Narrow the 37-bit accumulator to 24 bits with round-half-even.
    // The multipliers take the top 18 bits (>>7) and the oscillator is Q15,

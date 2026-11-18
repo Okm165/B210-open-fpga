@@ -52,7 +52,11 @@ module dds_lut #(
   wire signed [15:0] cd  = rom_d[cidx];
 
   // interpolation: value + slope * fraction  (fraction/2^20, Q0.20)
-  wire signed [35:0] sprod = sd * $signed({4'd0, frac});
+  // NOTE: the sine interpolation must use sfr, not frac: in the mirrored
+  // quadrants the table index counts downward, so the fraction must count
+  // upward.  Using frac here made the sine error a sawtooth of up to one
+  // table step (a phase-dependent distortion) over half the circle.
+  wire signed [35:0] sprod = sd * $signed({4'd0, sfr});
   wire signed [35:0] cprod = cd * $signed({4'd0, cfr});
   wire signed [35:0] sval  = {{18{sv[15]}}, sv} + (sprod >>> 20);
   wire signed [35:0] cval  = {{18{cv[15]}}, cv} + (cprod >>> 20);
