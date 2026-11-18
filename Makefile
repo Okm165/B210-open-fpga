@@ -64,20 +64,6 @@ TEST_SRCS := \
   $(ROOT)/src/rtl/control/gray2bin.v \
   $(ROOT)/tests/tb_gray_roundtrip.v
 
-HB_TEST_SRCS := \
-  $(ROOT)/src/ip/hbdec.v \
-  $(ROOT)/tests/tb_hbdec_impulse.v
-
-HB_RATE_TEST_SRCS := \
-  $(ROOT)/src/ip/hbdec.v \
-  $(ROOT)/tests/tb_hbdec_rate.v
-
-CIC_TEST_SRCS := \
-  $(ROOT)/src/rtl/dsp/cic_decim.v \
-  $(ROOT)/src/rtl/dsp/cic_dec_shifter.v \
-  $(ROOT)/src/rtl/dsp/sign_extend.v \
-  $(ROOT)/tests/tb_cic_decim.v
-
 CIC_INT_TEST_SRCS := \
   $(ROOT)/src/rtl/dsp/cic_interp.v \
   $(ROOT)/src/rtl/dsp/cic_int_shifter.v \
@@ -134,10 +120,6 @@ DDC_TEST_SRCS := $(ELAB_SRCS) \
 
 GATE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/tb_axi_packet_gate.v
-
-DDC_SINE_TEST_SRCS := $(ELAB_SRCS) \
-  $(ROOT)/tests/sim/xilinx_prim_sim.v \
-  $(ROOT)/tests/tb_ddc_sine.v
 
 LOSSLESS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
@@ -235,8 +217,6 @@ synth: tools
 	  > $(CFPGA)/logs/synth.log 2>&1 || { tail -40 $(CFPGA)/logs/synth.log; exit 1; }
 	! grep -q '^ERROR:' $(CFPGA)/logs/synth.log
 	test -s $(CSYNTH_JSON)
-	grep -q 'hbdec1' $(CSYNTH_JSON)
-	grep -q 'hbdec2' $(CSYNTH_JSON)
 	grep -q '"type": "MMCME2_ADV"' $(CSYNTH_JSON)
 	grep -q '"type": "DSP48E1"' $(CSYNTH_JSON)
 	awk '/Printing statistics/{seen=1} seen' $(CFPGA)/logs/synth.log \
@@ -247,16 +227,6 @@ synth: tools
 # Full-chain per-stage capture (2^21 clocks, ~6 min): writes I/Q dumps for
 # every DDC stage to $(SIM_DIR)/stages for external spectral analysis.
 # Analysis tooling is deliberately NOT in this repo (see bench header).
-stages: tools
-	@mkdir -p $(SIM_DIR)/stages
-	@iverilog -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control -s tb_ddc_stages \
-	  -o $(SIM_DIR)/ddc_stages.vvp $(addprefix $(ROOT)/,$(shell cat scripts/sources.txt)) \
-	  $(ROOT)/tests/sim/xilinx_prim_sim.v $(ROOT)/tests/tb_ddc_stages.v
-	cd $(SIM_DIR) && $(VVP) -n -l ddc_stages.log ddc_stages.vvp +DIR=$(SIM_DIR)/stages
-	@grep -q '^PASS:' $(SIM_DIR)/ddc_stages.log || \
-	  { echo "ERROR: stage capture failed; see $(SIM_DIR)/ddc_stages.log"; exit 1; }
-	@echo "PASS: per-stage capture written to $(SIM_DIR)/stages"
-
 equiv:
 	podman run --rm --userns=keep-id -v "$$PWD:/work:z" -w /work b210-open-fpga:$(TAG) yosys -q scripts/equiv_cordic.ys
 	@echo "PASS: cordic_stage formally equivalent to its synthesized netlist"
@@ -392,8 +362,7 @@ verify:
 test:
 	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
 	@mkdir -p $(SIM_DIR)
-	@rm -f $(SIM_DIR)/tb_gray_roundtrip.log $(SIM_DIR)/tb_hbdec_impulse.log \
-	       $(SIM_DIR)/tb_hbdec_rate.log $(SIM_DIR)/tb_cic_decim.log \
+	@rm -f $(SIM_DIR)/elab_iverilog.log $(SIM_DIR)/tb_gray_roundtrip.log \
 	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
 	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log \
 	       $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log $(SIM_DIR)/tb_axi_fifo_2clk_rate.log \
@@ -427,26 +396,6 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_rate.log tb_axi_fifo_2clk_rate.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_rate.log || \
 	  { echo "ERROR: CDC FIFO throughput test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_rate.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_hbdec_impulse \
-	  -o tb_hbdec_impulse.vvp $(HB_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_hbdec_impulse.log tb_hbdec_impulse.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_hbdec_impulse.log || \
-	  { echo "ERROR: halfband test failed; see $(SIM_DIR)/tb_hbdec_impulse.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_hbdec_rate \
-	  -o tb_hbdec_rate.vvp $(HB_RATE_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_hbdec_rate.log tb_hbdec_rate.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_hbdec_rate.log || \
-	  { echo "ERROR: halfband rate test failed; see $(SIM_DIR)/tb_hbdec_rate.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_decim \
-	  -o tb_cic_decim.vvp $(CIC_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_cic_decim.log tb_cic_decim.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_cic_decim.log || \
-	  { echo "ERROR: CIC decimator test failed; see $(SIM_DIR)/tb_cic_decim.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_interp \
-	  -o tb_cic_interp.vvp $(CIC_INT_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_cic_interp.log tb_cic_interp.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_cic_interp.log || \
-	  { echo "ERROR: CIC interpolator test failed; see $(SIM_DIR)/tb_cic_interp.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_clip \
 	  -o tb_clip.vvp $(CLIP_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_clip.log tb_clip.vvp
@@ -477,11 +426,6 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_hello_led.log tb_hello_led.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_hello_led.log || \
 	  { echo "ERROR: hello-world test failed; see $(SIM_DIR)/tb_hello_led.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
-	  -s tb_ddc_sine -o tb_ddc_sine.vvp $(DDC_SINE_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_ddc_sine.log tb_ddc_sine.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_sine.log || \
-	  { echo "ERROR: DDC tone-fidelity test failed; see $(SIM_DIR)/tb_ddc_sine.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_ddc_lossless -o tb_ddc_lossless.vvp $(LOSSLESS_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_lossless.log tb_ddc_lossless.vvp

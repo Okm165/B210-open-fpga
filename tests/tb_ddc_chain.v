@@ -8,13 +8,13 @@
 //     folds strobe_out to constant 0, which stops the whole sample path.  The
 //     synthesised `sample` output was literally 1'h0.
 //
-//  2. The behavioural replacement for the CoreGen hbdec1/hbdec2 cores
-//     (src/ip/hbdec.v) processed only din_1 and drove dout_2 from the same
-//     accumulator, making the complex DDC a real (mono) datapath.
+//  2. The I and Q datapaths were once tied together, turning the complex
+//     DDC into a real (mono) datapath.
 //
-// This bench asserts the properties that were silently broken: with the chain
-// running and a scale factor written, a constant input must produce samples,
-// and channel 1 / channel 2 (I and Q) must be independent.
+// The receive chain now performs no rate change and no filtering (CIC,
+// compensator and halfbands were removed), so this bench also asserts that
+// the output runs at exactly one sample per clock and that the rate / halfband
+// setting registers no longer influence the datapath.
 //
 // Requires tests/sim/xilinx_prim_sim.v (SRLC32E / DSP48E1 behaviour).
 `timescale 1ns/1ps
@@ -51,7 +51,7 @@ module tb_ddc_chain;
 
    ddc_chain #(
       .BASE(0), .DSPNO(0), .WIDTH(WIDTH),
-      .NEW_HB_DECIM(1), .DEVICE("7SERIES")
+      .DEVICE("7SERIES")
    ) dut (
       .clk(clk), .rst(rst), .clr(clr),
       .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
@@ -125,9 +125,10 @@ module tb_ddc_chain;
       rst <= 1'b0;
       repeat (4) @(posedge clk);
 
-      // scale factor ~1.0 (Q17), both halfband stages enabled, CIC rate 2
-      set_reg(8'd1, 32'h0001FFFF);
-      set_reg(8'd2, 32'h0000_0000 | (2'b11 << 8) | 8'd2);
+      // Scale and rate/halfband registers are no longer decoded; the writes
+      // below are kept to prove the datapath ignores them.
+      set_reg(8'd1, 32'h0000_0001);                    // would be scale ~0 if used
+      set_reg(8'd2, 32'h0000_0000 | (2'b11 << 8) | 8'd8); // would be decim 16 if used
       set_reg(8'd3, 32'h0000_0000);   // no inversion, complex, no swap
       run <= 1'b1;
 
@@ -155,23 +156,20 @@ module tb_ddc_chain;
       check(minus_i === -i_only,     "negative input gives the negative sample");
       check(i_only > 0,              "sign of the I sample follows the input");
 
-      // ---- decimation ratio of the whole chain ---------------------------
-      // rx sample rate is one per clock; CIC divides by `rate`, each halfband
-      // by two, so the output strobe period is 4*rate clocks.  This is the
-      // property that a missing or duplicated decimation stage breaks while
-      // every sample still looks plausible.
+      // ---- full rate, independent of the (ignored) rate register ---------
+      // One sample per clock is the defining property of the lossless path.
       for (r = 2; r <= 8; r = r * 2) begin
          set_reg(8'd2, (2'b11 << 8) | r[7:0]);
-         repeat (6000) @(posedge clk);
-         measure_rate(40000, measured);
-         expected_strobes = 40000 / (4 * r);
-         $display("  rate %0d: %0d strobes in 40000 cycles, expected %0d",
+         repeat (200) @(posedge clk);
+         measure_rate(4000, measured);
+         expected_strobes = 4000;
+         $display("  rate register %0d: %0d strobes in 4000 cycles, expected %0d",
                   r, measured, expected_strobes);
-         check(measured >= expected_strobes - 1 && measured <= expected_strobes + 1,
-               "output strobe period is 4*CIC rate");
+         check(measured >= expected_strobes - 2 && measured <= expected_strobes,
+               "output stays at one sample per clock (rate register ignored)");
       end
 
-      if (errors == 0) $display("PASS: ddc_chain sample path, I/Q independence, decimation ratio (16 checks)");
+      if (errors == 0) $display("PASS: ddc_chain sample path, I/Q independence, full-rate output (16 checks)");
       else             $display("FAIL: %0d errors", errors);
       $finish;
    end

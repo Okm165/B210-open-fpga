@@ -39,7 +39,7 @@ module tb_ddc_lossless;
 
    ddc_chain #(
       .BASE(0), .DSPNO(0), .WIDTH(WIDTH),
-      .NEW_HB_DECIM(1), .DEVICE("7SERIES")
+      .DEVICE("7SERIES")
    ) dut (
       .clk(clk), .rst(rst), .clr(clr),
       .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),

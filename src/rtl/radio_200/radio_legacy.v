@@ -450,7 +450,7 @@ endgenerate
    // Digital Loopback TX -> RX (Pipeline immediately inside rx_frontend).
    wire [31:0] 	     rx_fe = loopback ? tx : rx;
 
-   ddc_chain #(.BASE(SR_RX_DSP), .DSPNO(0), .WIDTH(24), .NEW_HB_DECIM(NEW_HB_DECIM), .DEVICE(DEVICE)) ddc_chain
+   ddc_chain #(.BASE(SR_RX_DSP), .DSPNO(0), .WIDTH(24), .DEVICE(DEVICE)) ddc_chain
      (.clk(radio_clk), .rst(radio_rst), .clr(1'b0),
       .set_stb(set_stb),.set_addr(set_addr),.set_data(set_data),
       .rx_fe_i({rx_fe[31:16],8'd0}),.rx_fe_q({rx_fe[15:0],8'd0}),

@@ -13,7 +13,6 @@ module ddc_chain
     parameter BASE = 0,
     parameter DSPNO = 0,
     parameter WIDTH = 24,
-    parameter NEW_HB_DECIM = 0,
     parameter DEVICE = "SPARTAN6"
   )
   (input clk, input rst, input clr,
@@ -36,24 +35,10 @@ module ddc_chain
    wire [31:0] phase_inc;
    reg [31:0]  phase;
 
-   wire [17:0] scale_factor;
    wire [cwidth-1:0] to_cordic_i, to_cordic_q;
    wire [cwidth-1:0] i_cordic, q_cordic;
    reg  [WIDTH-1:0] i_cordic_pipe, q_cordic_pipe;
-   wire [WIDTH-1:0] i_cic, q_cic;
 
-
-   wire        strobe_cic, strobe_hb1, strobe_hb2;
-   wire        enable_hb1, enable_hb2;
-   wire [7:0]  cic_decim_rate;
-
-   // Lossless path: with the CIC at rate 1 and both halfbands off there is no
-   // rate change, so the decimation filters have nothing to do -- the CIC and
-   // its droop compensator would only add their own passband error and
-   // latency.  In that configuration the mixer output goes straight to the
-   // output formatter: the host receives the ADC samples unchanged (up to the
-   // documented 24->16-bit rounding and the scale field).
-   wire        lossless = (cic_decim_rate == 8'd1) & ~enable_hb1 & ~enable_hb2;
 
    reg [WIDTH-1:0]  rx_fe_i_mux, rx_fe_q_mux;
    wire        realmode;
@@ -65,13 +50,7 @@ module ddc_chain
      (.clk(clk),.rst(rst),.strobe(set_stb),.addr(set_addr),
       .in(set_data),.out(phase_inc),.changed());
 
-   setting_reg #(.my_addr(BASE+1), .width(18)) sr_1
-     (.clk(clk),.rst(rst),.strobe(set_stb),.addr(set_addr),
-      .in(set_data),.out(scale_factor),.changed());
 
-   setting_reg #(.my_addr(BASE+2), .width(10)) sr_2
-     (.clk(clk),.rst(rst),.strobe(set_stb),.addr(set_addr),
-      .in(set_data),.out({enable_hb1, enable_hb2, cic_decim_rate}),.changed());
 
    setting_reg #(.my_addr(BASE+3), .width(4)) sr_3
      (.clk(clk),.rst(rst),.strobe(set_stb),.addr(set_addr),
@@ -124,319 +103,73 @@ module ddc_chain
    end
 
 
-   // CIC decimator  24 bit I/O
-   // Applies crude 1/(2^N) right shift gain compensation internally to prevent excesive downstream word growth.
-   // Output gain is = algo_gain/(POW(2,CEIL(LOG2(algo_gain))) where algo_gain is = cic_decim_rate^4
-   // Thus output gain is <= 1.0 and no word growth occurs.
-   cic_strober cic_strober(.clock(clk),.reset(rst),.enable(run),.rate(cic_decim_rate),
-			   .strobe_fast(1'b1),.strobe_slow(strobe_cic) );
-
-   cic_decim #(.bw(WIDTH))
-     decim_i (.clock(clk),.reset(rst),.enable(run),
-	      .rate(cic_decim_rate),.strobe_in(1'b1),.strobe_out(strobe_cic),
-	      .signal_in(i_cordic_pipe),.signal_out(i_cic));
-
-   cic_decim #(.bw(WIDTH))
-     decim_q (.clock(clk),.reset(rst),.enable(run),
-	      .rate(cic_decim_rate),.strobe_in(1'b1),.strobe_out(strobe_cic),
-	      .signal_in(q_cordic_pipe),.signal_out(q_cic));
-
-   // Inverse-sinc CIC droop compensation (fixed, rate-independent: see
-   // cic_comp.v).  Applied at the CIC output rate, before the halfbands.
-   wire [WIDTH-1:0] i_cic_c, q_cic_c;
-   wire             strobe_cic_c;
-   cic_comp #(.WIDTH(WIDTH)) cic_comp_i
-     (.clk(clk), .rst(rst), .stb_in(strobe_cic), .data_in(i_cic),
-      .stb_out(strobe_cic_c), .data_out(i_cic_c));
-   cic_comp #(.WIDTH(WIDTH)) cic_comp_q
-     (.clk(clk), .rst(rst), .stb_in(strobe_cic), .data_in(q_cic),
-      .stb_out(), .data_out(q_cic_c));
-
-   //////////////////////////////////////////////////////////////////////////
+   // ---------------------------------------------------------------------
+   // Static maximum-quality output path.
    //
-   // Conditional compilation of either:
-   // 1) New X300 style decimation filters, or
-   // 2) Traditional N210 style decimation filters.
+   // The receive datapath performs no rate change and no filtering: there is
+   // no CIC, no droop compensator and no halfband, so nothing can droop,
+   // alias or shape the signal.  The mixer output goes straight to the 16-bit
+   // output formatter below, one sample per clock.
    //
-   //////////////////////////////////////////////////////////////////////////
-   generate
-      if (NEW_HB_DECIM == 1) begin: new_hb
+   // The rate, halfband and coefficient-reload setting registers are no
+   // longer decoded: writes to those addresses are ignored by the hardware
+   // (the UHD driver never reads them back, so it is unaffected).  The scale
+   // field is likewise fixed at unity, which is the value the driver programs
+   // for full dynamic range.
+   // ---------------------------------------------------------------------
+   localparam [17:0] SCALE_UNITY = 18'h1FFFF;   // ~1.0 in Q17
 
-	 wire        reload_go, reload_we1, reload_we2,  reload_ld1, reload_ld2;
-	 wire [17:0] coef_din;
+   // round to 19 bits for clip (->18) followed by multiplication (total gain
+   // of 6 bits) -- unchanged from the original formatter so that host-side
+   // amplitude calibration is unaffected
+   wire [18:0] i_unscaled_rnd, q_unscaled_rnd;
 
-	 setting_reg #(.my_addr(BASE+4), .width(22)) sr_4
-	   (.clk(clk),.rst(rst),.strobe(set_stb),.addr(set_addr),
-	    .in(set_data),.out({reload_ld2,reload_we2,reload_ld1,reload_we1,coef_din[17:0]}),.changed(reload_go));
+   round #(.bits_in(WIDTH), .bits_out(19)) unscaled_rnd_i
+     (.in(i_cordic_pipe), .out(i_unscaled_rnd));
+   round #(.bits_in(WIDTH), .bits_out(19)) unscaled_rnd_q
+     (.in(q_cordic_pipe), .out(q_unscaled_rnd));
 
-	 // Halfbands
-	 wire 	     nd1, nd2, nd3;
-	 wire 	     rfd1, rfd2, rfd3;
-	 wire 	     rdy1, rdy2, rdy3;
-	 wire 	     data_valid1, data_valid2, data_valid3;
-	 wire [46:0] i_hb1, q_hb1;
-	 wire [46:0] i_hb2, q_hb2;
-	 localparam HB1_SCALE = 18;
-	 localparam HB2_SCALE = 18;
+   wire        strobe_unscaled_clip;
+   wire [17:0] i_unscaled_clip, q_unscaled_clip;
 
+   clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_i
+     (.clk(clk), .reset(rst), .in(i_unscaled_rnd), .strobe_in(1'b1),
+      .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
+   clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_q
+     (.clk(clk), .reset(rst), .in(q_unscaled_rnd), .strobe_in(1'b1),
+      .out(q_unscaled_clip[17:0]), .strobe_out());
 
-	 assign strobe_hb1 = data_valid1;
-	 assign strobe_hb2 = data_valid2;
+   wire [35:0] prod_i, prod_q;
 
-	 assign nd1 = strobe_cic_c;
-	 assign nd2 = strobe_hb1;
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mult_i (.P(prod_i), .A(i_unscaled_clip), .B(SCALE_UNITY),
+             .CE(strobe_unscaled_clip), .CLK(clk), .RST(rst));
+   MULT_MACRO #(.DEVICE(DEVICE), .LATENCY(1), .WIDTH_A(18), .WIDTH_B(18))
+     mult_q (.P(prod_q), .A(q_unscaled_clip), .B(SCALE_UNITY),
+             .CE(strobe_unscaled_clip), .CLK(clk), .RST(rst));
 
-	 // Default Coeffs have gain of ~1.0
-	 hbdec1 hbdec1
-	   (.clk(clk), // input clk
-	    .sclr(rst), // input sclr
-	    .ce(enable_hb1), // input ce
-	    .coef_ld(reload_go & reload_ld1), // input coef_ld
-	    .coef_we(reload_go & reload_we1), // input coef_we
-	    .coef_din(coef_din), // input [17 : 0] coef_din
-	    .rfd(rfd1), // output rfd
-	    .nd(nd1), // input nd
-	    .din_1(i_cic_c), // input [23 : 0] din_1
-	    .din_2(q_cic_c), // input [23 : 0] din_2
-	    .rdy(rdy1), // output rdy
-	    .data_valid(data_valid1), // output data_valid
-	    .dout_1(i_hb1), // output [46 : 0] dout_1
-	    .dout_2(q_hb1)); // output [46 : 0] dout_2
+   reg         strobe_scaled;
+   wire        strobe_clip;
+   wire [32:0] i_clip, q_clip;
 
-	 // Default Coeffs have gain of ~1.0
-	 hbdec2 hbdec2
-	   (.clk(clk), // input clk
-	    .sclr(rst), // input sclr
-	    .ce(enable_hb2), // input ce
-	    .coef_ld(reload_go & reload_ld2), // input coef_ld
-	    .coef_we(reload_go & reload_we2), // input coef_we
-	    .coef_din(coef_din), // input [17 : 0] coef_din
-	    .rfd(rfd2), // output rfd
-	    .nd(nd2), // input nd
-	    .din_1(i_hb1[WIDTH-1+HB1_SCALE:HB1_SCALE]), // input [23 : 0] din_1
-	    .din_2(q_hb1[WIDTH-1+HB1_SCALE:HB1_SCALE]), // input [23 : 0] din_2
-	    .rdy(rdy2), // output rdy
-	    .data_valid(data_valid2), // output data_valid
-	    .dout_1(i_hb2), // output [46 : 0] dout_1
-	    .dout_2(q_hb2)); // output [46 : 0] dout_2
+   always @(posedge clk) strobe_scaled <= strobe_unscaled_clip;
+
+   clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_i
+     (.clk(clk), .reset(rst), .in(prod_i[35:0]), .strobe_in(strobe_scaled),
+      .out(i_clip), .strobe_out(strobe_clip));
+   clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_q
+     (.clk(clk), .reset(rst), .in(prod_q[35:0]), .strobe_in(strobe_scaled),
+      .out(q_clip), .strobe_out());
+
+   round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_i
+     (.clk(clk), .reset(rst), .in(i_clip), .strobe_in(strobe_clip),
+      .out(sample[31:16]), .strobe_out(strobe));
+   round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_q
+     (.clk(clk), .reset(rst), .in(q_clip), .strobe_in(strobe_clip),
+      .out(sample[15:0]), .strobe_out());
 
 
 
-	 reg [WIDTH-1:0]  i_unscaled, q_unscaled;
-	 reg              strobe_unscaled;
-
-	 always @(posedge clk)
-	   case({enable_hb1,enable_hb2})
-	     // No Halfbands enabled: no rate change.  With the CIC at rate 1 this
-	     // is the lossless path (mixer output, one sample per clock).
-	     2'd0 :
-	       begin
-		  strobe_unscaled <= lossless ? 1'b1 : strobe_cic_c;
-		  i_unscaled <= lossless ? i_cordic_pipe : i_cic_c;
-		  q_unscaled <= lossless ? q_cordic_pipe : q_cic_c;
-	       end
-	     // ILLEGAL. Only half sample rate half band enabled.
-	     2'd1 :
-	       begin
-		  strobe_unscaled <= lossless ? 1'b1 : strobe_cic_c;
-		  i_unscaled <= lossless ? i_cordic_pipe : i_cic_c;
-		  q_unscaled <= lossless ? q_cordic_pipe : q_cic_c;
-	       end
-	     // One Halfband enabled, decimate by 2.
-	     2'd2 :
-	       begin
-		  strobe_unscaled <= strobe_hb1;
-		  i_unscaled <= i_hb1[WIDTH-1+HB1_SCALE:HB1_SCALE];
-		  q_unscaled <= q_hb1[WIDTH-1+HB1_SCALE:HB1_SCALE];
-	       end
-	     // Both Halfbands enabled, decimate by 4.
-	     2'd3 :
-	       begin
-		  strobe_unscaled <= strobe_hb2;
-		  i_unscaled <= i_hb2[WIDTH-1+HB2_SCALE:HB2_SCALE];
-		  q_unscaled <= q_hb2[WIDTH-1+HB2_SCALE:HB2_SCALE];
-	     end
-	   endcase // case (hb_rate)
-
-	 // round to 19 bits for clip (->18) followed by multiplication (total gain of 6 bits)
-	 wire [18:0]  i_unscaled_rnd, q_unscaled_rnd;
-
-	 round #(
-	   .bits_in(WIDTH),
-	   .bits_out(19)
-	 ) unscaled_rnd_i (
-	   .in(i_unscaled),
-	   .out(i_unscaled_rnd)
-	 );
-	 round #(
-	   .bits_in(WIDTH),
-	   .bits_out(19)
-	 ) unscaled_rnd_q (
-	   .in(q_unscaled),
-	   .out(q_unscaled_rnd)
-	 );
-
-	 // Need to clip 1 bit here or we lose small signal performance out the
-	 // truncated LSB's for worst case CIC gain cases.
-	 // NOTE: We can only clip here with CORDIC rotating, CIC in it's highest gain configurations and an input signal thats
-	 // saturated.
-	 wire strobe_unscaled_clip;
-	 wire [17:0] i_unscaled_clip, q_unscaled_clip;
-
-	 // clip_reg drives strobe_out from its reset input:
-	 //   always @(posedge clk) strobe_out <= reset ? 1'b0 : strobe_in;
-	 // Leaving the port open makes reset an undriven net.  Vivado ties it
-	 // to 0, so strobe_out follows strobe_in; Yosys treats it as a
-	 // don't-care and folds strobe_out to constant 0, which stops the
-	 // whole DDC sample path.  Tie it to rst so synthesis and simulation
-	 // agree, and so the strobe is suppressed only while reset is active.
-	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_i
-	   (.clk(clk), .reset(rst), .in(i_unscaled_rnd), .strobe_in(strobe_unscaled), .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
-	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_q
-	   (.clk(clk), .reset(rst), .in(q_unscaled_rnd), .strobe_in(strobe_unscaled), .out(q_unscaled_clip[17:0]), .strobe_out());
-
-	 // Apply scaling gain to compensate for CORDIC and CIC gain adjustments so that signal swing over network transport has
-	 // optimal dynamic range.
-	 wire [35:0] 	  prod_i, prod_q;
-
-	 MULT_MACRO #(.DEVICE(DEVICE),  // Target Device: "VIRTEX5", "VIRTEX6", "SPARTAN6","7SERIES"
-		      .LATENCY(1),         // Desired clock cycle latency, 0-4
-		      .WIDTH_A(18),        // Multiplier A-input bus width, 1-25
-		      .WIDTH_B(18))        // Multiplier B-input bus width, 1-18
-	 mult_i (.P(prod_i),             // Multiplier output bus, width determined by WIDTH_P parameter
-		.A(i_unscaled_clip),         // Multiplier input A bus, width determined by WIDTH_A parameter
-		.B(scale_factor),       // Multiplier input B bus, width determined by WIDTH_B parameter
-		.CE(strobe_unscaled_clip),   // 1-bit active high input clock enable
-		.CLK(clk),              // 1-bit positive edge clock input
-		.RST(rst));             // 1-bit input active high reset
-
-	 MULT_MACRO #(.DEVICE(DEVICE),  // Target Device: "VIRTEX5", "VIRTEX6", "SPARTAN6","7SERIES"
-		      .LATENCY(1),         // Desired clock cycle latency, 0-4
-		      .WIDTH_A(18),        // Multiplier A-input bus width, 1-25
-		      .WIDTH_B(18))        // Multiplier B-input bus width, 1-18
-	 mult_q (.P(prod_q),             // Multiplier output bus, width determined by WIDTH_P parameter
-		.A(q_unscaled_clip),         // Multiplier input A bus, width determined by WIDTH_A parameter
-		.B(scale_factor),       // Multiplier input B bus, width determined by WIDTH_B parameter
-		.CE(strobe_unscaled_clip),   // 1-bit active high input clock enable
-		.CLK(clk),              // 1-bit positive edge clock input
-		.RST(rst));             // 1-bit input active high reset
-
-	 reg 		  strobe_scaled;
-	 wire 		  strobe_clip;
-	 wire [32:0] 	  i_clip, q_clip;
-
-	 always @(posedge clk)  strobe_scaled <= strobe_unscaled_clip;
-
-	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_i
-	   (.clk(clk), .reset(rst), .in(prod_i[35:0]), .strobe_in(strobe_scaled), .out(i_clip), .strobe_out(strobe_clip));
-	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_q
-	   (.clk(clk), .reset(rst), .in(prod_q[35:0]), .strobe_in(strobe_scaled), .out(q_clip), .strobe_out());
-
-	 round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_i
-	   (.clk(clk), .reset(rst), .in(i_clip), .strobe_in(strobe_clip), .out(sample[31:16]), .strobe_out(strobe));
-	 round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_q
-	   (.clk(clk), .reset(rst), .in(q_clip), .strobe_in(strobe_clip), .out(sample[15:0]), .strobe_out());
-
-      end else begin: old_hb // block: new_hb
-	 ///////////////////////////////////////////////
-	 //
-	 // Legacy Decimation Filters from USRP2
-	 //
-	 ///////////////////////////////////////////////
-	 wire [WIDTH-1:0] i_hb1, q_hb1;
-	 wire [WIDTH-1:0] i_hb2, q_hb2;
-	 // First (small) halfband  24 bit I/O
-	 small_hb_dec #(.WIDTH(WIDTH),.DEVICE(DEVICE)) small_hb_i
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb1),.run(run),
-	    .stb_in(strobe_cic_c),.data_in(i_cic_c),.stb_out(strobe_hb1),.data_out(i_hb1));
-
-	 small_hb_dec #(.WIDTH(WIDTH),.DEVICE(DEVICE)) small_hb_q
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb1),.run(run),
-	    .stb_in(strobe_cic_c),.data_in(q_cic_c),.stb_out(),.data_out(q_hb1));
-
-	 // Second (large) halfband  24 bit I/O
-	 wire [8:0] 	  cpi_hb = enable_hb1 ? {cic_decim_rate,1'b0} : {1'b0,cic_decim_rate};
-	 hb_dec #(.WIDTH(WIDTH),.DEVICE(DEVICE)) hb_i
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb2),.run(run),.cpi(cpi_hb),
-	    .stb_in(strobe_hb1),.data_in(i_hb1),.stb_out(strobe_hb2),.data_out(i_hb2));
-
-	 hb_dec #(.WIDTH(WIDTH),.DEVICE(DEVICE)) hb_q
-	   (.clk(clk),.rst(rst),.bypass(~enable_hb2),.run(run),.cpi(cpi_hb),
-	    .stb_in(strobe_hb1),.data_in(q_hb1),.stb_out(),.data_out(q_hb2));
-
-	 // round to 19 bits for clip (->18) followed by multiplication (total gain of 6 bits)
-	 wire [18:0]  i_hb_out_rnd, q_hb_out_rnd;
-
-	 round #(
-	   .bits_in(WIDTH),
-	   .bits_out(19)
-	 ) hb_out_rnd_i (
-	   .in(i_hb2),
-	   .out(i_hb_out_rnd)
-	 );
-	 round #(
-	   .bits_in(WIDTH),
-	   .bits_out(19)
-	 ) hb_out_rnd_q (
-	   .in(q_hb2),
-	   .out(q_hb_out_rnd)
-	 );
-
-	 // Need to clip 1 bit here or we loose small signal performance out the truncated LSB's for worst case CIC gain cases.
-	 wire strobe_unscaled_clip;
-	 wire [17:0] i_unscaled_clip, q_unscaled_clip;
-
-	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_i
-	   (.clk(clk), .reset(rst), .in(i_hb_out_rnd), .strobe_in(strobe_hb2), .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
-	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_q
-	   (.clk(clk), .reset(rst), .in(q_hb_out_rnd), .strobe_in(strobe_hb2), .out(q_unscaled_clip[17:0]), .strobe_out());
-
-	 //scalar operation (gain of 6 bits)
-	 wire [35:0] 	  prod_i, prod_q;
-
-	 MULT_MACRO #(.DEVICE(DEVICE),  // Target Device: "VIRTEX5", "VIRTEX6", "SPARTAN6","7SERIES"
-		      .LATENCY(1),         // Desired clock cycle latency, 0-4
-		      .WIDTH_A(18),        // Multiplier A-input bus width, 1-25
-		      .WIDTH_B(18))        // Multiplier B-input bus width, 1-18
-	 mult_i (.P(prod_i),             // Multiplier output bus, width determined by WIDTH_P parameter
-		.A(i_unscaled_clip),// Multiplier input A bus, width determined by WIDTH_A parameter
-		.B(scale_factor),       // Multiplier input B bus, width determined by WIDTH_B parameter
-		.CE(strobe_unscaled_clip),        // 1-bit active high input clock enable
-		.CLK(clk),              // 1-bit positive edge clock input
-		.RST(rst));             // 1-bit input active high reset
-
-	 MULT_MACRO #(.DEVICE(DEVICE),  // Target Device: "VIRTEX5", "VIRTEX6", "SPARTAN6","7SERIES"
-		      .LATENCY(1),         // Desired clock cycle latency, 0-4
-		      .WIDTH_A(18),        // Multiplier A-input bus width, 1-25
-		      .WIDTH_B(18))        // Multiplier B-input bus width, 1-18
-	 mult_q (.P(prod_q),             // Multiplier output bus, width determined by WIDTH_P parameter
-		.A(q_unscaled_clip),// Multiplier input A bus, width determined by WIDTH_A parameter
-		.B(scale_factor),       // Multiplier input B bus, width determined by WIDTH_B parameter
-		.CE(strobe_unscaled_clip),        // 1-bit active high input clock enable
-		.CLK(clk),              // 1-bit positive edge clock input
-		.RST(rst));             // 1-bit input active high reset
-
-	 reg 		  strobe_scaled;
-	 wire 		  strobe_clip;
-	 wire [32:0] 	  i_clip, q_clip;
-
-	 always @(posedge clk)  strobe_scaled <= strobe_unscaled_clip;
-
-	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_i
-	   (.clk(clk), .reset(rst), .in(prod_i[35:0]), .strobe_in(strobe_scaled), .out(i_clip), .strobe_out(strobe_clip));
-	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_q
-	   (.clk(clk), .reset(rst), .in(prod_q[35:0]), .strobe_in(strobe_scaled), .out(q_clip), .strobe_out());
-
-	 round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_i
-	   (.clk(clk), .reset(rst), .in(i_clip), .strobe_in(strobe_clip), .out(sample[31:16]), .strobe_out(strobe));
-	 round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_q
-	   (.clk(clk), .reset(rst), .in(q_clip), .strobe_in(strobe_clip), .out(sample[15:0]), .strobe_out());
-
-      end // block: old_hb
-   endgenerate
-
-
-
-   assign debug = {enable_hb1, enable_hb2, run, strobe, strobe_cic, strobe_hb1, strobe_hb2};
+   assign debug = {30'd0, run, strobe};
 
 endmodule // ddc_chain

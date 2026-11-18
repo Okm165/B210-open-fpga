@@ -30,8 +30,6 @@ src/rtl/vita_200/chdr_16sc_to_xxxx_chain.v
 src/rtl/vita_200/chdr_32f_to_16sc.v
 src/rtl/vita_200/chdr_8sc_to_16sc.v
 src/rtl/vita_200/chdr_xxxx_to_16sc_chain.v
-src/rtl/dsp/cic_dec_shifter.v
-src/rtl/dsp/cic_decim.v
 src/rtl/dsp/cic_int_shifter.v
 src/rtl/dsp/cic_interp.v
 src/rtl/dsp/cic_strober.v
@@ -53,7 +51,6 @@ src/rtl/control/gpio_atr.v
 src/rtl/control/gpio_atr_io.v
 src/rtl/control/gray2bin.v
 src/rtl/dsp/hb47_int.v
-src/rtl/dsp/hb_dec.v
 src/rtl/dsp/hb_interp.v
 src/rtl/vita_200/iq_to_float.v
 src/rtl/vita_200/new_rx_control.v
@@ -76,7 +73,6 @@ src/rtl/control/simple_spi_core.v
 src/rtl/wishbone/simple_uart.v
 src/rtl/wishbone/simple_uart_rx.v
 src/rtl/wishbone/simple_uart_tx.v
-src/rtl/dsp/small_hb_dec.v
 src/rtl/dsp/small_hb_int.v
 src/rtl/packet_proc_200/source_flow_control_legacy.v
 src/rtl/dsp/srl.v
@@ -89,6 +85,5 @@ src/rtl/vita_200/tx_responder.v
 src/rtl/control/user_settings.v
 src/top/b200.v
 src/top/b200_clk_gen.v
-src/ip/hbdec.v
 src/ip/xilinx_macros.v
 src/rtl/dsp/cic_comp.v
