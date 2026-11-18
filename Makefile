@@ -84,6 +84,14 @@ CIC_INT_TEST_SRCS := \
   $(ROOT)/src/rtl/dsp/sign_extend.v \
   $(ROOT)/tests/tb_cic_interp.v
 
+CDC_TEST_SRCS := \
+  $(ROOT)/tests/tb_axi_fifo_2clk_cdc.v \
+  $(ROOT)/src/rtl/fifo/axi_fifo_2clk_sim.v \
+  $(ROOT)/src/rtl/control/synchronizer.v \
+  $(ROOT)/src/rtl/control/synchronizer_impl.v \
+  $(ROOT)/src/rtl/control/bin2gray.v \
+  $(ROOT)/src/rtl/control/gray2bin.v
+
 RESET_TEST_SRCS := \
   $(ROOT)/src/rtl/control/reset_sync.v \
   $(ROOT)/src/rtl/control/synchronizer.v \
@@ -143,7 +151,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
-.PHONY: help doctor verify test elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+.PHONY: help doctor verify test elab equiv sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
         shell build synth pnr bitstream hello analyze timing clean image-clean
 
 help:
@@ -223,6 +231,10 @@ synth: tools
 	  > $(CFPGA)/reports/synth-stat.txt
 	echo "synthesis ok: $(CSYNTH_JSON)"
 	EOF
+
+equiv:
+	podman run --rm --userns=keep-id -v "$$PWD:/work:z" -w /work b210-open-fpga:$(TAG) yosys -q scripts/equiv_cordic.ys
+	@echo "PASS: cordic_stage formally equivalent to its synthesized netlist"
 
 pnr: tools
 	@$(CONTAINER_RUN) $(CONTAINER_ENV) \
@@ -358,7 +370,8 @@ test:
 	@rm -f $(SIM_DIR)/tb_gray_roundtrip.log $(SIM_DIR)/tb_hbdec_impulse.log \
 	       $(SIM_DIR)/tb_hbdec_rate.log $(SIM_DIR)/tb_cic_decim.log \
 	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
-	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log
+	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log \
+	       $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log $(SIM_DIR)/tb_axi_fifo_2clk_rate.log
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -o elab_iverilog.vvp $(ELAB_SRCS) $(ROOT)/tests/sim/xilinx_prim_sim.v \
 	  > elab_iverilog.log 2>&1 || \
@@ -378,6 +391,16 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_gray_roundtrip.log tb_gray_roundtrip.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_gray_roundtrip.log || \
 	  { echo "ERROR: Gray-code test failed; see $(SIM_DIR)/tb_gray_roundtrip.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_axi_fifo_2clk_cdc \
+	  -o tb_axi_fifo_2clk_cdc.vvp $(CDC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_cdc.log tb_axi_fifo_2clk_cdc.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log || \
+	  { echo "ERROR: CDC FIFO integrity test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_axi_fifo_2clk_rate \
+	  -o tb_axi_fifo_2clk_rate.vvp $(CDC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_rate.log tb_axi_fifo_2clk_rate.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_rate.log || \
+	  { echo "ERROR: CDC FIFO throughput test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_rate.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_hbdec_impulse \
 	  -o tb_hbdec_impulse.vvp $(HB_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_hbdec_impulse.log tb_hbdec_impulse.vvp
