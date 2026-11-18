@@ -89,6 +89,11 @@ CORDIC_TEST_SRCS := \
   $(ROOT)/src/rtl/dsp/cordic_stage.v \
   $(ROOT)/tests/tb_cordic.v
 
+CORDIC_OVF_TEST_SRCS := \
+  $(ROOT)/src/rtl/dsp/cordic_z24.v \
+  $(ROOT)/src/rtl/dsp/cordic_stage.v \
+  $(ROOT)/tests/tb_cordic_overflow.v
+
 CLIP_TEST_SRCS := \
   $(ROOT)/src/rtl/dsp/clip.v \
   $(ROOT)/src/rtl/dsp/clip_reg.v \
@@ -504,6 +509,10 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pins.log tb_tx_pins.vvp
 	@grep -q 'TX-PINS: PASS' $(SIM_DIR)/tb_tx_pins.log || \
 	  { echo "ERROR: TX I/Q pin sequence broken; see $(SIM_DIR)/tb_tx_pins.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cordic_overflow -o tb_cordic_overflow.vvp $(CORDIC_OVF_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_cordic_overflow.log tb_cordic_overflow.vvp
+	@grep -q 'CORDIC: PASS' $(SIM_DIR)/tb_cordic_overflow.log || \
+	  { echo "ERROR: TX rotator wraps instead of saturating; see $(SIM_DIR)/tb_cordic_overflow.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
 	  -s tb_dither_dc -o tb_dither_dc.vvp $(DITHER_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_dither_dc.log tb_dither_dc.vvp

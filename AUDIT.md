@@ -58,6 +58,8 @@ UHD driver internals, RF performance of the AD9361 itself.
 | independent full-scale I/Q | 8 phases | saturates, never wraps |
 | tagged stream | 30 004 samples | 0 gaps, repeats or reorders |
 | TX DSP windows, CORDIC isolated | 5 x 1024, 4095 x 2 | linear, image 1.3 %, rotator 123.2 dB |
+| TX rotator, corner at full scale, rotating | 4096 samples | saturates at the rail, 0 wraps, worst step 15 015 of 8 388 608 |
+| TX rotator, small signal, rotating | 4096 samples | latency 22 clocks measured, worst error 3 LSB of full scale |
 | full build | - | hello.bin, idcode 0x3651093 |
 
 ## Operator error budget
@@ -77,6 +79,18 @@ Referred to one 16-bit output LSB (3.05e-5):
 
 Composition: 73.96 dB total against 74.00 dB for an ideal 12-bit converter, so
 the digital path costs 0.04 dB. The converter, not the pipeline, is the limit.
+
+Transmit rotator: the DUC's CORDIC has algorithmic gain 1.647 and an
+implementation gain of 0.5, so a rotated corner vector reaches 1.22x full
+scale - the condition the DUC header documents. The narrowing at its output
+used to drop the guard bit, which WRAPS (a sign inversion) rather than clips.
+It now saturates. Measured at the rotator: 0 wraps over a full revolution of
+the corner, 1 404 saturated samples, worst adjacent step 15 015 counts (one
+sample of the ideal rotation) against 8 388 608 full scale; the previous slice
+produced 8 steps of up to 16 769 546 counts. At the DUC output, a full-scale
+tone with a rotating NCO differs in 25 of 1024 samples between the two
+versions, with rail-to-rail flips - so the wrap was reachable in the real TX
+path, not only in the unit.
 
 Clipping: the chain applies a 16x gain, so an output component reaches the
 16-bit rail only when the complex envelope exceeds 2048 counts, i.e. above the
@@ -124,6 +138,9 @@ Each one fails loudly if a future change breaks it:
 - `tb_dds_lut`    sin(t) = cos(t - 90 degrees) bit-exactly
 - `tb_usb_rate`   words per beat = 2.000 and delivered rate >= requirement
 - `tb_dither_dc`  static input: no DC bias, triangular +-1 LSB, four idle codes
+- `tb_cordic_overflow`  TX rotator saturates at the rail instead of wrapping;
+                  the old slice makes it jump 16 769 546 counts (two wraps per
+                  revolution) and the test fails
 
 ## Known limits and open items
 

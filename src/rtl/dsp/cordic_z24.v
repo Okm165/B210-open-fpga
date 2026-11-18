@@ -110,8 +110,28 @@ module cordic_z24(clock, reset, enable, xi, yi, zi, xo, yo, zo );
    // toward -infinity, which adds a systematic -0.5 LSB offset to every
    // output; after the chain's second narrowing this was measured as a
    // -1 LSB idle bias with a zero input, i.e. a DC spur in the passband.
-   assign xo = x20[bitwidth:1] + (x20[0] & x20[1]);
-   assign yo = y20[bitwidth:1] + (y20[0] & y20[1]);
+   //
+   // The guard bit is also the overflow indicator: the pipeline carries
+   // bitwidth+2 bits, and slicing to bitwidth without checking the top two
+   // bits wraps the sign when the rotated vector exceeds full scale (the
+   // case the DUC header describes at 1.22x amplitude).  Wrapping is a sign
+   // inversion, i.e. gross distortion; saturating at the rail is the correct
+   // bounded behaviour, and it matches the narrowing used in the receive path.
+   localparam signed [bitwidth+1:0] CORDIC_MAX =  (1 <<< (bitwidth-1)) - 1;
+   localparam signed [bitwidth+1:0] CORDIC_MIN = -(1 <<< (bitwidth-1));
+
+   // Both operands must be signed: in Verilog an unsigned operand makes the
+   // whole expression unsigned, which would turn every negative rotated value
+   // into a huge positive one and saturate it at the positive rail.
+   wire signed [bitwidth+1:0] xr_round = {{(bitwidth+1){1'b0}}, (x20[0] & x20[1])};
+   wire signed [bitwidth+1:0] yr_round = {{(bitwidth+1){1'b0}}, (y20[0] & y20[1])};
+   wire signed [bitwidth+1:0] xr = ($signed(x20) >>> 1) + xr_round;
+   wire signed [bitwidth+1:0] yr = ($signed(y20) >>> 1) + yr_round;
+
+   assign xo = (xr > CORDIC_MAX) ? CORDIC_MAX[bitwidth-1:0] :
+               (xr < CORDIC_MIN) ? CORDIC_MIN[bitwidth-1:0] : xr[bitwidth-1:0];
+   assign yo = (yr > CORDIC_MAX) ? CORDIC_MAX[bitwidth-1:0] :
+               (yr < CORDIC_MIN) ? CORDIC_MIN[bitwidth-1:0] : yr[bitwidth-1:0];
    assign zo = z20;		  
 
 endmodule // cordic
