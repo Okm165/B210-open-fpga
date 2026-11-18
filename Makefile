@@ -64,11 +64,19 @@ TEST_SRCS := \
   $(ROOT)/src/rtl/control/gray2bin.v \
   $(ROOT)/tests/tb_gray_roundtrip.v
 
-CIC_INT_TEST_SRCS := \
+# Both TX-side CIC benches (interpolator DC gain, compensator taps) are
+# compiled together: they share the interpolator sources and together cover
+# the interpolating chain that feeds the DAC.
+CIC_TEST_SRCS := \
+  $(ROOT)/src/ip/xilinx_macros.v \
   $(ROOT)/src/rtl/dsp/cic_interp.v \
   $(ROOT)/src/rtl/dsp/cic_int_shifter.v \
+  $(ROOT)/src/rtl/dsp/cic_comp.v \
+  $(ROOT)/src/rtl/dsp/clip.v \
+  $(ROOT)/src/rtl/dsp/clip_reg.v \
   $(ROOT)/src/rtl/dsp/sign_extend.v \
-  $(ROOT)/tests/tb_cic_interp.v
+  $(ROOT)/tests/tb_cic_interp.v \
+  $(ROOT)/tests/tb_cic_comp.v
 
 CDC_TEST_SRCS := \
   $(ROOT)/tests/tb_axi_fifo_2clk_cdc.v \
@@ -184,7 +192,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
-.PHONY: help doctor verify test elab equiv stages sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+.PHONY: help doctor verify test elab equiv sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
         shell build synth pnr bitstream hello analyze timing clean image-clean
 
 help:
@@ -263,9 +271,6 @@ synth: tools
 	echo "synthesis ok: $(CSYNTH_JSON)"
 	EOF
 
-# Full-chain per-stage capture (2^21 clocks, ~6 min): writes I/Q dumps for
-# every DDC stage to $(SIM_DIR)/stages for external spectral analysis.
-# Analysis tooling is deliberately NOT in this repo (see bench header).
 equiv:
 	podman run --rm --userns=keep-id -v "$$PWD:/work:z" -w /work b210-open-fpga:$(TAG) yosys -q scripts/equiv_cordic.ys
 	@echo "PASS: cordic_stage formally equivalent to its synthesized netlist"
@@ -414,7 +419,7 @@ test:
 	@mkdir -p $(SIM_DIR)/src/rtl/dsp
 	@cp $(ROOT)/src/rtl/dsp/dds_lut_qw.mem $(SIM_DIR)/src/rtl/dsp/
 	@rm -f $(SIM_DIR)/elab_iverilog.log $(SIM_DIR)/tb_gray_roundtrip.log \
-	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
+	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_cic_comp.log $(SIM_DIR)/tb_clip.log \
 	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log \
 	       $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log $(SIM_DIR)/tb_axi_fifo_2clk_rate.log \
 	       $(SIM_DIR)/tb_ddc_sine.log $(SIM_DIR)/tb_duc_sine.log
@@ -447,6 +452,16 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_rate.log tb_axi_fifo_2clk_rate.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_rate.log || \
 	  { echo "ERROR: CDC FIFO throughput test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_rate.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_interp \
+	  -o tb_cic_interp.vvp $(CIC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_cic_interp.log tb_cic_interp.vvp
+	@grep -q '^PASS: CIC interpolator' $(SIM_DIR)/tb_cic_interp.log || \
+	  { echo "ERROR: CIC interpolator test failed; see $(SIM_DIR)/tb_cic_interp.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_comp \
+	  -o tb_cic_comp.vvp $(CIC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_cic_comp.log tb_cic_comp.vvp
+	@grep -q '^PASS: tb_cic_comp' $(SIM_DIR)/tb_cic_comp.log || \
+	  { echo "ERROR: CIC compensator test failed; see $(SIM_DIR)/tb_cic_comp.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_clip \
 	  -o tb_clip.vvp $(CLIP_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_clip.log tb_clip.vvp
