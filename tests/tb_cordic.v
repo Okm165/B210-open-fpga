@@ -104,8 +104,51 @@ module tb_cordic;
       $display("FAIL: magnitude changed with angle: %0d vs %0d", mag2(xo, yo), mag0);
     end
 
+    // Idle-bias regression.  A zero input used to produce a constant -1 LSB
+    // at the CORDIC output (and -256 LSB at the 16-bit TX output) because the
+    // output slice and every stage shift floored toward -infinity.  All three
+    // narrowing points now round, so the residual must be noise, not offset.
+    // The second case (zero I, non-zero Q, zero phase) is the condition that
+    // was actually observed in the chain: I must stay at zero.
+    begin : idle
+      integer n;
+      integer acc;
+      xi = 0; yi = 0; zi = 0;
+      repeat (25) @(posedge clock);            // drain the 20-stage pipeline
+      acc = 0;
+      for (n = 0; n < 64; n = n + 1) begin
+        @(posedge clock);
+        acc = acc + xo + yo;
+      end
+      if (acc > 32 || acc < -32) begin
+        errors = errors + 1;
+        $display("FAIL: idle bias (0,0): sum(xo+yo) over 64 clocks = %0d", acc);
+      end else begin
+        $display("  idle bias (0,0): sum(xo+yo) over 64 clocks = %0d", acc);
+      end
+
+      xi = 0; yi = 1000; zi = 0;
+      repeat (25) @(posedge clock);
+      acc = 0;
+      for (n = 0; n < 64; n = n + 1) begin
+        @(posedge clock);
+        acc = acc + xo;
+      end
+      // The CORDIC itself is accurate to +-1 LSB at this width; what mattered
+      // was that the offset was systematic (-1 on every sample) and that it
+      // was amplified downstream.  The chain benches check the 16-bit output.
+      if (acc > 64 || acc < -64) begin
+        errors = errors + 1;
+        $display("FAIL: idle bias (0,1000): sum(xo) over 64 clocks = %0d", acc);
+      end else begin
+        $display("  idle bias (0,1000): sum(xo) over 64 clocks = %0d", acc);
+      end
+      xi = 0; yi = 0; zi = 0;
+      repeat (25) @(posedge clock);
+    end
+
     if (errors == 0)
-      $display("PASS: CORDIC rotates 0/90/180/270 deg and preserves magnitude");
+      $display("PASS: CORDIC rotates 0/90/180/270 deg, preserves magnitude, no idle bias");
     else
       $display("FAIL: %0d errors", errors);
     $finish;

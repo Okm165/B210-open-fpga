@@ -33,14 +33,19 @@ module cordic_stage( clock, reset, enable, xi,yi,zi,constant,xo,yo,zo);
    // while Icarus refuses to elaborate.  The two tools therefore saw
    // different low bits in the last three rotations.  >>> is defined
    // for any shift: past the width it yields the sign bit alone.
-   // Round the shifted operand to nearest (add half an LSB before the
-   // arithmetic shift) instead of flooring it.  Each floor() rounds toward
-   // -infinity; nineteen stages in series add up to a systematic negative
-   // offset, measured as a DC component at the CORDIC output.
-   wire signed [bitwidth:0] yi_rnd = $signed(yi) + ((shift == 0) ? 0 : (65'sd1 <<< (shift-1)));
-   wire signed [bitwidth:0] xi_rnd = $signed(xi) + ((shift == 0) ? 0 : (65'sd1 <<< (shift-1)));
-   wire [bitwidth-1:0] yi_shr = yi_rnd >>> shift;
-   wire [bitwidth-1:0] xi_shr = xi_rnd >>> shift;
+   // Round-to-nearest-even before the arithmetic shift.  Flooring biases every
+   // stage toward -infinity (19 stages in series produced a measurable DC
+   // offset); round-half-up fixes the average but biases exact ties upward,
+   // which is exactly what a zero/near-zero input produces.  Half-even is
+   // unbiased in both cases, as in dblclockfft's convround.
+   //   addend = 2^(shift-1) - 1 + kept_lsb      (0 when shift == 0)
+   wire [63:0] rnd_mask  = (65'sd1 <<< shift) - 65'sd1;
+   wire [63:0] rnd_half1 = rnd_mask >> 1;
+   wire        rnd_en    = (shift != 0);
+   wire [bitwidth-1:0] yi_add = rnd_en ? (rnd_half1[bitwidth-1:0] + {{(bitwidth-1){1'b0}}, ((yi >>> shift) & 1'b1)}) : {bitwidth{1'b0}};
+   wire [bitwidth-1:0] xi_add = rnd_en ? (rnd_half1[bitwidth-1:0] + {{(bitwidth-1){1'b0}}, ((xi >>> shift) & 1'b1)}) : {bitwidth{1'b0}};
+   wire [bitwidth-1:0] yi_shr = ($signed(yi) + $signed(yi_add)) >>> shift;
+   wire [bitwidth-1:0] xi_shr = ($signed(xi) + $signed(xi_add)) >>> shift;
 
    reg [bitwidth-1:0] 	 xo,yo;
    reg [zwidth-1:0] zo;

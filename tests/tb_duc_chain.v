@@ -38,6 +38,8 @@ module tb_duc_chain;
 
    reg signed [15:0]  got_i, got_q;
    reg signed [15:0]  i_only, q_only, minus_i;
+   reg signed [15:0]  zero_i, zero_q;
+   integer            zero_bad = 0;
 
    always #5 clk = ~clk;      // 100 MHz
 
@@ -127,6 +129,18 @@ module tb_duc_chain;
       set_reg(8'd2, (2'b11 << 8) | 8'd2);
       run <= 1'b1;
 
+      settle( 16'sd0,     16'sd0,    zero_i, zero_q);
+
+      // I/Q leakage offset: with Q-only input the I output must be exactly
+      // zero on every strobe, not just at one sampling instant.  The CORDIC
+      // returned a constant -1 LSB on I, which the 18-bit multiplier
+      // narrowing amplified to -256 (a spur at DC in the passband).
+      sample = {16'sd0, 16'sd1000};
+      repeat (2000) begin
+         @(posedge clk);
+         if (strobe && ($signed(tx_i[WIDTH-1:WIDTH-16]) !== 16'sd0))
+           zero_bad = zero_bad + 1;
+      end
       settle( 16'sd1000,  16'sd0,    i_only, got_q);
       settle( 16'sd0,     16'sd1000, got_i,  q_only);
       settle(-16'sd1000,  16'sd0,    minus_i, got_q);
@@ -143,6 +157,9 @@ module tb_duc_chain;
 
       check(strobes > 0,          "TX chain emits strobes");
       check(i_only !== 16'sd0,    "I-only input produces an I output");
+      check(zero_bad === 0,       "Q-only input leaves I at zero on every strobe (no leakage offset)");
+      check(zero_i === 16'sd0,    "zero input leaves I at zero (no idle offset)");
+      check(zero_q === 16'sd0,    "zero input leaves Q at zero (no idle offset)");
       check(got_q === 16'sd0,     "I-only input leaves Q at zero");
       check(got_i === 16'sd0,     "Q-only input leaves I at zero");
       check(q_only !== 16'sd0,    "Q-only input produces a Q output");
