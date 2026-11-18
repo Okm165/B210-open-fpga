@@ -14,9 +14,9 @@
 //     move to the predicted output bin (mixing checked numerically, not
 //     assumed).
 //
-// The init follows tb_duc_chain: hb47_int emits x for its first outputs and
-// the CIC integrators latch x permanently, so the chain is primed and reset
-// before the measurement (silicon has no such state - registers power up 0).
+// The init follows tb_duc_chain: the CIC integrators are primed and reset so
+// the measurement starts from a known-zero state (silicon powers up 0; this
+// is a simulation-only precaution).
 `timescale 1ns/1ps
 
 module tb_duc_sine;

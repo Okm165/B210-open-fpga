@@ -90,15 +90,12 @@ module duc_chain
 
    wire [17:0] hb1_i, hb1_q, hb2_i, hb2_q;
 
-   wire [7:0]  cpo = enable_hb2 ? ({interp_rate,1'b0}) : interp_rate;
-   // Note that max CIC rate is 128, which would give an overflow on cpo if
-   //   enable_hb2 is true; hb47_int clamps it.
-   // Halfband interpolation, 47-tap stages (hb47_int).  The previous 6-tap
+   // Halfband interpolation, 47-tap stages (hb47_poly).  The previous 6-tap
    // `hb_interp`/`small_hb_int` path is gone: it could not even be simulated
    // (it instantiates MULT18X18S, which has no model here), so keeping it was
    // untested legacy.
 	 // First stage of halfband interpolation filters. These run at a max CPO of 2 when CIC is bypassed and HB2 enabled.
-	 hb47_int
+	 hb47_poly
 	   #(.WIDTH(18),
 	     .DEVICE(DEVICE))
 	     hb1_i0
@@ -108,12 +105,11 @@ module duc_chain
 		.bypass(~enable_hb1),
 		.stb_in(strobe_hb1),
 		.data_in({sample[31:16],2'b00}),
-		.output_rate(cpo),
 		.stb_out(strobe_hb2),
 		.data_out(hb1_i)
 		);
 
-	 hb47_int
+	 hb47_poly
 	   #(.WIDTH(18),
 	     .DEVICE(DEVICE))
 	     hb1_q0
@@ -123,13 +119,12 @@ module duc_chain
 		.bypass(~enable_hb1),
 		.stb_in(strobe_hb1),
 		.data_in({sample[15:0],2'b00}),
-		.output_rate(cpo),
 		.stb_out(strobe_hb2),
 		.data_out(hb1_q)
 		);
 
 	 // Second stage of halfband interpolation filters. These run at a max CPO of 1 when CIC is bypassed.
-	 hb47_int
+	 hb47_poly
 	   #(.WIDTH(18),
 	     .DEVICE(DEVICE))
 	     hb2_i0
@@ -139,12 +134,11 @@ module duc_chain
 		.bypass(~enable_hb2),
 		.stb_in(strobe_hb2),
 		.data_in(hb1_i),
-		.output_rate(interp_rate),
 		.stb_out(strobe_cic),
 		.data_out(hb2_i)
 		);
 
-	 hb47_int
+	 hb47_poly
 	   #(.WIDTH(18),
 	     .DEVICE(DEVICE))
 	     hb2_q0
@@ -154,7 +148,6 @@ module duc_chain
 		.bypass(~enable_hb2),
 		.stb_in(strobe_hb2),
 		.data_in(hb1_q),
-		.output_rate(interp_rate),
 		.stb_out(strobe_cic),
 		.data_out(hb2_q)
 		);

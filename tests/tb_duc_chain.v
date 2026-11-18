@@ -104,13 +104,11 @@ module tb_duc_chain;
       rst <= 1'b0;
       repeat (4) @(posedge clk);
 
-      // Power-on x is a simulation-only artefact here: hb47_int emits x for
-      // its first output samples, and the CIC interpolator's integrators then
-      // add that x once and stay x forever (a feedback accumulator cannot
-      // recover).  Registers start at 0 in the bitstream, so silicon has no
-      // such state.  Prime the chain, pulse rst to clear the integrators,
-      // re-program the settings (rst also clears the setting registers) and
-      // the datapath is defined from then on.
+      // Prime and reset the chain: the CIC interpolator's integrators must
+      // start from a known-zero state.  hb47_poly resets its sample pipeline;
+      // the prime sequence clears the CIC, and rst also clears the setting
+      // registers, so they are programmed again below.  Silicon powers up 0;
+      // this is a simulation-only precaution.
       set_reg(8'd0, 32'h0000_0000);
       set_reg(8'd1, 32'h0001_FFFF);
       set_reg(8'd2, (2'b11 << 8) | 8'd2);
