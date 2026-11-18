@@ -280,11 +280,19 @@ module tb_e2e_rx;
          fails = fails + 1;
       end
 `else
-      // peak tolerance is proportional: with a running LO the samples land on a
-      // finite phase grid, so the captured crest can sit a few codes below the
-      // true one.  Clipping is checked separately, as rail hits.
-      if (max_i*1000 < 16*AMP*997 || max_i*1000 > 16*AMP*1003 ||
-          max_q*1000 < 16*AMP*997 || max_q*1000 > 16*AMP*1003) begin
+      // With the LO at zero the tone walks every phase, so the crest is hit
+      // exactly and unity gain can be asserted to +-2 codes.  With a running
+      // LO the samples sit on a coarser phase grid and the captured maximum is
+      // legitimately a few codes lower, so the tolerance becomes proportional.
+      // Clipping is checked separately, as rail hits.
+      if (PHINC == 32'd0) begin
+         if (max_i < 16*AMP - 2 || max_i > 16*AMP + 2 ||
+             max_q < 16*AMP - 2 || max_q > 16*AMP + 2) begin
+            $display("E2E: FAIL - gain is not exactly 16x at zero LO");
+            fails = fails + 1;
+         end
+      end else if (max_i*1000 < 16*AMP*997 || max_i*1000 > 16*AMP*1003 ||
+                   max_q*1000 < 16*AMP*997 || max_q*1000 > 16*AMP*1003) begin
          $display("E2E: FAIL - gain error or distortion at the peak");
          fails = fails + 1;
       end

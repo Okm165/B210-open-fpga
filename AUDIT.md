@@ -42,10 +42,11 @@ UHD driver internals, RF performance of the AD9361 itself.
 
 | stimulus | size | evidence |
 |---|---|---|
-| single tone, pins -> USB words | 48 840 samples | 0.81 LSB16 rms error, 0 packet breaks, gain 0.99997 |
-| full-scale tone, LO = 0 and fs/8 | 2 x 51 980 words | peak 32 752 = 16x, rail hits 0 |
-| blocker 1000 counts + tone 2 counts | 48 840 samples | weak tone preserved to -0.002 dB, IMD = stimulus's own |
-| 100 us USB stalls, repeated | 4 configs | 0 dropped samples |
+| single tone at -6 dBFS (run "base") | 48 840 samples | peak 16 000 = 16 x 1000, 0.81 LSB16 rms error, gain 0.99997 |
+| full-scale tone, LO = 0 (run "fs") | 51 980 words | peak exactly 32 752 = 16 x 2047 (+-2 asserted), rail hits 0 |
+| full-scale tone, LO = fs/8 (run "fslo") | 51 980 words | captured peak 32 742 (phase grid), rail hits 0 |
+| blocker 1000 counts + tone 2 counts (run "two") | 48 840 samples | weak tone preserved to -0.002 dB, IMD = stimulus's own |
+| 100 us USB stalls, repeated (run "stall") | 584 packets | 0 dropped samples, 0 framer full events |
 | dead-register hammering | 60 100 samples | 0 mismatches, LO still functional |
 | RX pins, I=n / Q=n+2048 | 4291 strobes | pair from one sample period |
 | TX pins, counter / counter+2048 | 4000 periods | Q - I = 2048 exactly |
@@ -99,8 +100,9 @@ Each one fails loudly if a future change breaks it:
 - `tb_adc_pins`   every I/Q pair belongs to one sample period (mutation-tested)
 - `tb_tx_pins`    Q(rise) - I(fall) = 2048 for every clock period
 - `tb_rx_static`  no dead-register write changes a sample
-- `tb_e2e_rx`     rate, packet completeness, unity gain, rail hits = 0,
-                  zero `full` events (four configurations)
+- `tb_e2e_rx`     rate, packet completeness, unity gain (exactly 16x when the
+                  LO is zero), rail hits = 0, zero `full` events; five
+                  configurations: base, fs, fslo, two, stall
 - `tb_rx_stream`  tag contiguity through the framer
 - `tb_dds_lut`    sin(t) = cos(t - 90 degrees) bit-exactly
 - `tb_usb_rate`   words per beat = 2.000 and delivered rate >= requirement
