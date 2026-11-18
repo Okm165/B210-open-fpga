@@ -173,6 +173,12 @@ DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
 
+# TX halfband regression: pins the impulse response, phase alignment, image
+# gain and DC of hb47_poly (the defect class that cost -22.9 dBc at the DAC).
+HB_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_hb47_poly.v
+
 # Two-channel symmetry: the RX and TX chains instantiated twice, compared
 # byte for byte, with a third RX chain as an untouched reference.
 PAIR_TEST_SRCS := $(ELAB_SRCS) \
@@ -560,6 +566,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_chain.log tb_ddc_chain.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_chain.log || \
 	  { echo "ERROR: DDC chain test failed; see $(SIM_DIR)/tb_ddc_chain.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_hb47_poly -o tb_hb47_poly.vvp $(HB_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_hb47_poly.log tb_hb47_poly.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_hb47_poly.log || \
+	  { echo "ERROR: TX halfband regression failed; see $(SIM_DIR)/tb_hb47_poly.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_duc_chain -o tb_duc_chain.vvp $(DUC_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_duc_chain.log tb_duc_chain.vvp
