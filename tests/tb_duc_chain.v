@@ -45,7 +45,7 @@ module tb_duc_chain;
 
    duc_chain #(
       .BASE(0), .DSPNO(0), .WIDTH(WIDTH),
-      .NEW_HB_INTERP(1), .DEVICE("7SERIES")
+       .DEVICE("7SERIES")
    ) dut (
       .clk(clk), .rst(rst), .clr(clr),
       .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),

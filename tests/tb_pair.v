@@ -72,12 +72,12 @@ module tb_pair;
    wire        tx_stb_a, tx_stb_b;
    wire [31:0] tdbg_a, tdbg_b;
 
-   duc_chain #(.BASE(64), .DSPNO(0), .WIDTH(24), .NEW_HB_INTERP(1), .DEVICE("7SERIES")) duc_a
+   duc_chain #(.BASE(64), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) duc_a
      (.clk(clk), .rst(rst), .clr(1'b0), .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
       .tx_fe_i(tx_a_i), .tx_fe_q(tx_a_q), .sample(tx_sample), .run(run_tx),
       .strobe(tx_stb_a), .debug(tdbg_a));
 
-   duc_chain #(.BASE(96), .DSPNO(1), .WIDTH(24), .NEW_HB_INTERP(1), .DEVICE("7SERIES")) duc_b
+   duc_chain #(.BASE(96), .DSPNO(1), .WIDTH(24), .DEVICE("7SERIES")) duc_b
      (.clk(clk), .rst(rst), .clr(1'b0), .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
       .tx_fe_i(tx_b_i), .tx_fe_q(tx_b_q), .sample(tx_sample), .run(run_tx),
       .strobe(tx_stb_b), .debug(tdbg_b));

@@ -156,7 +156,6 @@ DITHER_TEST_SRCS := \
   $(ROOT)/src/rtl/dsp/round.v \
   $(ROOT)/src/rtl/dsp/add2_and_clip_reg.v \
   $(ROOT)/src/rtl/dsp/add2_and_clip.v \
-  $(ROOT)/src/rtl/dsp/add2_and_round.v \
   $(ROOT)/src/rtl/dsp/clip_reg.v \
   $(ROOT)/src/rtl/dsp/clip.v \
   $(ROOT)/src/rtl/dsp/sign_extend.v \
