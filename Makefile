@@ -478,6 +478,12 @@ test:
 	@grep -q 'E2E: PASS' $(SIM_DIR)/tb_e2e_2t.log || \
 	  { echo "ERROR: blocker + weak tone lost through the RX path; see $(SIM_DIR)/tb_e2e_2t.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -DSTALL -DSTALL_CLKS=10000 -DSTALL_PERIOD=40000 \
+	  -s tb_e2e_rx -o tb_e2e_stall.vvp $(E2E_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_e2e_stall.log tb_e2e_stall.vvp
+	@grep -q 'E2E: PASS' $(SIM_DIR)/tb_e2e_stall.log || \
+	  { echo "ERROR: USB backpressure caused sample loss; see $(SIM_DIR)/tb_e2e_stall.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_rx_static -o tb_rx_static.vvp $(STATIC_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_static.log tb_rx_static.vvp
 	@grep -q 'STATIC: PASS' $(SIM_DIR)/tb_rx_static.log || \

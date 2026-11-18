@@ -159,6 +159,22 @@ module tb_e2e_rx;
       .debug());
 
    // FX3: per-thread flags - write threads have space, read threads have no data
+`ifdef STALL
+   // Real USB service is bursty: the FX3 stops accepting data for a while.  The
+   // write thread's watermark goes low for STALL_CLKS out of STALL_PERIOD
+   // clocks; the FIFOs must absorb the backlog without dropping a sample.
+   localparam integer STALL_CLKS   = `STALL_CLKS;
+   localparam integer STALL_PERIOD = `STALL_PERIOD;
+   integer sp = 0;
+   always @(posedge bus_clk) if (!reset) begin
+      sp <= (sp >= STALL_PERIOD-1) ? 0 : sp + 1;
+      case (fifoadr)
+        2'b01: gpif_ctl <= (sp < STALL_CLKS) ? 4'b0001 : 4'b0011;
+        2'b11: gpif_ctl <= 4'b0011;
+        default: gpif_ctl <= 4'b0000;
+      endcase
+   end
+`else
    always @(posedge bus_clk) if (!reset) begin
       case (fifoadr)
         2'b01: gpif_ctl <= 4'b0011;
@@ -166,10 +182,17 @@ module tb_e2e_rx;
         default: gpif_ctl <= 4'b0000;
       endcase
    end
+`endif
    always @(negedge bus_clk) fx3_drive <= (sloe === 1'b0) || (slrd === 1'b0);
 
    // ---- measurement -------------------------------------------------------
    integer words = 0, packets = 0, pkt_words = 0, short_packets = 0, rail_hits = 0;
+   integer full_events = 0, fails = 0;
+   reg full_d = 0;
+   always @(posedge radio_clk) begin
+      full_d <= full;
+      if (full && !full_d) full_events = full_events + 1;
+   end
    integer max_i = 0, max_q = 0, wi, wq;
 `ifdef E2E_DUMP
    integer fd;
@@ -234,25 +257,43 @@ module tb_e2e_rx;
       $display("E2E: %0d packets, %0d incomplete; peak |I|=%0d |Q|=%0d (expect %0d, rail 32767), rail hits %0d",
                packets, short_packets, max_i, max_q, 16*AMP, rail_hits);
 `endif
-      if (words*1.0/RUNCLK < 0.60)
+      $display("E2E: framer full events (dropped samples) = %0d", full_events);
+      fails = 0;
+`ifndef STALL
+      // under deliberate USB stalls the average rate is lower by construction
+      if (words*1.0/RUNCLK < 0.60) begin
          $display("E2E: FAIL - throughput below requirement");
-      else if (packets < 100 || short_packets > 2)
-         $display("E2E: FAIL - packetisation broken");
-      // peak tolerance is proportional: with a running LO the samples land on a
-      // finite phase grid, so the captured maximum can sit a few codes below the
-      // true crest.  Clipping, by contrast, is unambiguous: it puts samples on
-      // the rail, which is checked separately below.
-`ifdef TWOTONE
-      else if (max_i < 16*1000 + 8 || max_i > 16*1002 + 16)
-         $display("E2E: FAIL - weak tone lost or crest distorted");
-`else
-      else if (max_i*1000 < 16*AMP*997 || max_i*1000 > 16*AMP*1003 ||
-               max_q*1000 < 16*AMP*997 || max_q*1000 > 16*AMP*1003)
-         $display("E2E: FAIL - gain error or distortion at the peak");
+         fails = fails + 1;
+      end
 `endif
-      else if (rail_hits > 0)
+      if (full_events != 0) begin
+         $display("E2E: FAIL - USB backpressure dropped samples");
+         fails = fails + 1;
+      end
+      if (packets < 100 || short_packets > 2) begin
+         $display("E2E: FAIL - packetisation broken");
+         fails = fails + 1;
+      end
+`ifdef TWOTONE
+      if (max_i < 16*1000 + 8 || max_i > 16*1002 + 16) begin
+         $display("E2E: FAIL - weak tone lost or crest distorted");
+         fails = fails + 1;
+      end
+`else
+      // peak tolerance is proportional: with a running LO the samples land on a
+      // finite phase grid, so the captured crest can sit a few codes below the
+      // true one.  Clipping is checked separately, as rail hits.
+      if (max_i*1000 < 16*AMP*997 || max_i*1000 > 16*AMP*1003 ||
+          max_q*1000 < 16*AMP*997 || max_q*1000 > 16*AMP*1003) begin
+         $display("E2E: FAIL - gain error or distortion at the peak");
+         fails = fails + 1;
+      end
+`endif
+      if (rail_hits > 0) begin
          $display("E2E: FAIL - output reached the 16-bit rail (clipping)");
-      else
+         fails = fails + 1;
+      end
+      if (fails == 0)
          $display("E2E: PASS - signal from the ADC pins recovered at the GPIF words, unity gain, full rate, no clipping");
       $finish;
    end
