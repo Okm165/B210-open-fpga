@@ -48,6 +48,8 @@ UHD driver internals, RF performance of the AD9361 itself.
 | blocker 1000 counts + tone 2 counts (run "two") | 48 840 samples | weak tone preserved to -0.002 dB, IMD = stimulus's own |
 | 100 us USB stalls, repeated (run "stall") | 584 packets | 0 dropped samples, 0 framer full events |
 | tone -6 dBFS + noise -24 dBc (run "noisy") | 51 980 words | crest 18 416 = 16 x 1151, rail hits 0, no drops |
+| two tones at 1023 counts each (max legal drive) | 130 159 words | peak 32 736 = 16 x 2046, rail hits 0 |
+| blocker + 2-count tone, 1 060 057 words | 2^19-sample analysis | weak tone -54.0 dBc preserved, IMD/HD identical to the stimulus's own (0.0-0.2 dB) |
 | dead-register hammering | 60 100 samples | 0 mismatches, LO still functional |
 | RX pins, I=n / Q=n+2048 | 4291 strobes | pair from one sample period |
 | TX pins, counter / counter+2048 | 4000 periods | Q - I = 2048 exactly |
