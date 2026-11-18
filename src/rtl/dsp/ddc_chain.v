@@ -47,6 +47,14 @@ module ddc_chain
    wire        enable_hb1, enable_hb2;
    wire [7:0]  cic_decim_rate;
 
+   // Lossless path: with the CIC at rate 1 and both halfbands off there is no
+   // rate change, so the decimation filters have nothing to do -- the CIC and
+   // its droop compensator would only add their own passband error and
+   // latency.  In that configuration the mixer output goes straight to the
+   // output formatter: the host receives the ADC samples unchanged (up to the
+   // documented 24->16-bit rounding and the scale field).
+   wire        lossless = (cic_decim_rate == 8'd1) & ~enable_hb1 & ~enable_hb2;
+
    reg [WIDTH-1:0]  rx_fe_i_mux, rx_fe_q_mux;
    wire        realmode;
    wire        swap_iq;
@@ -219,19 +227,20 @@ module ddc_chain
 
 	 always @(posedge clk)
 	   case({enable_hb1,enable_hb2})
-	     // No Halfbands enabled, no decimation.
+	     // No Halfbands enabled: no rate change.  With the CIC at rate 1 this
+	     // is the lossless path (mixer output, one sample per clock).
 	     2'd0 :
 	       begin
-		  strobe_unscaled <= strobe_cic_c;
-		  i_unscaled <= i_cic_c;
-		  q_unscaled <= q_cic_c;
+		  strobe_unscaled <= lossless ? 1'b1 : strobe_cic_c;
+		  i_unscaled <= lossless ? i_cordic_pipe : i_cic_c;
+		  q_unscaled <= lossless ? q_cordic_pipe : q_cic_c;
 	       end
 	     // ILLEGAL. Only half sample rate half band enabled.
 	     2'd1 :
 	       begin
-		  strobe_unscaled <= strobe_cic_c;
-		  i_unscaled <= i_cic_c;
-		  q_unscaled <= q_cic_c;
+		  strobe_unscaled <= lossless ? 1'b1 : strobe_cic_c;
+		  i_unscaled <= lossless ? i_cordic_pipe : i_cic_c;
+		  q_unscaled <= lossless ? q_cordic_pipe : q_cic_c;
 	       end
 	     // One Halfband enabled, decimate by 2.
 	     2'd2 :

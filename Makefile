@@ -139,6 +139,10 @@ DDC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_ddc_sine.v
 
+LOSSLESS_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_ddc_lossless.v
+
 DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_sine.v
@@ -478,6 +482,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_sine.log tb_ddc_sine.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_sine.log || \
 	  { echo "ERROR: DDC tone-fidelity test failed; see $(SIM_DIR)/tb_ddc_sine.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_ddc_lossless -o tb_ddc_lossless.vvp $(LOSSLESS_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_ddc_lossless.log tb_ddc_lossless.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_lossless.log || \
+	  { echo "ERROR: lossless-path test failed; see $(SIM_DIR)/tb_ddc_lossless.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_duc_sine -o tb_duc_sine.vvp $(DUC_SINE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_duc_sine.log tb_duc_sine.vvp
