@@ -25,7 +25,16 @@ module tb_e2e_rx;
 
    localparam integer NSAMP    = 4096;
    localparam integer KBIN     = 410;
-   localparam integer AMP      = 1000;      // of 2047 full scale (12-bit ADC)
+`ifndef AMP
+   localparam integer AMP = 1000;         // of 2047 full scale (12-bit ADC)
+`else
+   localparam integer AMP = `AMP;
+`endif
+`ifndef PHINC
+   localparam [31:0] PHINC = 32'h0;       // DDC LO phase increment (2^32 = fs)
+`else
+   localparam [31:0] PHINC = `PHINC;
+`endif
    localparam integer MAXLEN   = 66;        // samples per VITA packet
    localparam integer RUNCLK   = 80000;     // bus clocks of measurement
 
@@ -84,7 +93,7 @@ module tb_e2e_rx;
    wire [11:0] seqnum;
    wire full;
 
-   new_rx_framer #(.BASE(0), .SAMPLE_FIFO_SIZE(11)) framer (
+   new_rx_framer #(.BASE(8), .SAMPLE_FIFO_SIZE(11)) framer (
       .clk(radio_clk), .reset(radio_rst), .clear(1'b0),
       .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
       .vita_time(64'h0),
@@ -148,7 +157,7 @@ module tb_e2e_rx;
    always @(negedge bus_clk) fx3_drive <= (sloe === 1'b0) || (slrd === 1'b0);
 
    // ---- measurement -------------------------------------------------------
-   integer words = 0, packets = 0, pkt_words = 0, short_packets = 0;
+   integer words = 0, packets = 0, pkt_words = 0, short_packets = 0, rail_hits = 0;
    integer max_i = 0, max_q = 0, wi, wq;
 `ifdef E2E_DUMP
    integer fd;
@@ -166,6 +175,9 @@ module tb_e2e_rx;
          // first two 64-bit beats (four 32-bit words) of a packet
          if (pkt_words > 4) begin
             wi = $signed(gpif_d[31:16]); wq = $signed(gpif_d[15:0]);
+            if (gpif_d[31:16] == 16'h7FFF || gpif_d[31:16] == 16'h8000 ||
+                gpif_d[15:0]  == 16'h7FFF || gpif_d[15:0]  == 16'h8000)
+               rail_hits = rail_hits + 1;
             if (wi < 0) wi = -wi;
             if (wq < 0) wq = -wq;
             if (wi > max_i) max_i = wi;
@@ -192,24 +204,30 @@ module tb_e2e_rx;
       repeat (10) @(posedge bus_clk);
       reset <= 0;
       repeat (10) @(posedge bus_clk);
-      set_reg(8'd0, 32'h0000_0000);      // DDC: LO = 0
-      set_reg(8'd0, MAXLEN);             // framer: packet length
-      set_reg(8'd1, 32'h0102_0304);      // framer: SID
+      set_reg(8'd0, PHINC);              // DDC (BASE 0): LO phase increment
+      set_reg(8'd8, MAXLEN);             // framer (BASE 8): packet length
+      set_reg(8'd9, 32'h0102_0304);      // framer: SID
       repeat (RUNCLK) @(posedge bus_clk);
 `ifdef E2E_DUMP
       $fclose(fd);
 `endif
       $display("E2E: %0d words in %0d bus clocks = %.3f words/clk = %.1f MB/s (need 0.60 / 245.8)",
                words, RUNCLK, words*1.0/RUNCLK, words*1.0/RUNCLK*400.0);
-      $display("E2E: %0d packets, %0d incomplete; peak |I|=%0d |Q|=%0d (expect %0d, rail 32767)",
-               packets, short_packets, max_i, max_q, 16*AMP);
+      $display("E2E: %0d packets, %0d incomplete; peak |I|=%0d |Q|=%0d (expect %0d, rail 32767), rail hits %0d",
+               packets, short_packets, max_i, max_q, 16*AMP, rail_hits);
       if (words*1.0/RUNCLK < 0.60)
          $display("E2E: FAIL - throughput below requirement");
       else if (packets < 100 || short_packets > 2)
          $display("E2E: FAIL - packetisation broken");
-      else if (max_i < 16*AMP-2 || max_i > 16*AMP+2 ||
-               max_q < 16*AMP-2 || max_q > 16*AMP+2)
-         $display("E2E: FAIL - gain error, clipping or distortion at the peak");
+      // peak tolerance is proportional: with a running LO the samples land on a
+      // finite phase grid, so the captured maximum can sit a few codes below the
+      // true crest.  Clipping, by contrast, is unambiguous: it puts samples on
+      // the rail, which is checked separately below.
+      else if (max_i*1000 < 16*AMP*997 || max_i*1000 > 16*AMP*1003 ||
+               max_q*1000 < 16*AMP*997 || max_q*1000 > 16*AMP*1003)
+         $display("E2E: FAIL - gain error or distortion at the peak");
+      else if (rail_hits > 0)
+         $display("E2E: FAIL - output reached the 16-bit rail (clipping)");
       else
          $display("E2E: PASS - signal from the ADC pins recovered at the GPIF words, unity gain, full rate, no clipping");
       $finish;

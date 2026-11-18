@@ -463,6 +463,12 @@ test:
 	@grep -q 'E2E: PASS' $(SIM_DIR)/tb_e2e_rx.log || \
 	  { echo "ERROR: end-to-end RX path failed; see $(SIM_DIR)/tb_e2e_rx.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -DAMP=2047 -DPHINC=32\'h20000000 \
+	  -s tb_e2e_rx -o tb_e2e_fs.vvp $(E2E_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_e2e_fs.log tb_e2e_fs.vvp
+	@grep -q 'E2E: PASS' $(SIM_DIR)/tb_e2e_fs.log || \
+	  { echo "ERROR: full-scale RX path clips or loses gain; see $(SIM_DIR)/tb_e2e_fs.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_rx_stream -o tb_rx_stream.vvp $(RX_STREAM_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_stream.log tb_rx_stream.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_rx_stream.log || \
