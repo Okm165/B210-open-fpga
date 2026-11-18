@@ -150,9 +150,13 @@ module ddc_chain
    //
    // The rate, halfband and coefficient-reload setting registers are no
    // longer decoded: writes to those addresses are ignored by the hardware
-   // (the UHD driver never reads them back, so it is unaffected).  The scale
-   // field is likewise fixed at unity, which is the value the driver programs
-   // for full dynamic range.
+   // without disturbing anything.  This cannot desync the driver: setting_reg
+   // (src/rtl/control/setting_reg.v) has no read port at all, so the host's
+   // shadow copy of those values is never contradicted by a readback -- the
+   // settings bus is write-only by construction.  The scale field is likewise
+   // fixed at unity, which is the value the driver programs for full dynamic
+   // range.  tests/tb_rx_static.v proves the consequence: hammering every dead
+   // address with writes changes no output sample (60 100 compared).
    // ---------------------------------------------------------------------
    // Fixed output scale.  The old chain carried the CORDIC's 0.4117 net gain
    // (1.6468 algorithmic gain, /2 at the output slice, /2 again in the pipe),
