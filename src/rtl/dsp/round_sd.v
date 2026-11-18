@@ -39,13 +39,36 @@ module round_sd #(
     //synthesis translate_on
     err_ext;
 
+  // Dither the quantiser decision with +-1/2 output LSB.  Without it the
+  // error-feedback loop locks onto a deterministic limit cycle (measured:
+  // the output toggles between exactly two values with a period-33 pattern),
+  // which places discrete idle tones in the passband.  The dither breaks the
+  // cycle; the loop still shapes the resulting noise, so the total noise
+  // power is unchanged but it is spread instead of concentrated in tones.
+  // Uses an LFSR, not the synthesiser's $random, so simulation and silicon
+  // produce the same sequence.
+  reg  [ERR_WIDTH-2:0] dither_lfsr = 17'h1ACE5;
+  wire [ERR_WIDTH-1:0] dither;
+  always @(posedge clk)
+    if (reset)
+      dither_lfsr <= 17'h1ACE5;
+    else if (strobe_in)
+      // maximal-length 17-bit LFSR: x^17 + x^14 + 1
+      dither_lfsr <= {dither_lfsr[15:0], dither_lfsr[16] ^ dither_lfsr[13]};
+  assign dither = {1'b0, dither_lfsr} - (1 << (ERR_WIDTH-2));
+
+  wire [WIDTH_IN-1:0] dither_ext;
+  sign_extend #(.bits_in(ERR_WIDTH), .bits_out(WIDTH_IN)) ext_dither
+    (.in(dither), .out(dither_ext));
+
   add2_and_clip_reg #(
     .WIDTH (WIDTH_IN)
   ) add2_and_clip_reg (
     .clk        (clk),
     .rst        (reset),
     .in1        (in),
-    .in2        ((DISABLE_SD == 0) ? err_ext_01 : {WIDTH_IN{1'b0}}),
+    .in2        ((DISABLE_SD == 0) ? (err_ext_01 + dither_ext)
+                                        : {WIDTH_IN{1'b0}}),
     .strobe_in  (strobe_in),
     .sum        (sum),
     .strobe_out (strobe_pre)
