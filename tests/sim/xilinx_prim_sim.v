@@ -130,6 +130,19 @@ endmodule
 
 // ------------------------------------------------------------ I/O registers ---
 
+// IDDR modelled from UG471 ("7 Series FPGAs SelectIO Resources", figures 2-5
+// to 2-7).  The three modes differ exactly in WHEN the falling-edge sample is
+// presented relative to the rising-edge sample:
+//
+//   OPPOSITE_EDGE         Q1 = D(rise n)        Q2 = D(fall n)   [not aligned]
+//   SAME_EDGE             Q1 = D(rise n)        Q2 = D(fall n-1) [pair separated
+//                                                                by one sample]
+//   SAME_EDGE_PIPELINED   Q1 = D(rise n-1)      Q2 = D(fall n-1) [pair aligned,
+//                                                                one cycle late]
+//
+// The separation in SAME_EDGE mode is what makes it unusable for capturing an
+// I/Q pair from a DDR bus: the two halves of one sample leave the IOB in
+// different clock cycles.
 module IDDR #(
    parameter DDR_CLK_EDGE = "OPPOSITE_EDGE",
    parameter INIT_Q1 = 1'b0,
@@ -141,14 +154,23 @@ module IDDR #(
 );
    reg q1 = INIT_Q1;
    reg q2 = INIT_Q2;
+   reg fall = INIT_Q2;      // D sampled on the falling edge
+   reg rise_d = INIT_Q1;    // D sampled on the rising edge, one cycle earlier
+
+   always @(negedge C)
+     if (CE && !R && !S) fall <= D;
 
    always @(posedge C) begin
-      if (R) begin q1 <= 1'b0; q2 <= 1'b0; end
-      else if (S) begin q1 <= 1'b1; q2 <= 1'b1; end
+      if (R) begin q1 <= 1'b0; q2 <= 1'b0; rise_d <= 1'b0; end
+      else if (S) begin q1 <= 1'b1; q2 <= 1'b1; rise_d <= 1'b1; end
       else if (CE) begin
+         rise_d <= D;
          if (DDR_CLK_EDGE == "SAME_EDGE") begin
-            q1 <= D;        // first edge sample
-            q2 <= q1;       // second edge sample
+            q1 <= D;                       // this cycle's rising sample
+            q2 <= fall;                    // PREVIOUS cycle's falling sample
+         end else if (DDR_CLK_EDGE == "SAME_EDGE_PIPELINED") begin
+            q1 <= rise_d;                  // previous cycle's rising sample
+            q2 <= fall;                    // previous cycle's falling sample
          end else begin
             q1 <= D;
          end
@@ -156,7 +178,7 @@ module IDDR #(
    end
 
    always @(negedge C)
-     if (DDR_CLK_EDGE != "SAME_EDGE" && CE && !R && !S) q2 <= D;
+     if (DDR_CLK_EDGE == "OPPOSITE_EDGE" && CE && !R && !S) q2 <= D;
 
    assign Q1 = q1;
    assign Q2 = q2;
