@@ -147,6 +147,18 @@ TX_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_pins.v
 
+DITHER_TEST_SRCS := \
+  $(ROOT)/src/rtl/dsp/round_sd.v \
+  $(ROOT)/src/rtl/dsp/round.v \
+  $(ROOT)/src/rtl/dsp/add2_and_clip_reg.v \
+  $(ROOT)/src/rtl/dsp/add2_and_clip.v \
+  $(ROOT)/src/rtl/dsp/add2_and_round.v \
+  $(ROOT)/src/rtl/dsp/clip_reg.v \
+  $(ROOT)/src/rtl/dsp/clip.v \
+  $(ROOT)/src/rtl/dsp/sign_extend.v \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_dither_dc.v
+
 DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_sine.v
@@ -491,6 +503,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pins.log tb_tx_pins.vvp
 	@grep -q 'TX-PINS: PASS' $(SIM_DIR)/tb_tx_pins.log || \
 	  { echo "ERROR: TX I/Q pin sequence broken; see $(SIM_DIR)/tb_tx_pins.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
+	  -s tb_dither_dc -o tb_dither_dc.vvp $(DITHER_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_dither_dc.log tb_dither_dc.vvp
+	@grep -q 'DITHER: PASS' $(SIM_DIR)/tb_dither_dc.log || \
+	  { echo "ERROR: dithered quantiser idle behaviour wrong; see $(SIM_DIR)/tb_dither_dc.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_rx_stream -o tb_rx_stream.vvp $(RX_STREAM_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_stream.log tb_rx_stream.vvp

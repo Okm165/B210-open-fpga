@@ -71,6 +71,7 @@ Referred to one 16-bit output LSB (3.05e-5):
 | complex multiply | 0 | 0 of 199 998 mismatches |
 | half-even + saturating narrow | ~2^-25 | replay and range test |
 | dither + quantiser 24->16 | 94.2 dB SNR measured (94.8 dB derived) | level sweep, Schuchman check corr(err,sig) = -0.001 |
+| dither idle behaviour (static input) | mean 16.2474 vs exact 16.25, rms 0.578 LSB, 4 codes | tb_dither_dc; strongest line -141 dBFS = 67 dB below the ADC floor |
 | framer, CDC, gate, GPIF | 0 | tag contiguity, 2.008 words per beat |
 
 Composition: 73.96 dB total against 74.00 dB for an ideal 12-bit converter, so
@@ -106,6 +107,7 @@ Each one fails loudly if a future change breaks it:
 - `tb_rx_stream`  tag contiguity through the framer
 - `tb_dds_lut`    sin(t) = cos(t - 90 degrees) bit-exactly
 - `tb_usb_rate`   words per beat = 2.000 and delivered rate >= requirement
+- `tb_dither_dc`  static input: no DC bias, triangular +-1 LSB, four idle codes
 
 ## Known limits and open items
 
