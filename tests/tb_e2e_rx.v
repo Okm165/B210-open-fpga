@@ -52,11 +52,23 @@ module tb_e2e_rx;
 
    always @(posedge rx_clk) begin #1 rx_data <= ci[11:0]; end   // I(n)
    always @(negedge rx_clk) begin #1 rx_data <= cq[11:0]; n <= n + 1; end
+`ifdef TWOTONE
+   // Strong blocker + weak tone at the smallest level a 12-bit ADC can carry
+   // (2 counts, ~ -54 dBc).  The weak tone is what a low-SNR measurement would
+   // lose: it must survive the whole path unchanged.
+   always @(*) begin
+      ci = $rtoi(1000.0*$cos(2.0*3.14159265358979*410*n/NSAMP)
+                + 2.0*$cos(2.0*3.14159265358979*1300*n/NSAMP));
+      cq = $rtoi(1000.0*$sin(2.0*3.14159265358979*410*n/NSAMP)
+                + 2.0*$sin(2.0*3.14159265358979*1300*n/NSAMP));
+   end
+`else
    always @(*) begin
       arg = 2.0*3.14159265358979*KBIN*n/NSAMP;
       ci  = $rtoi(AMP*$cos(arg));
       cq  = $rtoi(AMP*$sin(arg));
    end
+`endif
 
    // ---- chain -------------------------------------------------------------
    wire radio_clk, radio_rst;
@@ -213,8 +225,15 @@ module tb_e2e_rx;
 `endif
       $display("E2E: %0d words in %0d bus clocks = %.3f words/clk = %.1f MB/s (need 0.60 / 245.8)",
                words, RUNCLK, words*1.0/RUNCLK, words*1.0/RUNCLK*400.0);
+`ifdef TWOTONE
+      // the sum of blocker (1000 counts) and weak tone (2 counts) crests at
+      // 1002.06 counts, so a peak ABOVE 16*1000 proves the weak tone is carried
+      $display("E2E: %0d packets, %0d incomplete; peak |I|=%0d |Q|=%0d (blocker alone would be %0d), rail hits %0d",
+               packets, short_packets, max_i, max_q, 16*1000, rail_hits);
+`else
       $display("E2E: %0d packets, %0d incomplete; peak |I|=%0d |Q|=%0d (expect %0d, rail 32767), rail hits %0d",
                packets, short_packets, max_i, max_q, 16*AMP, rail_hits);
+`endif
       if (words*1.0/RUNCLK < 0.60)
          $display("E2E: FAIL - throughput below requirement");
       else if (packets < 100 || short_packets > 2)
@@ -223,9 +242,14 @@ module tb_e2e_rx;
       // finite phase grid, so the captured maximum can sit a few codes below the
       // true crest.  Clipping, by contrast, is unambiguous: it puts samples on
       // the rail, which is checked separately below.
+`ifdef TWOTONE
+      else if (max_i < 16*1000 + 8 || max_i > 16*1002 + 16)
+         $display("E2E: FAIL - weak tone lost or crest distorted");
+`else
       else if (max_i*1000 < 16*AMP*997 || max_i*1000 > 16*AMP*1003 ||
                max_q*1000 < 16*AMP*997 || max_q*1000 > 16*AMP*1003)
          $display("E2E: FAIL - gain error or distortion at the peak");
+`endif
       else if (rail_hits > 0)
          $display("E2E: FAIL - output reached the 16-bit rail (clipping)");
       else
