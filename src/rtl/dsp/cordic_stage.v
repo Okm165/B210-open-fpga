@@ -25,6 +25,17 @@ module cordic_stage( clock, reset, enable, xi,yi,zi,constant,xo,yo,zo);
    
    wire z_is_pos = ~zi[zwidth-1];
 
+   // Arithmetic right shifts by `shift`.  The historical expression
+   //   {{shift+1{yi[bitwidth-1]}}, yi[bitwidth-2:shift]}
+   // is only well formed while shift <= bitwidth-2.  The top stages
+   // use shift 17..19 with bitwidth 18, so their part select is
+   // reversed: Yosys silently swaps it (y[16:17] becomes y[17:16])
+   // while Icarus refuses to elaborate.  The two tools therefore saw
+   // different low bits in the last three rotations.  >>> is defined
+   // for any shift: past the width it yields the sign bit alone.
+   wire [bitwidth-1:0] yi_shr = $signed(yi) >>> shift;
+   wire [bitwidth-1:0] xi_shr = $signed(xi) >>> shift;
+
    reg [bitwidth-1:0] 	 xo,yo;
    reg [zwidth-1:0] zo;
    
@@ -37,12 +48,8 @@ module cordic_stage( clock, reset, enable, xi,yi,zi,constant,xo,yo,zo);
        end
      else //if(enable)
        begin
-	  xo <= z_is_pos ?   
-		xi - {{shift+1{yi[bitwidth-1]}},yi[bitwidth-2:shift]} :
-		xi + {{shift+1{yi[bitwidth-1]}},yi[bitwidth-2:shift]};
-	  yo <= z_is_pos ?   
-		yi + {{shift+1{xi[bitwidth-1]}},xi[bitwidth-2:shift]} :
-		yi - {{shift+1{xi[bitwidth-1]}},xi[bitwidth-2:shift]};
+	  xo <= z_is_pos ? xi - yi_shr : xi + yi_shr;
+	  yo <= z_is_pos ? yi + xi_shr : yi - xi_shr;
 	  zo <= z_is_pos ?   
 		zi - constant :
 		zi + constant;

@@ -28,7 +28,11 @@ module gpif2_error_checker
    output bus_error, output [63:0] debug);
 
     wire [31:0] gate_tdata;
-    wire gate_tlast, gate_terror;
+    wire gate_tlast;
+    // axi_packet_gate has no error output, so there is no source for this
+    // flag.  Left undriven it is x in simulation and folds to 0 in
+    // synthesis; tie it explicitly so both agree and bus_error is defined.
+    wire gate_terror = 1'b0;
     wire gate_tvalid, gate_tready;
 
     localparam STATE_HDR = 0;

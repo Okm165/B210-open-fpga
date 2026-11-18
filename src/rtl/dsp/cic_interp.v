@@ -22,6 +22,8 @@ module cic_interp
      output reg [bw-1:0] signal_out);
    
    integer 	     i;
+   // Own loop variable for the second always block; see cic_decim.v.
+   integer 	     j;
    localparam 	     maxbitgain = (N-1)*log2_of_max_rate;
 
    wire [bw+maxbitgain-1:0] signal_in_ext;
@@ -49,20 +51,20 @@ module cic_interp
    always @(posedge clock)
      if(reset | ~enable)
        begin
-	  for(i=0;i<N;i=i+1)
+	  for(j=0;j<N;j=j+1)
 	    begin
-	       differentiator[i] <= 0;
-	       pipeline[i] <= 0;
+	       differentiator[j] <= 0;
+	       pipeline[j] <= 0;
  	    end
        end
      else if (enable && strobe_in)
        begin
 	  differentiator[0] <= signal_in_ext;
 	  pipeline[0] <= signal_in_ext - differentiator[0];
-	  for(i=1;i<N;i=i+1)
+	  for(j=1;j<N;j=j+1)
 	    begin
-	       differentiator[i] <= pipeline[i-1];
-	       pipeline[i] <= pipeline[i-1] - differentiator[i];
+	       differentiator[j] <= pipeline[j-1];
+	       pipeline[j] <= pipeline[j-1] - differentiator[j];
 	    end
        end
 

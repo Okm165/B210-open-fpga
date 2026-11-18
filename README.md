@@ -16,7 +16,7 @@ The result is an independent open-flow image, not a vendor-supplied image.
 
 | Item | Value |
 | --- | --- |
-| FPGA | `xc7k325tffg676-2` (Kintex-7 325T, FFG676) |
+| FPGA | `xc7k325tffg676-1` (Kintex-7 325T, FFG676; device IDCODE `0x3651093`) |
 | Top module | `b200` |
 | HDL | Verilog-2001 |
 | Constraints | `src/constraints/b210.xdc` |
@@ -65,7 +65,9 @@ make pnr         # place and route only (requires make synth)
 make bitstream   # FASM -> frames -> .bit/.bin (requires make pnr)
 make analyze     # Yosys netlist analysis
 make timing      # nextpnr timing/utilization summary
-make test        # Gray-code, halfband, and bit2bin tests
+make test        # every bench, the constraint check, and whole-design elaboration
+make elab        # elaborate the complete design against the primitive models
+make hello       # compile the hello world through the whole toolchain
 make doctor      # check host tools and the toolchain image
 make verify      # check the committed source state
 make shell       # interactive shell in the toolchain image

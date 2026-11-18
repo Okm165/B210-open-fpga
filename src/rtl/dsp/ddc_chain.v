@@ -260,10 +260,17 @@ module ddc_chain
 	 wire strobe_unscaled_clip;
 	 wire [17:0] i_unscaled_clip, q_unscaled_clip;
 
+	 // clip_reg drives strobe_out from its reset input:
+	 //   always @(posedge clk) strobe_out <= reset ? 1'b0 : strobe_in;
+	 // Leaving the port open makes reset an undriven net.  Vivado ties it
+	 // to 0, so strobe_out follows strobe_in; Yosys treats it as a
+	 // don't-care and folds strobe_out to constant 0, which stops the
+	 // whole DDC sample path.  Tie it to rst so synthesis and simulation
+	 // agree, and so the strobe is suppressed only while reset is active.
 	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_i
-	   (.clk(clk), .in(i_unscaled_rnd), .strobe_in(strobe_unscaled), .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
+	   (.clk(clk), .reset(rst), .in(i_unscaled_rnd), .strobe_in(strobe_unscaled), .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
 	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_q
-	   (.clk(clk), .in(q_unscaled_rnd), .strobe_in(strobe_unscaled), .out(q_unscaled_clip[17:0]), .strobe_out());
+	   (.clk(clk), .reset(rst), .in(q_unscaled_rnd), .strobe_in(strobe_unscaled), .out(q_unscaled_clip[17:0]), .strobe_out());
 
 	 // Apply scaling gain to compensate for CORDIC and CIC gain adjustments so that signal swing over network transport has
 	 // optimal dynamic range.
@@ -298,9 +305,9 @@ module ddc_chain
 	 always @(posedge clk)  strobe_scaled <= strobe_unscaled_clip;
 
 	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_i
-	   (.clk(clk), .in(prod_i[35:0]), .strobe_in(strobe_scaled), .out(i_clip), .strobe_out(strobe_clip));
+	   (.clk(clk), .reset(rst), .in(prod_i[35:0]), .strobe_in(strobe_scaled), .out(i_clip), .strobe_out(strobe_clip));
 	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_q
-	   (.clk(clk), .in(prod_q[35:0]), .strobe_in(strobe_scaled), .out(q_clip), .strobe_out());
+	   (.clk(clk), .reset(rst), .in(prod_q[35:0]), .strobe_in(strobe_scaled), .out(q_clip), .strobe_out());
 
 	 round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_i
 	   (.clk(clk), .reset(rst), .in(i_clip), .strobe_in(strobe_clip), .out(sample[31:16]), .strobe_out(strobe));
@@ -357,9 +364,9 @@ module ddc_chain
 	 wire [17:0] i_unscaled_clip, q_unscaled_clip;
 
 	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_i
-	   (.clk(clk), .in(i_hb_out_rnd), .strobe_in(strobe_hb2), .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
+	   (.clk(clk), .reset(rst), .in(i_hb_out_rnd), .strobe_in(strobe_hb2), .out(i_unscaled_clip[17:0]), .strobe_out(strobe_unscaled_clip));
 	 clip_reg #(.bits_in(19), .bits_out(18), .STROBED(1)) unscaled_clip_q
-	   (.clk(clk), .in(q_hb_out_rnd), .strobe_in(strobe_hb2), .out(q_unscaled_clip[17:0]), .strobe_out());
+	   (.clk(clk), .reset(rst), .in(q_hb_out_rnd), .strobe_in(strobe_hb2), .out(q_unscaled_clip[17:0]), .strobe_out());
 
 	 //scalar operation (gain of 6 bits)
 	 wire [35:0] 	  prod_i, prod_q;
@@ -393,9 +400,9 @@ module ddc_chain
 	 always @(posedge clk)  strobe_scaled <= strobe_unscaled_clip;
 
 	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_i
-	   (.clk(clk), .in(prod_i[35:0]), .strobe_in(strobe_scaled), .out(i_clip), .strobe_out(strobe_clip));
+	   (.clk(clk), .reset(rst), .in(prod_i[35:0]), .strobe_in(strobe_scaled), .out(i_clip), .strobe_out(strobe_clip));
 	 clip_reg #(.bits_in(36), .bits_out(33), .STROBED(1)) clip_q
-	   (.clk(clk), .in(prod_q[35:0]), .strobe_in(strobe_scaled), .out(q_clip), .strobe_out());
+	   (.clk(clk), .reset(rst), .in(prod_q[35:0]), .strobe_in(strobe_scaled), .out(q_clip), .strobe_out());
 
 	 round_sd #(.WIDTH_IN(33), .WIDTH_OUT(16)) round_i
 	   (.clk(clk), .reset(rst), .in(i_clip), .strobe_in(strobe_clip), .out(sample[31:16]), .strobe_out(strobe));

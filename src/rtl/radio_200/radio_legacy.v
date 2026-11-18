@@ -48,6 +48,11 @@ module radio_legacy
    wire 	 ctrl_tready_r, ctrl_tvalid_r;
    wire 	 ctrl_tlast_r;
 
+   // Declared explicitly: these were implicit 1-bit wires, which silently
+   // masks typos in future edits (both Yosys and Icarus warn about it).
+   wire 	 loopback;
+   wire 	 strobe_tx;
+
    wire [63:0] 	 resp_tdata_r;
    wire 	 resp_tready_r, resp_tvalid_r;
    wire 	 resp_tlast_r;

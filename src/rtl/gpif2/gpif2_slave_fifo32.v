@@ -74,6 +74,8 @@ module gpif2_slave_fifo32
     // GPIF input and output data lines, tristate
     //
     reg [31:0] gpif_data_in, gpif_data_out;
+    // Read strobe pipeline.
+    reg slrd1, slrd2, slrd3, slrd4, slrd5;
 
     always @(posedge gpif_clk)
       if (~slrd2)
@@ -112,8 +114,6 @@ module gpif2_slave_fifo32
     // Track size of a wriet burst to look for FX3 corner cases related to 2^n sized bursts.
     reg [15:0] transfer_size;
 
-    // Read strobe pipeline.
-    reg slrd1, slrd2, slrd3, slrd4, slrd5;
 
     always @(posedge gpif_clk)
      if (gpif_rst) begin

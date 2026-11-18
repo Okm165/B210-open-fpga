@@ -13,6 +13,7 @@ ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 BUILD_DIR  := $(ROOT)/build
 FPGA_DIR   := $(BUILD_DIR)/fpga
 SIM_DIR    := $(BUILD_DIR)/sim
+SIM_DIR_REL:= build/sim
 
 # The repository is mounted here inside the toolchain image. Keeping this
 # path stable makes the Yosys netlist independent of the checkout location.
@@ -25,13 +26,6 @@ FPGA_HOME               ?= /opt/fpga
 DIE                     := $(shell printf '%s\n' '$(FPGA_PART)' | sed -E 's/^(xc7[azkv][0-9]+t?).*/\1/')
 CHIPDB                  ?= $(FPGA_HOME)/share/nextpnr/himbaechel/xilinx/chipdb-$(DIE).bin
 PRJXRAY_DB              ?= $(FPGA_HOME)/share/prjxray-db
-
-SYNTH_JSON := $(FPGA_DIR)/synth/$(TOP).json
-FASM       := $(FPGA_DIR)/pnr/$(TOP).fasm
-FRAMES     := $(FPGA_DIR)/pnr/$(TOP).frames
-BIT        := $(FPGA_DIR)/bitstream/$(TOP).bit
-BIN        := $(FPGA_DIR)/bitstream/$(TOP).bin
-UHD_BIN    := $(FPGA_DIR)/bitstream/usrp_b210_fpga.bin
 
 CFPGA      := $(CR)/build/fpga
 CSYNTH_JSON := $(CFPGA)/synth/$(TOP).json
@@ -74,8 +68,83 @@ HB_TEST_SRCS := \
   $(ROOT)/src/ip/hbdec.v \
   $(ROOT)/tests/tb_hbdec_impulse.v
 
-.PHONY: help doctor verify test sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
-        shell build synth pnr bitstream analyze timing clean image-clean
+HB_RATE_TEST_SRCS := \
+  $(ROOT)/src/ip/hbdec.v \
+  $(ROOT)/tests/tb_hbdec_rate.v
+
+CIC_TEST_SRCS := \
+  $(ROOT)/src/rtl/dsp/cic_decim.v \
+  $(ROOT)/src/rtl/dsp/cic_dec_shifter.v \
+  $(ROOT)/src/rtl/dsp/sign_extend.v \
+  $(ROOT)/tests/tb_cic_decim.v
+
+CIC_INT_TEST_SRCS := \
+  $(ROOT)/src/rtl/dsp/cic_interp.v \
+  $(ROOT)/src/rtl/dsp/cic_int_shifter.v \
+  $(ROOT)/src/rtl/dsp/sign_extend.v \
+  $(ROOT)/tests/tb_cic_interp.v
+
+RESET_TEST_SRCS := \
+  $(ROOT)/src/rtl/control/reset_sync.v \
+  $(ROOT)/src/rtl/control/synchronizer.v \
+  $(ROOT)/src/rtl/control/synchronizer_impl.v \
+  $(ROOT)/tests/tb_reset_sync.v
+
+CORDIC_TEST_SRCS := \
+  $(ROOT)/src/rtl/dsp/cordic_z24.v \
+  $(ROOT)/src/rtl/dsp/cordic_stage.v \
+  $(ROOT)/tests/tb_cordic.v
+
+CLIP_TEST_SRCS := \
+  $(ROOT)/src/rtl/dsp/clip.v \
+  $(ROOT)/src/rtl/dsp/clip_reg.v \
+  $(ROOT)/tests/tb_clip.v
+
+CTRL_ABI_TEST_SRCS := \
+  $(ROOT)/src/rtl/control_200/radio_ctrl_proc.v \
+  $(ROOT)/src/rtl/timing/time_compare.v \
+  $(ROOT)/tests/tb_ctrl_abi.v
+
+CLK_GEN_TEST_SRCS := \
+  $(ROOT)/src/top/b200_clk_gen.v \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_b200_clk_gen.v
+
+HELLO_TEST_SRCS := \
+  $(ROOT)/tests/hello_world/hello_led.v \
+  $(ROOT)/tests/hello_world/tb_hello_led.v
+
+# Whole-design elaboration.  Every manifest source plus the licence-clean
+# primitive models, compiled with the real `b200` top.  This catches the class
+# of defect synthesis tolerates silently (implicit nets, use before
+# declaration) and takes well under a second.
+ELAB_SRCS := $(shell cd $(ROOT) && grep '^src/' scripts/sources.txt | sed "s|^|$(ROOT)/|")
+
+DDC_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_ddc_chain.v
+
+GATE_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/tb_axi_packet_gate.v
+
+GPIF_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/tb_gpif2_error.v
+
+DUC_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_duc_chain.v
+
+FRAMER_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_rx_framer.v
+
+# The hello world is a second, tiny target that exercises exactly the same
+# tools, flags and images as the B200 flow.  It proves the flow itself works.
+HELLO_DIR   := $(BUILD_DIR)/hello
+CHELLO      := $(CR)/build/hello
+
+.PHONY: help doctor verify test elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+        shell build synth pnr bitstream hello analyze timing clean image-clean
 
 help:
 	@printf '%s\n' \
@@ -88,7 +157,9 @@ help:
 	  '  make bitstream  FASM -> frames -> .bit/.bin (requires make pnr)' \
 	  '  make analyze    Yosys netlist analysis' \
 	  '  make timing     Print the nextpnr timing/utilization summary' \
-	  '  make test       Run the self-checking host tests' \
+	  '  make test       Run every bench, the constraint check, and the elaboration' \
+	  '  make elab       Elaborate the complete design against the primitive models' \
+	  '  make hello      Compile the hello world through the whole toolchain' \
 	  '  make doctor     Check host tools and the toolchain image' \
 	  '  make verify     Check the committed source state' \
 	  '  make shell      Interactive shell in the toolchain image' \
@@ -162,6 +233,7 @@ pnr: tools
 	test -s $(CSYNTH_JSON) || { echo "ERROR: missing netlist; run make synth"; exit 1; }
 	test -s $(CHIPDB) || { echo "ERROR: missing chip database: $(CHIPDB)"; exit 1; }
 	test -s $(CXDC) || { echo "ERROR: missing constraints: $(CXDC)"; exit 1; }
+	python3 $(CR)/scripts/check_netlist.py $(CSYNTH_JSON)
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
 	  --report "$(CFPGA)/reports/pnr-report.json" --detailed-timing-report)
@@ -173,8 +245,12 @@ pnr: tools
 	test $$rc -eq 0 || { echo "ERROR: nextpnr failed (rc=$$rc)"; exit 1; }
 	! grep -q '^ERROR:' $(CFPGA)/logs/pnr.log
 	test -s $(CFASM)
-	grep -E 'Max frequency|Critical path|slack|Device utilisation' \
-	  $(CFPGA)/logs/pnr.log > $(CFPGA)/reports/pnr-timing.txt || true
+	{ echo "# NOTE: the FIRST block is the pre-route estimate and is not signoff."; \
+	  echo "#       The LAST block is post-route. Compare that one to the constraint."; \
+	  echo "#       I/O timing (GPIF to the FX3, codec DDR) is not constrained by"; \
+	  echo "#       this flow; nextpnr has no set_input_delay/set_output_delay."; \
+	  grep -E 'Max frequency|Critical path|slack|Device utilisation' \
+	  $(CFPGA)/logs/pnr.log; } > $(CFPGA)/reports/pnr-timing.txt || true
 	echo "place and route ok: $(CFASM)"
 	EOF
 
@@ -261,7 +337,8 @@ doctor:
 	if [ $$ok -ne 1 ]; then exit 1; fi
 
 verify:
-	@cd $(ROOT) && git diff --exit-code HEAD -- src scripts tests container third_party Makefile README.md .gitignore .gitattributes .dockerignore LICENSE
+	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
+	@cd $(ROOT) && git diff --exit-code HEAD -- src scripts tests container third_party .github Makefile README.md .gitignore .gitattributes .dockerignore LICENSE
 	@cd $(ROOT) && test "$$(wc -l < scripts/sources.txt)" -eq 93
 	@cd $(ROOT) && test "$$(sort -u scripts/sources.txt | wc -l)" -eq 93
 	@cd $(ROOT) && bash -c 'diff -u <(find src -name "*.v" -printf "%p\n" | sort) <(sort scripts/sources.txt)'
@@ -276,8 +353,26 @@ verify:
 	@echo "source state ok"
 
 test:
+	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
 	@mkdir -p $(SIM_DIR)
-	@rm -f $(SIM_DIR)/tb_gray_roundtrip.log $(SIM_DIR)/tb_hbdec_impulse.log
+	@rm -f $(SIM_DIR)/tb_gray_roundtrip.log $(SIM_DIR)/tb_hbdec_impulse.log \
+	       $(SIM_DIR)/tb_hbdec_rate.log $(SIM_DIR)/tb_cic_decim.log \
+	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
+	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -o elab_iverilog.vvp $(ELAB_SRCS) $(ROOT)/tests/sim/xilinx_prim_sim.v \
+	  > elab_iverilog.log 2>&1 || \
+	  { grep -v 'warning:' elab_iverilog.log | head -20; \
+	    echo "ERROR: a source file is not legal Verilog-2005; see $(SIM_DIR)/elab_iverilog.log"; exit 1; }
+	@echo "PASS: every source is legal Verilog-2005 (Icarus elaborates the full design)"
+	cd $(SIM_DIR) && $(CONTAINER_RUN) $(FPGA_IMAGE) bash -c "yosys -q -p 'read_verilog $(CR)/tests/hello_world/hello_led.v; chparam -set WIDTH 4 hello_led_core; synth -top hello_led_core; write_verilog -noattr $(CR)/$(SIM_DIR_REL)/hello_postsynth.v' > $(CR)/$(SIM_DIR_REL)/hello_postsynth.log 2>&1 && cp /opt/fpga/share/yosys/simcells.v $(CR)/$(SIM_DIR_REL)/" || \
+	  { tail -5 $(SIM_DIR)/hello_postsynth.log; echo "ERROR: post-synthesis netlist generation failed"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_hello_led_postsynth \
+	  -o tb_hello_led_postsynth.vvp hello_postsynth.v simcells.v \
+	  $(ROOT)/tests/tb_hello_led_postsynth.v
+	cd $(SIM_DIR) && $(VVP) -l tb_hello_led_postsynth.log tb_hello_led_postsynth.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_hello_led_postsynth.log || \
+	  { echo "ERROR: post-synthesis netlist does not match RTL; see $(SIM_DIR)/tb_hello_led_postsynth.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_gray_roundtrip \
 	  -o tb_gray_roundtrip.vvp $(TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_gray_roundtrip.log tb_gray_roundtrip.vvp
@@ -288,7 +383,105 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_hbdec_impulse.log tb_hbdec_impulse.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_hbdec_impulse.log || \
 	  { echo "ERROR: halfband test failed; see $(SIM_DIR)/tb_hbdec_impulse.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_hbdec_rate \
+	  -o tb_hbdec_rate.vvp $(HB_RATE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_hbdec_rate.log tb_hbdec_rate.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_hbdec_rate.log || \
+	  { echo "ERROR: halfband rate test failed; see $(SIM_DIR)/tb_hbdec_rate.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_decim \
+	  -o tb_cic_decim.vvp $(CIC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_cic_decim.log tb_cic_decim.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_cic_decim.log || \
+	  { echo "ERROR: CIC decimator test failed; see $(SIM_DIR)/tb_cic_decim.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_interp \
+	  -o tb_cic_interp.vvp $(CIC_INT_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_cic_interp.log tb_cic_interp.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_cic_interp.log || \
+	  { echo "ERROR: CIC interpolator test failed; see $(SIM_DIR)/tb_cic_interp.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_clip \
+	  -o tb_clip.vvp $(CLIP_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_clip.log tb_clip.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_clip.log || \
+	  { echo "ERROR: clip test failed; see $(SIM_DIR)/tb_clip.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cordic \
+	  -o tb_cordic.vvp $(CORDIC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_cordic.log tb_cordic.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_cordic.log || \
+	  { echo "ERROR: CORDIC test failed; see $(SIM_DIR)/tb_cordic.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_reset_sync \
+	  -o tb_reset_sync.vvp $(RESET_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_reset_sync.log tb_reset_sync.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_reset_sync.log || \
+	  { echo "ERROR: reset synchroniser test failed; see $(SIM_DIR)/tb_reset_sync.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_ctrl_abi \
+	  -o tb_ctrl_abi.vvp $(CTRL_ABI_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_ctrl_abi.log tb_ctrl_abi.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_ctrl_abi.log || \
+	  { echo "ERROR: control-ABI test failed; see $(SIM_DIR)/tb_ctrl_abi.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_b200_clk_gen \
+	  -o tb_b200_clk_gen.vvp $(CLK_GEN_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_b200_clk_gen.log tb_b200_clk_gen.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_b200_clk_gen.log || \
+	  { echo "ERROR: clock-plan test failed; see $(SIM_DIR)/tb_b200_clk_gen.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_hello_led \
+	  -o tb_hello_led.vvp $(HELLO_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_hello_led.log tb_hello_led.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_hello_led.log || \
+	  { echo "ERROR: hello-world test failed; see $(SIM_DIR)/tb_hello_led.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_ddc_chain -o tb_ddc_chain.vvp $(DDC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_ddc_chain.log tb_ddc_chain.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_chain.log || \
+	  { echo "ERROR: DDC chain test failed; see $(SIM_DIR)/tb_ddc_chain.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_duc_chain -o tb_duc_chain.vvp $(DUC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_duc_chain.log tb_duc_chain.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_duc_chain.log || \
+	  { echo "ERROR: DUC chain test failed; see $(SIM_DIR)/tb_duc_chain.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_rx_framer -o tb_rx_framer.vvp $(FRAMER_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_rx_framer.log tb_rx_framer.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_rx_framer.log || \
+	  { echo "ERROR: RX framer test failed; see $(SIM_DIR)/tb_rx_framer.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_gpif2_error -o tb_gpif2_error.vvp $(GPIF_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_gpif2_error.log tb_gpif2_error.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_gpif2_error.log || \
+	  { echo "ERROR: GPIF error-checker test failed; see $(SIM_DIR)/tb_gpif2_error.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_packet_gate.log || \
+	  { echo "ERROR: packet-gate test failed; see $(SIM_DIR)/tb_axi_packet_gate.log"; exit 1; }
 	@python3 $(ROOT)/tests/test_bit2bin.py
+	@python3 $(ROOT)/tests/test_constraints.py
+	@$(MAKE) --no-print-directory -C $(ROOT) elab
+
+# Elaborate the complete design in the host simulator.  This is the cheapest
+# guard that the repository still describes hardware a simulator can accept:
+# it needs no vendor licence and no container.
+elab:
+	@mkdir -p $(SIM_DIR)
+	cd $(ROOT) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s b200 -o $(SIM_DIR)/b200_elab.vvp $(ELAB_SRCS) $(ROOT)/tests/sim/xilinx_prim_sim.v \
+	  2> $(SIM_DIR)/b200_elab.log
+	@echo "PASS: full design elaborates ($(words $(ELAB_SRCS)) sources, 0 errors)"
+
+
+# Compile the hello world through the real toolchain, end to end.
+# Same stages, flags and images as `make synth|pnr|bitstream`, different inputs.
+hello: tools
+	@$(CONTAINER_RUN) $(CONTAINER_ENV) $(FPGA_IMAGE) bash -s <<-'EOF'
+	set -eo pipefail
+	mkdir -p $(CHELLO)
+	echo "[1/6] yosys";        yosys -p "read_verilog $(CR)/tests/hello_world/hello_led.v; synth_xilinx -flatten -abc9 -family xc7 -top hello_led_top; write_json $(CHELLO)/hello.json" > $(CHELLO)/synth.log
+	echo "[2/6] nextpnr";      nextpnr-himbaechel --device $(FPGA_PART) --chipdb $(CHIPDB) --json $(CHELLO)/hello.json -o xdc=$(CR)/tests/hello_world/hello_led.xdc -o fasm=$(CHELLO)/hello.fasm --report $(CHELLO)/report.json > $(CHELLO)/pnr.log
+	echo "[3/6] frames";       fasm2frames --db-root $(PRJXRAY_DB)/kintex7 --part $(FPGA_PART) $(CHELLO)/hello.fasm $(CHELLO)/hello.frames 2>/dev/null
+	echo "[4/6] bit";          xc7frames2bit --part_file $(PRJXRAY_DB)/kintex7/$(FPGA_PART)/part.yaml --part_name $(FPGA_PART) --frm_file $(CHELLO)/hello.frames --output_file $(CHELLO)/hello.bit
+	echo "[5/6] bin";          python3 $(CR)/scripts/bit2bin.py $(CHELLO)/hello.bit $(CHELLO)/hello.bin > /dev/null
+	echo "[6/6] idcode";       test "$$(bittool get_device_id $(CHELLO)/hello.bin)" = "0x3651093"
+	echo "hello world ok: $(CHELLO)/hello.bin (idcode 0x3651093)"
+	EOF
 
 sim: test
 

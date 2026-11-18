@@ -205,6 +205,13 @@ module b200 (
     reset_sync bus_sync(.clk(bus_clk), .reset_in(!clocks_ready), .reset_out(bus_rst));
     reset_sync radio_sync(.clk(radio_clk), .reset_in(!clocks_ready), .reset_out(radio_rst));
 
+    // radio_rst fans out to ~17k synchronous reset inputs.  A BUFG was tried
+    // here and cannot be routed: nextpnr fails with
+    //   Failed to route arc ... radio_rst_g, from BUFGCTRL.O to SLICE.B5FFMUX_OUT
+    // i.e. the global network reaches clock pins, not flip-flop reset muxes
+    // (F27 in the audit).  Reducing this fanout needs reset replication in
+    // RTL, not a global buffer.
+
 
     ///////////////////////////////////////////////////////////////////////
     // PPS Switch 1.GPS_PPS 2.EXT_PPS
@@ -339,7 +346,11 @@ module b200 (
       .fp_gpio_in(fp_gpio_in), .fp_gpio_out(fp_gpio_out), .fp_gpio_ddr(fp_gpio_ddr),
    
       .pps_int(pps_ext_int), .pps_ext(pps_ext_int),
-      // .rxd(gps_txd), .txd(gps_rxd),
+      // GPS UART is not populated on the B210.  The receive pin has an
+      // external pull-up, so drive the core's input to the idle level
+      // instead of leaving it open: an open input is x in simulation and
+      // a permanent start bit after synthesis.
+      .rxd(1'b1), .txd(),
       .pps(LED_CLK_R),
       .sclk(sclk), .sen(sen), .mosi(mosi), .miso(miso),
       .rb_misc({31'b0, pll_lock}), .misc_outs(misc_outs),

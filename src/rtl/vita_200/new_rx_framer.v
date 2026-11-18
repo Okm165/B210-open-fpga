@@ -31,6 +31,13 @@ module new_rx_framer
 
    reg [15:0] 	  len;
    reg [63:0] 	  hold_time;
+   // Forward declarations: the state machine and the `full` term below
+   // reference these before their assignments appear. Implicit nets are
+   // accepted by Yosys but rejected by strict simulators (Icarus).
+   wire eop;
+   wire hdr_tvalid;
+   wire hdr_tready;
+   wire sample_tlast;
 
    wire [63:0] 	  dfifo_tdata;
    wire 	  dfifo_tlast, dfifo_tvalid, dfifo_tready;
@@ -164,16 +171,15 @@ module new_rx_framer
 
 
 
-   wire 	  eop = eob | nearly_eop | full;
+   assign eop = eob | nearly_eop | full;
 
    wire [63:0] 	  sample_tdata = (instate == SECOND) ? {holding, sample} : {sample, 32'h0};
-   wire 	  sample_tlast = eop;
+   assign sample_tlast = eop;
    wire 	  sample_tvalid = run & strobe & ( (instate == SECOND) | eop );
    wire 	  sample_tready;
 
    wire [80:0] 	  hdr_tdata = {eob,len[13:0],2'b0,(instate == START) ? vita_time : hold_time};
-   wire 	  hdr_tvalid = sample_tlast && sample_tvalid && sample_tready;
-   wire 	  hdr_tready;
+   assign hdr_tvalid = sample_tlast && sample_tvalid && sample_tready;
 
    wire [80:0] 	  hfifo_tdata_tmp;
    wire 	  hfifo_tvalid_tmp, hfifo_tready_tmp;

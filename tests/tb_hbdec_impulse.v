@@ -3,6 +3,16 @@
 // The expected sequence is the hb47.coe symmetric halfband response:
 // c0..c12 then c11..c0.
 //
+// The filter is a *two-channel* FIR: din_1/dout_1 and din_2/dout_2 are
+// independent.  Testing only channel 1 hides a real defect, because a core
+// that ties dout_2 to dout_1 passes an impulse test on channel 1 while
+// silently turning the complex DDC/DUC into a real (mono) datapath.
+//
+// Three phases:
+//   A  impulse on din_1 only      -> dout_1 = C, dout_2 = 0
+//   B  impulse on din_2 only      -> dout_1 = 0, dout_2 = C
+//   C  din_1 = 1 and din_2 = 3    -> dout_1 = C, dout_2 = 3C
+//
 `timescale 1ns/1ps
 
 module tb_hbdec_impulse;
@@ -20,7 +30,10 @@ module tb_hbdec_impulse;
 
   integer n;
   integer idx;
-  reg started;
+  integer phase;
+  integer errors = 0;
+  reg signed [47:0] e1, e2;
+  reg signed [23:0] amp1, amp2;
 
   // hb47.coe unique half, then the mirrored half.
   reg signed [47:0] expected [0:24];
@@ -61,33 +74,62 @@ module tb_hbdec_impulse;
 
   always #5 clk = ~clk;
 
-  initial begin
-    idx = 0;
-    started = 0;
-    repeat (5) @(posedge clk);
-    sclr <= 0;
-    repeat (5) @(posedge clk);
-    for (n = 0; n < 120; n = n + 1) begin
+  // Drive one impulse pair through the filter and check every output tap.
+  task run_phase(input signed [23:0] a, input signed [23:0] b);
+    begin
+      idx = 0;
       @(negedge clk);
-      nd <= 1'b1;
-      din_1 <= (n == 50) ? 24'sd1 : 24'sd0;
-      din_2 <= 24'sd0;
-      @(posedge clk);
-      if (data_valid && n >= 54) begin
-        started <= 1;
-        if ($signed(dout_1) !== expected[idx] || $signed(dout_2) !== expected[idx]) begin
-          $display("FAIL: tap %0d expected %0d got %0d/%0d at n=%0d",
-                   idx, expected[idx], $signed(dout_1), $signed(dout_2), n);
-          $finish;
-        end
-        idx = idx + 1;
-        if (idx == 25) begin
-          $display("PASS: 25 halfband taps");
-          $finish;
+      sclr <= 1'b1;
+      nd   <= 1'b0;
+      repeat (3) @(posedge clk);
+      @(negedge clk);
+      sclr <= 1'b0;
+
+      for (n = 0; n < 140; n = n + 1) begin
+        @(negedge clk);
+        nd    <= 1'b1;
+        din_1 <= (n == 50) ? a : 24'sd0;
+        din_2 <= (n == 50) ? b : 24'sd0;
+        @(posedge clk);
+
+        if (data_valid && n >= 54) begin
+          e1 = a * expected[idx];
+          e2 = b * expected[idx];
+
+          if ($signed(dout_1) !== e1) begin
+            errors = errors + 1;
+            $display("FAIL: phase %0d tap %0d: dout_1 expected %0d got %0d",
+                     phase, idx, e1, $signed(dout_1));
+          end
+          if ($signed(dout_2) !== e2) begin
+            errors = errors + 1;
+            $display("FAIL: phase %0d tap %0d: dout_2 expected %0d got %0d",
+                     phase, idx, e2, $signed(dout_2));
+          end
+
+          idx = idx + 1;
+          if (idx == 25) n = 140;     // done with this phase
         end
       end
+
+      if (idx != 25) begin
+        errors = errors + 1;
+        $display("FAIL: phase %0d produced %0d/25 taps", phase, idx);
+      end
     end
-    $display("FAIL: only %0d/25 taps observed", idx);
+  endtask
+
+  initial begin
+    repeat (5) @(posedge clk);
+
+    phase = 1;  run_phase(24'sd1, 24'sd0);      // I only
+    phase = 2;  run_phase(24'sd0, 24'sd1);      // Q only
+    phase = 3;  run_phase(24'sd1, 24'sd3);      // both, 3x on Q
+
+    if (errors == 0)
+      $display("PASS: 25 halfband taps on both channels (3 phases)");
+    else
+      $display("FAIL: %0d errors", errors);
     $finish;
   end
 endmodule

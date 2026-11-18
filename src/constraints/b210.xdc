@@ -8,12 +8,24 @@
 # repeated for every pin.  PULLTYPE PULLUP is not the default and is kept on
 # cat_ce exactly as in the original constraints.
 #
-# IFCLK is the 100 MHz GPIF clock.
-create_clock -period 10.000 -name IFCLK [get_ports IFCLK]
+# IFCLK is the 100 MHz GPIF clock the FPGA forwards to the FX3.  It is an
+# OUTPUT (an ODDR driven by gpif_clk), so this declaration cannot constrain
+# anything: nextpnr derives timing domains from clock inputs, and the routed
+# design reports only rx_clk, rx_clk_bufr, radio_clk and bus_clk.  It is kept
+# to document the interface.  The GPIF and codec buses are source-synchronous,
+# and their clock-to-out / setup-hold windows are not checked by this
+# toolchain (nextpnr's XDC subset has no set_input_delay/set_output_delay).
+# See .context/19-build-alignment-audit.md, finding F24.
+create_clock -period 10.000 [get_ports IFCLK]
 # codec_data_clk_p is the 61.44 MHz codec capture clock.
-create_clock -period 16.276 -name codec_data_clk_p [get_ports codec_data_clk_p]
+create_clock -period 16.276 [get_ports codec_data_clk_p]
 # 40 MHz codec main clock feeding the B200 MMCM.
-create_clock -period 25.000 -name codec_main_clk_p [get_ports codec_main_clk_p]
+create_clock -period 25.000 [get_ports codec_main_clk_p]
+# bus_clk is an MMCM output, so it is not a port nextpnr can enumerate from the
+# MMCM parameters in this XDC subset; declare it by net name.  Without this
+# line nextpnr treats the domain as unconstrained and reports "PASS at 12 MHz",
+# which is its default assumption, not a real 100 MHz signoff.
+create_clock -period 10.000 [get_nets bus_clk]
 
 set_property LOC G11 [get_ports PPS_IN_EXT]
 set_property IOSTANDARD LVCMOS33 [get_ports PPS_IN_EXT]

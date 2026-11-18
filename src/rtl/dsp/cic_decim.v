@@ -30,6 +30,10 @@ module cic_decim
    reg [bw+maxbitgain-1:0]  sampler;
    
    integer 		    i;
+   // The second always block needs its own loop variable: a shared integer
+   // is assigned by two processes, which Yosys reports as multiple drivers
+   // on a 32-bit net even though both loops unroll at elaboration.
+   integer 		    j;
    
    sign_extend #(bw,bw+maxbitgain) 
      ext_input (.in(signal_in),.out(signal_in_ext));
@@ -49,10 +53,10 @@ module cic_decim
      if(~enable)
        begin
 	  sampler <= 0;
-	  for(i=0;i<N;i=i+1)
+	  for(j=0;j<N;j=j+1)
 	    begin
-	       pipeline[i] <= 0;
-	       differentiator[i] <= 0;
+	       pipeline[j] <= 0;
+	       differentiator[j] <= 0;
 	    end
        end
      else if (strobe_out)
@@ -60,10 +64,10 @@ module cic_decim
 	  sampler <= integrator[N-1];
 	  differentiator[0] <= sampler;
 	  pipeline[0] <= sampler - differentiator[0];
-	  for(i=1;i<N;i=i+1)
+	  for(j=1;j<N;j=j+1)
 	    begin
-	       differentiator[i] <= pipeline[i-1];
-	       pipeline[i] <= pipeline[i-1] - differentiator[i];
+	       differentiator[j] <= pipeline[j-1];
+	       pipeline[j] <= pipeline[j-1] - differentiator[j];
 	    end
        end // if (enable && strobe_out)
    

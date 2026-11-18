@@ -32,9 +32,18 @@ RUN git init prjxray \
  && cmake --install build
 
 RUN python3 -m venv "${FPGA_HOME}/venv" \
- && "${FPGA_HOME}/venv/bin/pip" install --upgrade pip setuptools wheel \
  && "${FPGA_HOME}/venv/bin/pip" install \
-      fasm intervaltree numpy pyjson5 pyyaml simplejson \
+      pip==26.3 setuptools==84.2.1 wheel==0.48.0 \
+ && "${FPGA_HOME}/venv/bin/pip" install \
+      fasm==0.0.2.post88 \
+      intervaltree==3.2.1 \
+      numpy==2.5.5 \
+      packaging==26.3 \
+      pyjson5==2.0.1 \
+      pyyaml==6.0.3 \
+      simplejson==4.3.0 \
+      sortedcontainers==2.4.0 \
+      textx==4.4.0 \
  && cd /src/prjxray \
  && sed -i "s/packages=\['prjxray'\]/packages=['prjxray', 'utils']/" setup.py \
  && "${FPGA_HOME}/venv/bin/pip" install --no-deps . \
