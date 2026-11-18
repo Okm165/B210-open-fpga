@@ -139,6 +139,10 @@ E2E_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_e2e_rx.v
 
+STATIC_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_rx_static.v
+
 DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_sine.v
@@ -473,6 +477,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_e2e_2t.log tb_e2e_2t.vvp
 	@grep -q 'E2E: PASS' $(SIM_DIR)/tb_e2e_2t.log || \
 	  { echo "ERROR: blocker + weak tone lost through the RX path; see $(SIM_DIR)/tb_e2e_2t.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_rx_static -o tb_rx_static.vvp $(STATIC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_rx_static.log tb_rx_static.vvp
+	@grep -q 'STATIC: PASS' $(SIM_DIR)/tb_rx_static.log || \
+	  { echo "ERROR: a register write changes the RX stream; see $(SIM_DIR)/tb_rx_static.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_rx_stream -o tb_rx_stream.vvp $(RX_STREAM_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_stream.log tb_rx_stream.vvp
