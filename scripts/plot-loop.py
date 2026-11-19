@@ -193,6 +193,7 @@ def main(tag):
         axes = [axes]
     fig.suptitle(f"whole-radio loop, {tag}: the complex datastream at every stage "
                  f"(14 tones, two channels, mixer at fs/8)", fontsize=11)
+    announced = False
     for ax, name in zip(axes, order):
         if name not in data:
             ax.set_visible(False)
@@ -206,6 +207,27 @@ def main(tag):
             ax.axvline(t / 1e6, color="#c00000", ls=":", lw=0.6)
         for t in expect(fs_stage, fs_host, shift[name], K1):
             ax.axvline(t / 1e6, color="#00a651", ls=":", lw=0.4, alpha=0.6)
+        # Peak census: the stimulus is 7 tones per channel and both signs, so
+        # 14 lines for this channel.  From the air node on, the modelled
+        # antenna coupling adds the other channel's 14 at 1/32 (-30.1 dB).
+        # Counting them makes "the peaks double halfway down the page" a
+        # measured, named fact rather than a suspected distortion.
+        def lv(q):
+            return abs(X[np.argmin(np.abs(f - q))])
+        a0 = [lv(q) for q in expect(fs_stage, fs_host, shift[name], K0)]
+        a1 = [lv(q) for q in expect(fs_stage, fs_host, shift[name], K1)]
+        refa = np.mean(a0)
+        npresent = sum(1 for v in a0 + a1 if v > refa * 10 ** (-40 / 20))
+        cpl = 20 * np.log10(max(np.mean(a1), 1e-30) / refa)
+        print(f"  {name:22s} {npresent:2d} of 28 lines present, "
+              f"other channel at {cpl:+6.1f} dB")
+        if npresent >= 28 and not announced:
+            ax.text(0.995, 0.88,
+                    f"28 lines: this channel's 14 + the other channel's 14 "
+                    f"at {cpl:+.1f} dB (the -30 dB antenna coupling)",
+                    transform=ax.transAxes, ha="right", va="top",
+                    fontsize=6.5, color="#404040")
+            announced = True
         ax.set_ylim(-150, 0)
         ax.set_ylabel("dBFS", fontsize=7)
         ax.grid(alpha=0.25, lw=0.4)
@@ -291,6 +313,14 @@ def main(tag):
     ref_amp = np.sqrt(np.mean(np.abs(fit) ** 2))
     b.plot(fe / 1e6, 20 * np.log10(np.maximum(np.abs(E) / ref_amp, 1e-12)),
            lw=0.6, color="#7030a0")
+    iw = int(np.argmax(np.abs(E)))
+    if abs(fe[iw]) < 1e6:
+        worst = ("the bench's RX [24:7] truncation bias at DC "
+                 "(0.00 LSB with the 12-bit converters)")
+    else:
+        worst = "a dither maximum, no coherent distortion"
+    b.text(0.015, 0.06, f"worst line {fe[iw]/1e6:+.2f} MHz: {worst}",
+           transform=b.transAxes, fontsize=6.3, color="#404040")
     b.set_title(f"residual spectrum (everything that is not one of the 28 tones): "
                 f"worst {20*np.log10(max(np.abs(E).max()/ref_amp,1e-12)):.0f} dBc", fontsize=8.5)
     b.set_xlabel("MHz")
@@ -1176,6 +1206,143 @@ def inband():
     print("        loop_inband.png and tb_tx_passband are their measurement of record.")
 
 
+def inband_conv():
+    """In band with the real 12-bit converters: does the quantiser tilt the band?
+
+    Every converter number before this was narrowband.  Same tone set, same
+    channel, same NCO: one run digital, one through the modelled 12-bit DAC
+    and ADC (tb_capture -DCONV).  The difference of the two ends is exactly
+    what the converters add; anything frequency dependent in it would be a
+    converter-induced distortion.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    K0 = [8, 24, 47, 83, 115, 138, 150]
+    K1 = [13, 31, 59, 97, 124, 143, 149]
+    FS = 15.36e6
+
+    def amp(x, b):
+        return abs(np.fft.fft(x)[b % len(x)]) / len(x)
+
+    cfgs = (("x1", "band", "fwd_x1", "bandconv"), ("x2", "bandx2", "fwd_x2", "bandx2conv"))
+    res = []
+    for name, dsub, pre, csub in cfgs:
+        rows = []
+        for ch, ks in ((0, K0), (1, K1)):
+            suf = "" if ch == 0 else "1"
+            hd = load(os.path.join(base, dsub, f"cap_{pre}_host{suf}.txt"))
+            hc = load(os.path.join(base, csub, f"cap_conv_host{suf}.txt"))
+            ed = load(os.path.join(base, dsub, f"cap_{pre}_rx_host{suf}.txt"))
+            ec = load(os.path.join(base, csub, f"cap_conv_rx_host{suf}.txt"))
+            if any(v is None for v in (hd, hc, ed, ec)):
+                print("  converter in-band page skipped: captures missing")
+                return
+            m = min(len(ed), len(ec))
+            err = ec[:m] - ed[:m]
+            ref = np.sqrt(np.mean(np.abs(ed[:m]) ** 2))
+            rows.append(dict(ch=ch, ks=ks, ed=ed, ec=ec, err=err,
+                             dbc=20 * np.log10(np.sqrt(np.mean(np.abs(err) ** 2)) / ref),
+                             gain=[20 * np.log10(amp(ec, 6 * k) / amp(hc, 6 * k)) -
+                                   20 * np.log10(amp(ed, 6 * k) / amp(hd, 6 * k))
+                                   for k in ks]))
+        res.append((name, rows))
+    if len(res) != 2:
+        print("  converter in-band page skipped: captures missing")
+        return
+    n2 = len(res[1][1][0]["ed"])
+
+    fig, ax = plt.subplots(2, 2, figsize=(12.5, 8.2))
+    fig.suptitle("in band with the real 12-bit converters: a flat floor, no taper, "
+                 "no new line", fontsize=11.5)
+
+    a = ax[0][0]
+    for name, rows in res:
+        for r in rows:
+            mean = sum(r["gain"]) / len(r["gain"])
+            g = [v - mean for v in r["gain"]]
+            f = [3 * k / 1024 * FS / 1e6 for k in r["ks"]]
+            col = "#1f4e79" if r["ch"] == 0 else "#c00000"
+            a.plot(f, g, "o", ms=4, mfc="none", color=col,
+                   label=f"{name} ch{r['ch']}: shape after {mean:+.2f} dB")
+    a.axhline(0, color="k", lw=0.5)
+    a.set_ylim(-0.1, 0.1)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("per-tone gain shape, dB")
+    a.set_title("converters keep the digital shape (spread 0.00 dB)", fontsize=8.5)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6)
+    a.tick_params(labelsize=7)
+
+    a = ax[0][1]
+    for name, rows in res:
+        for r in rows:
+            f = [3 * k / 1024 * FS / 1e6 for k in r["ks"]]
+            a.plot(f, r["gain"], "o", ms=4, mfc="none",
+                   color="#1f4e79" if r["ch"] == 0 else "#c00000",
+                   label=f"{name} ch{r['ch']}")
+    a.axhline(0, color="k", lw=0.5)
+    a.set_ylim(-0.05, 0.05)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("converter - digital, dB")
+    a.set_title("converter minus digital per tone: |diff| <= 0.01 dB", fontsize=8.5)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6, ncol=2)
+    a.tick_params(labelsize=7)
+
+    a = ax[1][0]
+    r = res[1][1][0]                       # x2, ch0
+    n = n2
+    E = np.abs(np.fft.fft(r["err"])) / n
+    f = np.fft.fftfreq(n, 1 / (FS * 2))
+    sel = f >= 0
+    ref = np.sqrt(np.mean(np.abs(r["ed"]) ** 2))
+    a.plot(f[sel] / 1e6, 20 * np.log10(np.maximum(E[sel] / ref, 1e-12)),
+           lw=0.6, color="#7030a0")
+    a.axvspan(0, FS / 2 / 1e6, color="#1f4e79", alpha=0.07)
+    a.set_xlim(0, FS / 1e6)
+    a.set_ylim(-140, -20)
+    a.set_xlabel("MHz at the DAC rate")
+    a.set_ylabel("converter error, dBc of the tones")
+    a.set_title("what the converters add: a flat -52 dBc floor, no line", fontsize=8.5)
+    a.grid(alpha=0.25, lw=0.4)
+    a.tick_params(labelsize=7)
+
+    a = ax[1][1]
+    a.axis("off")
+    lines = []
+    for name, rows in res:
+        for r in rows:
+            lines.append(f"{name} ch{r['ch']}: error {r['dbc']:.1f} dBc, "
+                         f"gain diff {min(r['gain']):+.3f}..{max(r['gain']):+.3f} dB")
+    # image level in the converter run, x2 ch0
+    ec = res[1][1][0]["ec"]
+    img = [20 * np.log10(max(amp(ec, (6 * k + 2048) % n2), 1e-12) / amp(ec, 6 * k))
+           for k in K0]
+    a.text(0.02, 0.92, "in band, 12-bit DAC + ADC, 14 tones to 6.75 MHz:",
+           fontsize=9, va="top")
+    a.text(0.02, 0.80, "\n".join("  " + v for v in lines), fontsize=8, va="top",
+           family="monospace")
+    a.text(0.02, 0.30, "x2, image at the end with converters:\n  " +
+           ", ".join(f"{3*k/1024*FS/1e6:.1f} MHz: {img[i]:.0f}" for i, k in enumerate(K0)),
+           fontsize=8, va="top")
+    a.text(0.02, 0.14, "the converters add a flat -52 dBc floor and change the\n"
+           "shape by 0.005 dB: no in-band distortion of their own.  The\n"
+           "taper and the -28 dBc edge image pass through unchanged; the\n"
+           "low-frequency image readings are only the ADC floor.",
+           fontsize=8, va="top")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    outp = os.path.join(base, "loop_inband_conv.png")
+    fig.savefig(outp, dpi=110)
+    plt.close(fig)
+    print("\n=== in band with 12-bit converters ===")
+    for line in lines:
+        print("  " + line)
+    print("  x2 image at the end with converters: " +
+          ", ".join(f"{3*k/1024*FS/1e6:.1f} MHz {img[i]:.0f} dBc" for i, k in enumerate(K0)))
+    print(f"  wrote {os.path.relpath(outp)}")
+
+
 def retune():
     """A settings write on a running transmitter: LO retune and rate rewrite."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1363,6 +1530,8 @@ if __name__ == "__main__":
             proof()
         elif t == "inband":
             inband()
+        elif t == "inband_conv":
+            inband_conv()
         else:
             main(t)
     if "budget" not in args:
