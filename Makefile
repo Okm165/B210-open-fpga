@@ -299,17 +299,14 @@ pnr: tools
 	# seeds do not converge at all (measured: one run's overused-wire count
 	# climbed from 7.5k to 12.8k monotonically instead of falling).
 	#
-	# Seed 3 is the best route of the committed netlist.  Measured sweep on
-	# this netlist (bus_clk post-route): seed 2 83.0, seed 6 90.5, seed 5
-	# 102.3, seed 3 104.5, seed 4 diverges.  Seed 3 passes both constraints
-	# (bus_clk 104.49 MHz, radio_clk 89.16 MHz) and clears the 5 % margin on
-	# radio_clk; bus_clk lands at 4.5 % margin, below the 5 % policy, and is
-	# SHIPPED AS A DOCUMENTED EXCEPTION (decision 2026-11-19): the residual
-	# critical path is the pre-existing gpif2_error_checker comparator chain,
-	# which closed at 116.95 MHz on the pre-halfband placement - it is seed
-	# sensitivity, not new logic.  It is item #1 for hardware timing tuning.
-	# Build this seed with FPGA_ALLOW_TIMING_FAIL=1 until the checker is
-	# retuned; the gate stays at 1.05 for everything else.
+	# Seed 3.  Measured sweep on the halfband netlist (bus_clk post-route):
+	# seed 2 83.0, seed 6 90.5, seed 5 102.3, seed 3 104.5, seed 4 diverges -
+	# which shipped as a documented 4.5 %-margin exception (2026-11-19), the
+	# residual critical path being the pre-existing gpif2_error_checker
+	# comparator.  After the dead-code removal round the same seed closes at
+	# bus_clk 110.02 MHz / radio_clk 81.22 MHz post-route, i.e. the 5 % policy
+	# is MET and no exception is needed; FPGA_ALLOW_TIMING_FAIL remains only
+	# as an escape hatch for seed experiments.  The gate stays at 1.05.
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
 	  --seed 3 \
