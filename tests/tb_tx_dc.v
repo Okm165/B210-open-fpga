@@ -44,6 +44,8 @@ module tb_tx_dc;
    endtask
 
    integer cfg, k, rate, settle, sum, total, errors;
+   integer sc, xi, out24, expect, nbad, tol, prev_out, direction;
+   reg [17:0] scale;
    reg [7:0] hb;
    real gain, exp_gain;
 
@@ -87,6 +89,64 @@ module tb_tx_dc;
          run = 1'b0;
          repeat (64) @(posedge clk);
       end
+
+      // ---- 2. scale: gain convention and saturation, no wrap ----
+      // out24 = in16 * scale >> 7, saturating.  Total rate 1 (bypass) isolates
+      // the scale multiply; the chain's filters are unity at DC.
+      wr(8'd2, 32'h0000_0001);
+      run = 1'b1;
+      for (sc = 0; sc < 6; sc = sc + 1) begin
+         nbad = 0; prev_out = 0; direction = 1;
+         case (sc)
+           0: scale = 18'h04000;   // 0.25
+           1: scale = 18'h08000;   // 0.5
+           2: scale = 18'h10000;   // 1.0 convention: full scale
+           3: scale = 18'h18000;   // 1.5: overdrive, must clip
+           4: scale = 18'h1FFFF;   // 2.0: overdrive, must clip
+           5: scale = 18'h00001;   // 1/65536
+         endcase
+         wr(8'd1, {14'd0, scale});
+         for (xi = 0; xi < 7; xi = xi + 1) begin
+            case (xi)
+              // strictly increasing input order, so monotonicity is checkable
+              0: sample = -32'sd32768 << 16;
+              1: sample = -32'sd1000 << 16;
+              2: sample = -32'sd1 << 16;
+              3: sample = 32'sd0;
+              4: sample = 32'sd1 << 16;
+              5: sample = 32'sd1000 << 16;
+              6: sample = 32'sd32767 << 16;
+            endcase
+            repeat (400) @(posedge clk);
+            out24 = $signed(tx_fe_i);
+            // real arithmetic: in*scale can exceed 32 bits (32768 * 131071)
+            expect = $rtoi($floor(($itor($signed(sample[31:16])) * $itor(scale)) / 128.0));
+            if (expect > 8388607) expect = 8388607;
+            if (expect < -8388608) expect = -8388608;
+            // The oscillator's cos(0) is 32767/32768, so the chain is
+            // 3e-5 (0.00027 dB) low: at full scale that is 1 LSB16, i.e. 128
+            // LSB24 at scale 0.5.  Allow it proportionally; a wrap or a broken
+            // scale would be orders of magnitude larger.
+            tol = 4 + ((expect < 0) ? (-expect) : expect) / 4096;
+            if (out24 > expect + tol || out24 < expect - tol) begin
+               nbad = nbad + 1;
+               if (nbad < 6)
+                  $display("TX-DC: FAIL scale 0x%05X in %0d: out %0d, expected %0d +- %0d",
+                           scale, $signed(sample[31:16]), out24, expect, tol);
+            end
+            // monotonic in the input for every scale: the wrap signature would
+            // be a sign inversion at one of the rails
+            if (xi > 0 && direction * out24 < direction * prev_out) begin
+               nbad = nbad + 1;
+               if (nbad < 6)
+                  $display("TX-DC: FAIL scale 0x%05X: not monotonic at input %0d",
+                           scale, $signed(sample[31:16]));
+            end
+            prev_out = out24;
+         end
+         $display("TX-DC: scale 0x%05X: %0d of 7 inputs wrong", scale, nbad);
+      end
+      if (nbad != 0) errors = errors + 1;
 
       if (errors == 0)
          $display("TX-DC: PASS - unity DC gain at every power-of-two rate, CIC contract elsewhere");

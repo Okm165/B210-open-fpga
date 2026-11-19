@@ -65,6 +65,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | TX halfband regression | 26th make-test group | taps on odd offsets, phase alignment, image gain and DC pinned |
 | TX pin quantiser | `tb_dac_slice`, all 2^24 codes | round-half-even + saturate; saturation added after rounding was found to wrap the top 2047 codes to 0x800 |
 | TX DC gain vs rate | `tb_tx_dc` table in .context/dsp-audit.md | 1.00000 at every power-of-two rate; -1.48 dB at total 6/12, -0.21 dB at 20 (CIC contract) |
+| TX scale contract | `tb_tx_dc` section 2, 6 scales x 7 inputs | out24 = in16 x scale >> 7, saturates at overdrive, monotonic, no wrap; full-scale deficit 0.00027 dB (cos(0)=32767/32768) |
 | RX static transfer | all 4096 ADC codes, LO at DC | gain 15.9993/16, worst error 1.141 LSB16 (dither), no bias, no rail hit, control-bit map measured |
 | Dead code | every module name in scripts/sources.txt scanned against every .v file | `source_flow_control_legacy`, `add_then_mac`, `round_reg` removed; 3 unused parameters removed; 78 sources |
 | TX bypass flatness | impulse response at the pin word, FFT vs analytic taps (0.03 dB agreement) | compensator was shaping the max-rate mode (+2.8 dB at 0.2 fs_out); now bypassed at CIC rate 1, measured 0.00 dB across the band |
