@@ -162,6 +162,10 @@ LATENCY_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_latency.v
 
+PASSBAND_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_tx_passband.v
+
 TX_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_pins.v
@@ -209,7 +213,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
-.PHONY: help doctor verify test elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+.PHONY: help doctor verify test test-data elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
         shell build synth pnr bitstream hello analyze timing clean image-clean
 
 help:
@@ -575,6 +579,20 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_latency.log tb_latency.vvp
 	@grep -q 'LATENCY: PASS' $(SIM_DIR)/tb_latency.log || \
 	  { echo "ERROR: datapath latency outside its bounds; see $(SIM_DIR)/tb_latency.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_passband -o tb_tx_passband.vvp $(PASSBAND_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_tx_passband.log tb_tx_passband.vvp
+	@grep -q 'PASSBAND: PASS' $(SIM_DIR)/tb_tx_passband.log || \
+	  { echo "ERROR: TX passband flatness wrong; see $(SIM_DIR)/tb_tx_passband.log"; exit 1; }
+	cd $(ROOT) && $(MAKE) --no-print-directory test-data
+
+# The data-path benches (end-to-end, RX/TX DSP, pins): kept in a separate
+# target because .ONESHELL passes each target's recipe to a single shell, and
+# this many benches overflow MAX_ARG_STRLEN (the measured failure: bash:
+# Argument list too long).
+test-data:
+	@set -e
+	mkdir -p $(SIM_DIR)
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_tx_pins -o tb_tx_pins.vvp $(TX_PINS_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pins.log tb_tx_pins.vvp
