@@ -70,7 +70,10 @@ UHD driver internals, RF performance of the AD9361 itself.
 | Dead code | every module name in scripts/sources.txt scanned against every .v file | `source_flow_control_legacy`, `add_then_mac`, `round_reg` removed; 3 unused parameters removed; 78 sources |
 | TX bypass flatness | impulse response at the pin word, FFT vs analytic taps (0.03 dB agreement) | compensator was shaping the max-rate mode (+2.8 dB at 0.2 fs_out); now bypassed at CIC rate 1, measured 0.00 dB across the band |
 | FX3 async boundary | `tb_gpif_cdc`, fifo 100 MHz / gpif 101 MHz, 3 ns phase, backpressure | 320/320 words, tlast every packet on the low half, 0 errors |
-| TX sample pairing | `tb_tx_pairing`: even 8, odd 7, burst 6+5, self-checking tag | every host sample reaches the DUC once in order; no duplicate/drop/swap, odd pad never leaks |\n| Timed TX | `tb_tx_timed`: future tick 40, and a past tick | fires exactly at tick 40; past tick reports TIME_ERROR (8) with a one-clock ack and `run` stays 0 |\n| RX overload | `tb_rx_saturate`: full-scale I=Q with a rotating LO | peak +32767, trough -32768, 30-sample rail plateau: clips, never wraps |
+| TX sample pairing | `tb_tx_pairing`: even 8, odd 7, burst 6+5, self-checking tag | every host sample reaches the DUC once in order; no duplicate/drop/swap, odd pad never leaks |
+| Timed TX | `tb_tx_timed`: future tick 40, and a past tick | fires exactly at tick 40; past tick reports TIME_ERROR (8) with a one-clock ack and `run` stays 0 |
+| two-channel loopback | `tb_loopback2`: TX->RX and RX->TX, 2 channels at once, LO 0 and fs/8 | gain 1.00000 (-0.0005 dB, the 2x cos(0) convention), mirror <= -98 dB, EVM -78..-79 dB (the RX dither floor), crosstalk <= -102 dB |
+| RX overload | `tb_rx_saturate`: full-scale I=Q with a rotating LO | peak +32767, trough -32768, 30-sample rail plateau: clips, never wraps |
 | TX underrun | `tb_tx_underrun`: starved from reset with stale data on the bus | run low for 200 idle cycles (0 clocks high): pin mux stays on tx_idle, no stale sample can reach the DAC |
 | RX stall tolerance | e2e run with one 200 us stall vs no stall, 400 000 clocks | identically 242 136 words: zero loss; 350 us overruns and recovers; guard for 30 us equal-total added |
 | CDC integrity | `tb_axi_fifo_2clk_cdc` at 5 clock relationships (phase 0..3.3 ns, 10:1 ratio, radio faster than bus) | 512/512 words in order in both directions in every case |
@@ -204,6 +207,9 @@ Each one fails loudly if a future change breaks it:
                   trough -32768), never wraps
 - `tb_tx_timed`   a future-scheduled packet fires at exactly its tick; a past
                   tick raises TIME_ERROR without starting the DAC
+- `tb_loopback2`  two channels, both directions, at once: unity gain, no
+                  conjugate, no I/Q leakage, no crosstalk, EVM at the dither
+                  floor (LO=0 and a non-zero LO that must cancel)
 - `tb_tx_pairing` every host sample reaches the DUC once, in order, across
                   even, odd-length and burst packets (self-checking tag)
 - `tb_tx_underrun` starving the host never presents a stale sample (`run` low)

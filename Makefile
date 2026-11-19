@@ -190,10 +190,6 @@ DITHER_TEST_SRCS := \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_dither_dc.v
 
-DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
-  $(ROOT)/tests/sim/xilinx_prim_sim.v \
-  $(ROOT)/tests/tb_duc_sine.v
-
 GPIF_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/tb_gpif2_error.v
 
@@ -219,6 +215,17 @@ TX_TIMED_TEST_SRCS := $(ELAB_SRCS) \
 TX_PAIRING_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_pairing.v
+
+# TX -> RX digital loopback: one gain, one phase convention, no conjugate.
+ROUNDTRIP_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_roundtrip.v
+
+# Two-channel bidirectional loopback: both datapaths, both directions, both
+# channels at once.
+LOOP2_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_loopback2.v
 
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
@@ -533,7 +540,7 @@ test:
 	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_cic_comp.log $(SIM_DIR)/tb_clip.log \
 	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log $(SIM_DIR)/tb_hello_led.log \
 	       $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log $(SIM_DIR)/tb_axi_fifo_2clk_rate.log \
-	       $(SIM_DIR)/tb_ddc_sine.log $(SIM_DIR)/tb_duc_sine.log
+	       $(SIM_DIR)/tb_loopback2.log $(SIM_DIR)/tb_loopback2_rev.log
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -o elab_iverilog.vvp $(ELAB_SRCS) $(ROOT)/tests/sim/xilinx_prim_sim.v \
 	  > elab_iverilog.log 2>&1 || \
@@ -723,11 +730,6 @@ test-data:
 	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_lossless.log || \
 	  { echo "ERROR: lossless-path test failed; see $(SIM_DIR)/tb_ddc_lossless.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
-	  -s tb_duc_sine -o tb_duc_sine.vvp $(DUC_SINE_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_duc_sine.log tb_duc_sine.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_duc_sine.log || \
-	  { echo "ERROR: DUC tone-fidelity test failed; see $(SIM_DIR)/tb_duc_sine.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_ddc_chain -o tb_ddc_chain.vvp $(DDC_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_ddc_chain.log tb_ddc_chain.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_ddc_chain.log || \
@@ -777,6 +779,21 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pairing.log tb_tx_pairing.vvp
 	@grep -q 'TX-PAIR: PASS' $(SIM_DIR)/tb_tx_pairing.log || \
 	  { echo "ERROR: TX sample pairing broken; see $(SIM_DIR)/tb_tx_pairing.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_roundtrip -o tb_roundtrip.vvp $(ROUNDTRIP_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_roundtrip.log tb_roundtrip.vvp
+	@grep -q 'ROUNDTRIP: PASS' $(SIM_DIR)/tb_roundtrip.log || \
+	  { echo "ERROR: TX->RX loopback not transparent; see $(SIM_DIR)/tb_roundtrip.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_loopback2 -o tb_loopback2.vvp $(LOOP2_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_loopback2.log tb_loopback2.vvp
+	@grep -q 'LOOP2-FWD: PASS' $(SIM_DIR)/tb_loopback2.log || \
+	  { echo "ERROR: two-channel TX->RX loopback failed; see $(SIM_DIR)/tb_loopback2.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DREVERSE -I $(ROOT)/src/rtl/control \
+	  -s tb_loopback2 -o tb_loopback2_rev.vvp $(LOOP2_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_loopback2_rev.log tb_loopback2_rev.vvp
+	@grep -q 'LOOP2-REV: PASS' $(SIM_DIR)/tb_loopback2_rev.log || \
+	  { echo "ERROR: two-channel RX->TX loopback failed; see $(SIM_DIR)/tb_loopback2_rev.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
