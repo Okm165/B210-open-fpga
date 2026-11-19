@@ -63,6 +63,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | TX halfband, fixed (hb47_poly) | same 4 tones | worst spur -88.6 / -86.9 / -81.9 / -86.9 dBc; image -95..-105 dBc |
 | TX halfband impulse response | 47 taps, isolated | centre 65536, +-1 41508, +-3 -13273 ...; H(0) 2.0000, H(fs/2) -92.8 dB |
 | TX halfband regression | 26th make-test group | taps on odd offsets, phase alignment, image gain and DC pinned |
+| TX pin quantiser | full chain, DC and tones | round-half-even at the 12-bit slice (was truncation: -0.5 LSB bias) |
 | full build | - | hello.bin, idcode 0x3651093 |
 
 ## Operator error budget
@@ -152,7 +153,7 @@ fails if the reference chain is pointed at the wrong register address.
 | packet gate | 245.76 | 252 MB/s at demand |
 | full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
 | full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
-| two channels at 61.44 MSPS, sc16 | 491.52 | does NOT fit the 400 MB/s link - 2x30.72 sc16 or 2x61.44 packed 12-bit does (368.64 MB/s) |
+| two channels (MIMO capture) | 245.76 | 2 x 30.72 MSPS sc16; the AD9361 bus is 61.44 MSPS total, so this is the converter limit, not the link |
 | shipped bitstream | - | b200.bin sha256 f3e80f9b..., idcode 0x3651093, seed 3 |
 | packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
 | USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
