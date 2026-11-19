@@ -982,6 +982,17 @@ plots-extra:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX4 -DBINSCALE=3 -DSINGLE \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx4s.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/bandx4s && $(VVP) -n $(SIM_DIR)/tb_bandx4s.vvp > /dev/null
+	@# A 50-tone dense probe (one-sided) at two drives: a product of the signal
+	@# scales with the drive, the probe's own quantisation does not.
+	@mkdir -p $(ROOT)/build/plots/dense_x1 $(ROOT)/build/plots/dense_x1h
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/dense_x1/src
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/dense_x1h/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DDENSE -DCONV \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_dense.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/dense_x1 && $(VVP) -n $(SIM_DIR)/tb_dense.vvp > /dev/null
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DDENSE -DCONV -DAMPDEF=374.0 \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_denseh.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/dense_x1h && $(VVP) -n $(SIM_DIR)/tb_denseh.vvp > /dev/null
 	@mkdir -p $(ROOT)/build/plots/bandconv $(ROOT)/build/plots/bandx2conv
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandconv/src
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx2conv/src
@@ -1008,7 +1019,7 @@ plots-extra:
 	cd $(ROOT)/build/plots/bandx2s5 && $(VVP) -n $(SIM_DIR)/tb_bandx2s5.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
-	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match rates
+	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match rates dense
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:

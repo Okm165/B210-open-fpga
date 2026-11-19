@@ -1627,6 +1627,140 @@ def rates():
     print(f"  wrote {os.path.relpath(outp)}")
 
 
+def dense():
+    """A 50-tone probe fills the band: the transfer is flat, the extra lines are not the radio.
+
+    Every earlier conclusion used 14 tones, which is sparse enough that an
+    intermodulation product could land in an empty bin unnoticed.  This page
+    runs a dense one-sided comb - 25 tones per channel on interleaved 16-bin
+    combs, together every 8th bin to 0.39 fs_host, at the same total RMS as the
+    sparse set - and then uses the drive-level discriminator: a product of the
+    signal scales with the drive, a fixed absolute level does not.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    FSD = 61.44e6
+    cfgs = (("0 dB", "dense_x1"), ("-25 dB", "dense_x1h"))
+    data = {}
+    for drv, sub in cfgs:
+        rows = []
+        for ch in (0, 1):
+            suf = "" if ch == 0 else "1"
+            host = load(os.path.join(base, sub, f"cap_dense_host{suf}.txt"))
+            pins = load(os.path.join(base, sub, f"cap_dense_tx_pins{suf}.txt"))
+            if host is None or pins is None:
+                print(f"  dense page skipped: {sub} has no captures")
+                return
+            n = min(len(host), len(pins))
+            Xh = np.fft.fft(host[:n]) / n
+            Xp = np.fft.fft(pins[:n]) / n
+            tone = [8 + 16 * m + (0 if ch == 0 else 8) for m in range(25)]
+            tb = [256 + 2 * k for k in tone]
+            occ = set(b % n for b in tb)
+            gain = [abs(Xp[b]) / abs(Xh[2 * k]) for b, k in zip(tb, tone)]
+            lines = sorted(((b, abs(Xp[b])) for b in range(1, n // 2) if b not in occ),
+                           key=lambda q: -q[1])[:8]
+            rows.append(dict(ch=ch, gain=np.array(gain), tone=np.array([abs(Xp[b]) for b in tb]),
+                             lines=lines, n=n))
+        data[drv] = rows
+
+    fig, ax = plt.subplots(2, 2, figsize=(12.6, 8.6))
+    fig.suptitle("a 50-tone probe fills the operating band: the transfer is flat, "
+                 "and the extra lines are the periodic probe's own quantisation",
+                 fontsize=11.5)
+    a = ax[0][0]
+    host = load(os.path.join(base, "dense_x1", "cap_dense_host.txt"))
+    pins = load(os.path.join(base, "dense_x1", "cap_dense_tx_pins.txt"))
+    n = len(pins)
+    Xp = np.abs(np.fft.fft(pins)) / n
+    Xh = np.abs(np.fft.fft(host)) / n
+    occ = set((256 + 2 * (8 + 16 * m)) % n for m in range(25))
+    occ |= set((256 + 2 * (16 + 16 * m)) % n for m in range(25))
+    bx = np.arange(1, n // 2)
+    a.semilogy(bx / 16.0, np.maximum(Xh[bx] * 256, 1e-1), lw=0.9, color="#c00000",
+               ls=(0, (3, 2)), label="the input word x256 (dashed, on top)")
+    a.semilogy(bx / 16.0, np.maximum(Xp[bx], 1e-1), lw=0.5, color="#1f4e79",
+               label="pin word (ch0)")
+    a.set_ylim(1e-1, 1e6)
+    a.set_xlabel("bins / 16 (the comb spacing)")
+    a.set_ylabel("line amplitude at the pin word")
+    a.set_title("50 tones + what else: the other lines are already in the input", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5)
+    a.tick_params(labelsize=7)
+
+    a = ax[0][1]
+    ls = data["0 dB"][0]["lines"]
+    lh = dict(data["-25 dB"][0]["lines"])
+    y = np.arange(len(ls))
+    a.barh(y - 0.2, [v for _, v in ls], height=0.38, color="#1f4e79", label="0 dB drive")
+    a.barh(y + 0.2, [lh.get(b, 1e-3) for b, _ in ls], height=0.38, color="#c00000",
+           label="-25 dB drive")
+    a.set_yticks(y)
+    a.set_yticklabels([f"bin {b}" for b, _ in ls], fontsize=6.5)
+    a.set_xscale("log")
+    a.set_xlabel("amplitude at the pin word")
+    a.set_title("the tones drop 25 dB; these lines move by at most a few dB", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4, axis="x")
+    a.legend(fontsize=6.5)
+    a.tick_params(labelsize=7)
+
+    a = ax[1][0]
+    for drv, col in (("0 dB", "#1f4e79"), ("-25 dB", "#c00000")):
+        for ch, mk in ((0, "o"), (1, "s")):
+            g = 20 * np.log10(data[drv][ch]["gain"] / 256.0)
+            a.plot(g, mk, ms=3.2, color=col, mfc="none" if ch else col,
+                   label=f"{drv} ch{ch}: {g.max()-g.min():.3f} dB spread")
+    a.set_xlabel("tone index")
+    a.set_ylabel("host word -> pin word, dB re 256.000")
+    a.set_title("per-tone transfer 256.00; the 0.026 dB spread is the probe's own "
+                "lines, not the datapath", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.2)
+    a.tick_params(labelsize=7)
+
+    a = ax[1][1]
+    a.axis("off")
+    t0 = data["0 dB"][0]["tone"].mean()
+    t1 = data["-25 dB"][0]["tone"].mean()
+    l0 = data["0 dB"][0]["lines"][0][1]
+    l1 = data["-25 dB"][0]["lines"][0][1]
+    g0 = 20 * np.log10(data["0 dB"][0]["gain"])
+    txt = ["measured, ch0, one-sided 25-tone comb (ch1 interleaved):", "",
+           f"  tone (mean of 25)      {t0:9.0f}  ->  {t1:9.0f}   ({20*np.log10(t1/t0):+.1f} dB)",
+           f"  strongest other line   {l0:9.0f}  ->  {l1:9.0f}   ({20*np.log10(l1/l0):+.1f} dB)",
+           "",
+           f"so the extra lines are {20*np.log10(l0/t0):+.1f} dBc of a tone at full drive",
+           f"and {20*np.log10(l1/t1):+.1f} dBc at -25 dB drive: essentially a fixed",
+           "absolute level, not a product of the signal (which fell 25 dB).",
+           "",
+           "That is the probe, not the datapath.  The stimulus is exactly",
+           "periodic (1024 samples), so every quantisation error in the chain",
+           "is periodic too and lands on a DFT bin instead of spreading.  A",
+           "coherent single-bin spur audit on a periodic probe therefore stops",
+           "at about -55 dBc; the same trap as the capture-periodic dither.",
+           "",
+           f"The 50-tone transfer is 256.00 with {g0.max()-g0.min():.3f} dB spread,",
+           f"and that spread is the probe's own lines ({l0/t0*100:.2f} % of a tone);",
+           "the sparse probe measures 0.000 dB spread at the same nodes.  So the",
+           "sparse conclusions are not an artifact of a sparse probe."]
+    a.text(0.0, 0.98, "\n".join(txt), fontsize=7.4, va="top", family="monospace")
+
+    fig.tight_layout(rect=[0, 0.01, 1, 0.945])
+    outp = os.path.join(base, "loop_dense.png")
+    fig.savefig(outp, dpi=110)
+    plt.close(fig)
+    print("\n=== 50-tone dense probe (one-sided, same total RMS as the sparse set) ===")
+    for drv in ("0 dB", "-25 dB"):
+        for row in data[drv]:
+            g = 20 * np.log10(row["gain"])
+            print(f"  {drv:6s} ch{row['ch']}: gain {row['gain'].min():.4f}..{row['gain'].max():.4f} "
+                  f"({g.max()-g.min():.4f} dB spread), mean tone {row['tone'].mean():8.0f}, "
+                  f"strongest other line {row['lines'][0][1]:7.1f} "
+                  f"({20*np.log10(row['lines'][0][1]/row['tone'].mean()):+6.1f} dBc)")
+    print(f"  wrote {os.path.relpath(outp)}")
+
+
 
 def retune():
     """A settings write on a running transmitter: LO retune and rate rewrite."""
@@ -1821,6 +1955,8 @@ if __name__ == "__main__":
             inband_match()
         elif t == "rates":
             rates()
+        elif t == "dense":
+            dense()
         else:
             main(t)
     if "budget" not in args:

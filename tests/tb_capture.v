@@ -22,6 +22,10 @@
 //                  because the reverse path needs the RX at the full clock.
 //   -DX4           transmit interpolation x4 (two cascaded halfbands, the
 //                  15.36 MS/s host rate); forward only, same reason.
+//   -DDENSE        dense one-sided probe instead of the 14-tone set: 25 tones
+//                  per channel on a 16-bin comb, together filling every 8th
+//                  bin to 0.39 fs_host.  Same total RMS as the sparse set, so
+//                  any energy in an empty bin is intermodulation, not noise.
 //
 // The two channels carry disjoint tone sets, so any tone of channel 1 that
 // appears in a channel 0 node is crosstalk, and it is measurable to the dither
@@ -81,7 +85,31 @@ module tb_capture;
    real s0i [0:L-1], s0q [0:L-1], s1i [0:L-1], s1q [0:L-1];
    integer n, k;
    real ph, acc;
+`ifdef DENSE
+   // 25 tones per channel, one-sided: ch0 on bins 8+16m, ch1 on 16+16m, so the
+   // two channels interleave and together occupy every 8th bin up to 0.39
+   // fs_host.  Per-tone 748 = the 14-tone set's total RMS (sqrt(25)*748 =
+   // sqrt(14)*1000), so the two probes stress the converters equally.
+   localparam integer ND  = 25;
+   localparam real    APT = AMP * (748.0/7000.0);   // 748 at the nominal AMP
+   integer m;
+`endif
    initial begin
+`ifdef DENSE
+      for (n = 0; n < L; n = n + 1) begin
+         s0i[n] = 0.0; s0q[n] = 0.0; s1i[n] = 0.0; s1q[n] = 0.0;
+         for (m = 0; m < ND; m = m + 1) begin
+            ph = 2.0*PI*(((m*37 + 11) % 181)/181.0);
+            acc = 2.0*PI*(8 + 16*m)*n/L + ph;
+            s0i[n] = s0i[n] + APT*$cos(acc);
+            s0q[n] = s0q[n] + APT*$sin(acc);
+            ph = 2.0*PI*(((m*53 + 97) % 227)/227.0);
+            acc = 2.0*PI*(16 + 16*m)*n/L + ph;
+            s1i[n] = s1i[n] + APT*$cos(acc);
+            s1q[n] = s1q[n] + APT*$sin(acc);
+         end
+      end
+`else
       for (n = 0; n < L; n = n + 1) begin
          s0i[n] = 0.0; s0q[n] = 0.0; s1i[n] = 0.0; s1q[n] = 0.0;
          for (k = 0; k < NT; k = k + 1) begin
@@ -118,6 +146,7 @@ module tb_capture;
 `endif
          end
       end
+`endif
    end
 
    // ---- converter model -------------------------------------------------
@@ -346,6 +375,14 @@ module tb_capture;
       fd_air    = $fopen("cap_match_air.txt",    "w");
       fd_rxmix  = $fopen("cap_match_rx_mix.txt", "w");
       fd_rxhost = $fopen("cap_match_rx_host.txt","w");
+   `elsif DENSE
+      fd_host   = $fopen("cap_dense_host.txt",   "w");
+      fd_hb     = $fopen("cap_dense_tx_hb.txt",  "w");
+      fd_mix    = $fopen("cap_dense_tx_mix.txt", "w");
+      fd_pins   = $fopen("cap_dense_tx_pins.txt","w");
+      fd_air    = $fopen("cap_dense_air.txt",    "w");
+      fd_rxmix  = $fopen("cap_dense_rx_mix.txt", "w");
+      fd_rxhost = $fopen("cap_dense_rx_host.txt","w");
    `elsif CONV
       fd_host   = $fopen("cap_conv_host.txt",   "w");
       fd_hb     = $fopen("cap_conv_tx_hb.txt",  "w");
@@ -436,6 +473,14 @@ module tb_capture;
       fd_air1    = $fopen("cap_match_air1.txt",    "w");
       fd_dac     = $fopen("cap_match_dac.txt", "w");
       fd_adc     = $fopen("cap_match_adc.txt", "w");
+   `elsif DENSE
+      fd_pins1   = $fopen("cap_dense_tx_pins1.txt", "w");
+      fd_rxhost1 = $fopen("cap_dense_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_dense_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_dense_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_dense_air1.txt",    "w");
+      fd_dac     = $fopen("cap_dense_dac.txt", "w");
+      fd_adc     = $fopen("cap_dense_adc.txt", "w");
    `elsif CONV
       fd_pins1   = $fopen("cap_conv_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_conv_rx_host1.txt","w");
