@@ -264,6 +264,8 @@ help:
 	  '  make hello      Compile the hello world through the whole toolchain' \
 	  '  make doctor     Check host tools and the toolchain image' \
 	  '  make verify     Check the committed source state' \
+	  '  make image-check  Prove the shipped .bin is from this tree' \
+	  '  make record-image Stamp the image hash + source digest after a build' \
 	  '  make shell      Interactive shell in the toolchain image' \
 	  '  make clean      Remove only this repository build/ directory' \
 	  '  make image-clean # remove all toolchain images' \

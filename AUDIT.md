@@ -200,6 +200,15 @@ Each one fails loudly if a future change breaks it:
 - `tb_dds_lut`    sin(t) = cos(t - 90 degrees) bit-exactly
 - `tb_usb_rate`   words per beat = 2.000 and delivered rate >= requirement
 - `tb_dither_dc`  static input: no DC bias, triangular +-1 LSB, four idle codes
+- `tb_rx_saturate`  a complex envelope above full scale clips (peak +32767,
+                  trough -32768), never wraps
+- `tb_tx_timed`   a future-scheduled packet fires at exactly its tick; a past
+                  tick raises TIME_ERROR without starting the DAC
+- `tb_tx_pairing` every host sample reaches the DUC once, in order, across
+                  even, odd-length and burst packets (self-checking tag)
+- `tb_tx_underrun` starving the host never presents a stale sample (`run` low)
+- `tb_gpif_cdc`   FX3 interface at 100/101 MHz with 3 ns phase: 320/320 words,
+                  packet boundaries intact
 - `tb_cordic_overflow`  TX rotator saturates at the rail instead of wrapping;
                   the old slice makes it jump 16 769 546 counts (two wraps per
                   revolution) and the test fails
