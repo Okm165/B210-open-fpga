@@ -277,7 +277,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
-.PHONY: help doctor verify test test-data elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
+.PHONY: help doctor verify test test-data test-data2 elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
         shell build synth pnr bitstream record-image image-check release-check plots plots-extra hello analyze timing clean image-clean
 
 help:
@@ -811,6 +811,8 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pairing.log tb_tx_pairing.vvp
 	@grep -q 'TX-PAIR: PASS' $(SIM_DIR)/tb_tx_pairing.log || \
 	  { echo "ERROR: TX sample pairing broken; see $(SIM_DIR)/tb_tx_pairing.log"; exit 1; }
+test-data2:
+	@set -e
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_loopback2 -o tb_loopback2.vvp $(LOOP2_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_loopback2.log tb_loopback2.vvp
@@ -847,6 +849,12 @@ test-data:
 
 
 
+	cd $(ROOT) && $(MAKE) --no-print-directory test-data2
+
+# The second half of the data-path benches.  Split off test-data because
+# .ONESHELL passes each recipe to one shell as a single argument, and the
+# expanded source lists overflow MAX_ARG_STRLEN (the measured failure:
+# bash: Argument list too long) once the recipe grew past it again.
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
