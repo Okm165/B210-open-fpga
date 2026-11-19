@@ -12,6 +12,16 @@
 
 // NOTE   This only works for N=4, max interp rate of 128
 // NOTE   signal "rate" is EQUAL TO the actual rate (no more -1 BS)
+//
+// Normalisation is a SHIFT, which is exact only for power-of-two rates
+// (gain = R^(N-1)).  Measured DC gain, reset between rates:
+//   R=2,4,8,16  1.000
+//   R=3,6,12   0.843    R=5,10  0.976    R=7,14  0.669
+//   R=9 0.711   R=11 0.649   R=13 0.536   R=15 0.823
+// so the TX level contract is: exact at power-of-two CIC rates; other rates
+// carry a deterministic 0..-5.4 dB level error (calibration, not distortion).
+// A Q15 reciprocal table + one multiply would make it exact if that becomes
+// a product requirement.
 
 module cic_int_shifter(rate,signal_in,signal_out);
    parameter bw = 16;
