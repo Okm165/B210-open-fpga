@@ -501,8 +501,10 @@ verify:
 # `record-image` stamps the pair (image hash, source digest) after a build;
 # `image-check` refuses to call an image deployable if either has moved.
 record-image:
+	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
 	@test -s $(ROOT)/build/fpga/bitstream/usrp_b210_fpga.bin || \
 	  { echo "ERROR: no image to record; run make bitstream"; exit 1; }
+	@$(ROOT)/scripts/image-fresh.sh
 	@cd $(ROOT) && { \
 	  echo "# Bitstream provenance.  Written by \`make record-image\` after a build and"; \
 	  echo "# checked by \`make image-check\`.  The image is deployable only if both"; \
