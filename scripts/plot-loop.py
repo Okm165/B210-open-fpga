@@ -667,6 +667,123 @@ def band():
     plt.close(fig)
     print(f"  wrote {os.path.relpath(outp)}")
 
+def proof():
+    """One sheet: the loop's ends, forward and reverse, with the numbers.
+
+    Everything is measured from the dumped nodes: the end is compared with the
+    air node through its measured gain and delay, never with a fit to itself.
+    Both directions are put in the same 16-bit units so the panels compare.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    K0 = [8, 24, 47, 83, 115, 138, 150]
+    K1 = [13, 31, 59, 97, 124, 143, 149]
+    IF = 128
+    FS = 15.36e6
+    rows = {}
+    # tag, forward?, delay, air tones at IF+k?, end is 24-bit?
+    cfgs = (("fwd_x1", True, 5, True, False), ("rev", False, 28, False, True))
+    for tag, fwd, lag, air_if, end24 in cfgs:
+        got = []
+        for ch, ks in ((0, K0), (1, K1)):
+            suf = "" if ch == 0 else "1"
+            air = load(os.path.join(base, f"cap_{tag}_air{suf}.txt"))
+            out = load(os.path.join(base,
+                                    f"cap_{tag}_{'rx_host' if fwd else 'tx_pins'}{suf}.txt"))
+            if air is None or out is None:
+                continue
+            air = air / 256.0                      # both ends in LSB16
+            out = out / (256.0 if end24 else 1.0)
+            n = len(out)
+            t = np.arange(n)
+            # the model is the air node at baseband: forward it carries the IF
+            bb = air * np.exp(-2j * np.pi * IF * t / 1024) if air_if else air
+            model = np.zeros_like(out)
+            model[lag:] = bb[:n - lag]
+            resid = out[lag:] - model[lag:]
+            sig = np.sqrt(np.mean(np.abs(model[lag:]) ** 2))
+            g, f = [], []
+            for k in ks:
+                a = np.mean(air * np.exp(-2j * np.pi * (IF + k if air_if else k) * t / 1024))
+                b = np.mean(out * np.exp(-2j * np.pi * k * t / 1024))
+                g.append(20 * np.log10(abs(b) / max(abs(a), 1e-12)))
+                f.append(k * FS / 1024 / 1e6)
+            got.append(dict(ch=ch, f=f, g=g, out=out, model=model, lag=lag,
+                            resid=resid, sig=sig,
+                            lsb=np.sqrt(np.mean(np.abs(resid) ** 2)),
+                            dbc=20 * np.log10(np.sqrt(np.mean(np.abs(resid) ** 2)) / sig)))
+        if got:
+            rows[tag] = got
+    if len(rows) != 2:
+        print(f"  proof page skipped: {sorted(rows)}")
+        return
+
+    fig, axs = plt.subplots(3, 2, figsize=(13, 10))
+    fig.suptitle("the loop end to end: forward and reverse, every difference measured", fontsize=12)
+    for col, (tag, title) in enumerate((("fwd_x1", "forward"), ("rev", "reverse"))):
+        got = rows[tag]
+        lag = got[0]["lag"]
+        a = axs[0][col]
+        m = 80
+        for r in got:
+            colour = "#1f4e79" if r["ch"] == 0 else "#c00000"
+            a.plot(np.arange(m), r["out"][lag:lag + m].real, ".", ms=2.4, color=colour,
+                   label=f"ch{r['ch']} end")
+            a.plot(np.arange(m), r["model"][lag:lag + m].real, "-", lw=0.9, color=colour,
+                   alpha=0.55)
+        a.set_title(f"{title}: end (dots) vs air through its gain/delay (line)", fontsize=9)
+        a.set_xlabel("sample")
+        a.set_ylabel("LSB16")
+        a.grid(alpha=0.25, lw=0.4)
+        a.legend(fontsize=6.5)
+        a.tick_params(labelsize=7)
+
+        a = axs[1][col]
+        for r in got:
+            a.plot(r["f"], r["g"], "o-", ms=3,
+                   color="#1f4e79" if r["ch"] == 0 else "#c00000",
+                   label=f"ch{r['ch']}: spread {max(r['g'])-min(r['g']):.3f} dB")
+        a.axhline(0, color="k", lw=0.5)
+        a.set_ylim(-1.2, 1.2)
+        a.set_title(f"{title}: per-tone gain, channel removed", fontsize=9)
+        a.set_xlabel("MHz")
+        a.set_ylabel("dB")
+        a.grid(alpha=0.25, lw=0.4)
+        a.legend(fontsize=6.5)
+        a.tick_params(labelsize=7)
+
+        a = axs[2][col]
+        r = got[0]
+        n = len(r["resid"])
+        E = np.abs(np.fft.fft(r["resid"])) / n
+        f = np.fft.fftfreq(n, 1 / FS)
+        sel = f >= 0
+        em = 20 * np.log10(np.maximum(E[sel] / r["sig"], 1e-12))
+        a.plot(f[sel] / 1e6, em, lw=0.6, color="#7030a0")
+        a.set_ylim(-140, -40)
+        a.set_title(f"{title}: residual spectrum (worst {em.max():.0f} dBc)", fontsize=9)
+        a.set_xlabel("MHz")
+        a.set_ylabel("dBc")
+        a.grid(alpha=0.25, lw=0.4)
+        a.tick_params(labelsize=7)
+
+    lines = []
+    for tag, name in (("fwd_x1", "forward"), ("rev", "reverse")):
+        for r in rows[tag]:
+            lines.append(f"{name} ch{r['ch']}: residual {r['lsb']:.2f} LSB rms "
+                         f"({r['dbc']:.1f} dBc), gain spread {max(r['g'])-min(r['g']):.3f} dB")
+    fig.text(0.5, 0.012, "   |   ".join(lines[:2]) + "\n" + "   |   ".join(lines[2:]),
+             ha="center", fontsize=7.5)
+    fig.tight_layout(rect=[0, 0.05, 1, 0.95])
+    outp = os.path.join(base, "loop_proof.png")
+    fig.savefig(outp, dpi=110)
+    plt.close(fig)
+    print("\n=== proof sheet ===")
+    for line in lines:
+        print("  " + line)
+    print(f"  wrote {os.path.relpath(outp)}")
+
+
 def retune():
     """A settings write on a running transmitter: LO retune and rate rewrite."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -850,6 +967,8 @@ if __name__ == "__main__":
             clkmux()
         elif t == "band":
             band()
+        elif t == "proof":
+            proof()
         else:
             main(t)
     if "budget" not in args:

@@ -968,7 +968,7 @@ plots-extra:
 	cd $(ROOT)/build/plots/bandx2 && $(VVP) -n $(SIM_DIR)/tb_bandx2.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
-	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band
+	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:
