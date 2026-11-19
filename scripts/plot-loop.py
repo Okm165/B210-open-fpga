@@ -272,8 +272,11 @@ def main(tag):
     a.set_ylim(-35, 1.5)
     a.set_xlabel("tone index (28: ch0 pair, ch1 pair, ...)")
     a.set_ylabel("level error vs injected, dB")
-    a.set_title(f"every tone arrives within "
-                f"{np.abs(amp_db[ch==0]).max():.2f} dB of the injected level", fontsize=9)
+    # The reference here is the generator, so this panel shows the channel's
+    # comb on top of the loop's gain.  The loop's own transparency is measured
+    # against the node that actually entered it (plot-diff.py).
+    a.set_title(f"tone level vs the generator: within "
+                f"{np.abs(amp_db[ch==0]).max():.2f} dB (the channel's comb)", fontsize=9)
     a.legend(fontsize=6.5, loc="lower left")
     a.grid(alpha=0.25, lw=0.4)
     a.tick_params(labelsize=7)
