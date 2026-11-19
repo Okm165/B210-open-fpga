@@ -228,6 +228,11 @@ AIR_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_airloop.v
 
+# Stage-by-stage capture for `make plots` (not a pass/fail bench).
+CAPTURE_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_capture.v
+
 # Two-tone third-order intermodulation through the complete TX->RX path.
 IMD3_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
@@ -264,7 +269,7 @@ HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
 .PHONY: help doctor verify test test-data elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
-        shell build synth pnr bitstream record-image image-check release-check hello analyze timing clean image-clean
+        shell build synth pnr bitstream record-image image-check release-check plots hello analyze timing clean image-clean
 
 help:
 	@printf '%s\n' \
@@ -285,6 +290,7 @@ help:
 	  '  make image-check  Prove the shipped .bin is from this tree' \
 	  '  make release-check verify + image-check + test in one go' \
 	  '  make record-image Stamp the image hash + source digest after a build' \
+	  '  make plots        Render the whole-radio loop to PNG (build/plots)' \
 	  '  make shell      Interactive shell in the toolchain image' \
 	  '  make clean      Remove only this repository build/ directory' \
 	  '  make image-clean # remove all toolchain images' \
@@ -816,6 +822,24 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_airloop_rev.log tb_airloop_rev.vvp
 	@grep -q 'AIR-REV: PASS' $(SIM_DIR)/tb_airloop_rev.log || \
 	  { echo "ERROR: air-path RX->TX loop failed; see $(SIM_DIR)/tb_airloop_rev.log"; exit 1; }
+
+# Render the whole-radio loop: three configurations, every intermediate stage
+# dumped by tb_capture, then drawn and measured by scripts/plot-loop.py.
+plots:
+	@mkdir -p $(ROOT)/build/plots
+	@ln -sfn $(ROOT)/src $(ROOT)/build/plots/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_capture -o tb_cap_x1.vvp $(CAPTURE_TEST_SRCS)
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -I $(ROOT)/src/rtl/control \
+	  -s tb_capture -o tb_cap_x2.vvp $(CAPTURE_TEST_SRCS)
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DREVERSE -I $(ROOT)/src/rtl/control \
+	  -s tb_capture -o tb_cap_rev.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_x1.vvp  | grep CAPTURE
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_x2.vvp  | grep CAPTURE
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_rev.vvp | grep CAPTURE
+	cd $(ROOT) && $(PYTHON) scripts/plot-loop.py fwd_x1 fwd_x2 rev
+	@echo "plots: $(ROOT)/build/plots/loop_*.png"
+
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp

@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""plot-loop.py - turn the tb_capture dumps into spectrum/error PNGs and numbers.
+
+Reads cap_*.txt written by tests/tb_capture.v (one "i q" pair per line, one
+file per observed node) and produces, per run, a two-page figure:
+
+  A) spectra of every intermediate stage, in dBFS against MHz, with the
+     expected tone positions marked: the whole datastream, not one tone.
+  B) the analysis page: measured vs ideal at the tone bins, the error spectrum
+     after removing the best-fit gain and delay, the 12-bit converter word's
+     code usage, and cross-channel leakage.
+
+The comparison reference is the *model*, built from the same integer words the
+bench feeds the sink, so the channel's multipath can never be charged to the
+FPGA: forward compares the RX output against the air model applied to the pin
+word, reverse compares the pin word against the dumped air signal.
+"""
+import os
+import sys
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+L = 1024                     # stimulus period, host samples
+NT = 7                       # tone pairs per channel
+AMP = 7000.0                 # per-channel peak envelope, host units
+K0 = [8, 24, 47, 83, 115, 138, 150]
+K1 = [13, 31, 59, 97, 124, 143, 149]
+IF = 128                     # NCO phase_inc 0x2000_0000 = fs/8 = 128 bins/L
+
+# name -> (file suffix, integer width, full scale, IF shift in units of fs/8)
+#   0 = complex baseband, +1 = the transmit IF, -1 = the reversed-path IF
+STAGES = {
+    "host in (16b)":     ("host",    16, 2**15, 0),
+    "tx interp (18b)":   ("tx_hb",   18, 2**17, None),   # filled per mode below
+    "tx mixer (18b)":    ("tx_mix",  18, 2**17, None),
+    "tx pins (24b)":     ("tx_pins", 24, 2**23, None),
+    "air / rx in (24b)": ("air",     24, 2**23, None),
+    "rx mixer (24b)":    ("rx_mix",  24, 2**23, None),
+    "rx host out (16b)": ("rx_host", 16, 2**15, None),
+}
+FWD_SHIFT = {"host in (16b)": 0, "tx interp (18b)": 0, "tx mixer (18b)": 1,
+             "tx pins (24b)": 1, "air / rx in (24b)": 1, "rx mixer (24b)": 0,
+             "rx host out (16b)": 0}
+REV_SHIFT = {"air / rx in (24b)": 0, "rx mixer (24b)": -1, "rx host out (16b)": -1,
+             "tx interp (18b)": -1, "tx mixer (18b)": 0, "tx pins (24b)": 0}
+ORDER_FWD = ["host in (16b)", "tx interp (18b)", "tx mixer (18b)", "tx pins (24b)",
+             "air / rx in (24b)", "rx mixer (24b)", "rx host out (16b)"]
+ORDER_REV = ["air / rx in (24b)", "rx mixer (24b)", "rx host out (16b)",
+             "tx interp (18b)", "tx mixer (18b)", "tx pins (24b)"]
+
+
+def load(path):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return None
+    d = np.loadtxt(path, dtype=np.int64)
+    if d.ndim == 1:
+        d = d.reshape(1, -1)
+    return d[:, 0].astype(float) + 1j * d[:, 1].astype(float)
+
+
+def spectrum(x, fs):
+    N = len(x)
+    X = np.fft.fftshift(np.fft.fft(x)) / N
+    f = np.fft.fftshift(np.fft.fftfreq(N, 1.0 / fs))
+    return f, X
+
+
+def expect(fs_stage, fs_host, shift, kset):
+    """Expected tone frequencies (Hz) for one stage kind.
+
+    R = stage rate / host rate.  The interpolator puts host bin k at k/R bins
+    of the stage; each mixer moves it by fs/8 = IF bins/L, and the RX mixer
+    moves it back, so the output stage is back at k/R.
+    """
+    R = fs_stage / fs_host
+    out = []
+    for k in kset:
+        for s in (+1, -1):
+            out.append((shift * IF + s * k / R) * fs_stage / L)
+    return np.array(out)
+
+
+def guarded_max(mag, f, tones, guard=3, window=None):
+    mask = np.ones(len(f), dtype=bool)
+    for t in tones:
+        j = int(np.argmin(np.abs(f - t)))
+        mask[max(0, j - guard):j + guard + 1] = False
+    mask[:2] = False
+    mask[-2:] = False
+    j0 = int(np.argmin(np.abs(f)))
+    mask[max(0, j0 - 2):j0 + 3] = False
+    if window is not None:
+        lo, hi = window
+        mask &= (np.abs(f) >= lo) & (np.abs(f) <= hi)
+    if not mask.any():
+        return -200.0, 0
+    v = mag[mask].max()
+    return 20 * np.log10(max(v, 1e-12) / mag.max()), int(np.argmax(np.where(mask, mag, 0)))
+
+
+def trunc_div(x, d):
+    # Verilog integer division truncates toward zero, per component
+    return np.trunc(x.real / d) + 1j * np.trunc(x.imag / d)
+
+
+def fit_gain_delay(ref, y, max_lag=L + 80):
+    """Pick the lag by minimum residual energy over a full stimulus period.
+
+    The capture window starts on an arbitrary clock, so the reference is offset
+    by an unknown number of samples; because the stimulus is periodic with L,
+    the offset is ambiguous modulo L, and every candidate must be tried.  A
+    single mis-estimated offset rotates each tone by a different phase
+    (2 pi k n0 / L) and looks like massive distortion - which is exactly the
+    trap this search avoids."""
+    n = min(len(ref), len(y))
+    best = None
+    for lag in range(0, max_lag):
+        a = ref[:n - lag]
+        b = y[lag:n]
+        a0 = a - a.mean()
+        g = np.vdot(a0, b - b.mean()) / np.vdot(a0, a0)
+        e = np.mean(np.abs(b - b.mean() - g * a0) ** 2)
+        if best is None or e < best[0]:
+            best = (e, lag, g)
+    e, lag, g = best
+    a = ref[:n - lag] - ref[:n - lag].mean()
+    b = y[lag:n]
+    return g, lag, b, g * a
+
+
+def fit_two(ref, cpl, y, max_lag=L + 80):
+    """Least squares for y = g*ref + c*cpl over the lag, two complex unknowns."""
+    n = min(len(ref), len(y))
+    best = None
+    for lag in range(0, max_lag):
+        a = ref[:n - lag]
+        b = cpl[:n - lag]
+        q = y[lag:n]
+        A = np.stack([a, b], axis=1)
+        Am = A - A.mean(axis=0)
+        qm = q - q.mean()
+        sol, *_ = np.linalg.lstsq(Am, qm, rcond=None)
+        e = np.mean(np.abs(qm - Am @ sol) ** 2)
+        if best is None or e < best[0]:
+            best = (e, lag, sol)
+    e, lag, sol = best
+    g, c = sol
+    a = ref[:n - lag] - ref[:n - lag].mean()
+    b = cpl[:n - lag] - cpl[:n - lag].mean()
+    q = y[lag:n]
+    return g, lag, q, g * a + c * b, c
+
+
+def main(tag):
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    fwd = not tag.startswith("rev")
+    x2 = tag.endswith("x2")
+    fs_dac = 61.44e6
+    fs_host = fs_dac / 2 if x2 else fs_dac
+    order = ORDER_FWD if fwd else ORDER_REV
+    R = fs_dac / fs_host
+
+    data = {}
+    for name in order:
+        x = load(os.path.join(base, f"cap_{tag}_{STAGES[name][0]}.txt"))
+        if x is not None:
+            data[name] = x
+    if not data:
+        sys.exit(f"no captures for tag {tag} in {base}")
+
+    shift = FWD_SHIFT if fwd else REV_SHIFT
+
+    def rate_of(name):
+        return fs_host if name == "host in (16b)" else fs_dac
+
+    print(f"\n=== {tag} ===")
+    for name, x in data.items():
+        fs_ = STAGES[name][2]
+        rms = 20 * np.log10(max(np.sqrt(np.mean(np.abs(x) ** 2)) / fs_, 1e-12))
+        print(f"  {name:22s} {len(x):5d} samples  rms {rms:6.1f} dBFS")
+
+    # ------------------------------------------------------------ figure A
+    fig, axes = plt.subplots(len(order), 1, figsize=(13, 2.05 * len(order) + 0.9),
+                             sharex=False)
+    if len(order) == 1:
+        axes = [axes]
+    fig.suptitle(f"whole-radio loop, {tag}: the complex datastream at every stage "
+                 f"(14 tones, two channels, mixer at fs/8)", fontsize=11)
+    for ax, name in zip(axes, order):
+        if name not in data:
+            ax.set_visible(False)
+            continue
+        x = data[name]
+        fs_stage = rate_of(name)
+        f, X = spectrum(x, fs_stage)
+        y = 20 * np.log10(np.maximum(np.abs(X) / STAGES[name][2], 1e-12))
+        ax.plot(f / 1e6, y, lw=0.7, color="#1f4e79")
+        for t in expect(fs_stage, fs_host, shift[name], K0):
+            ax.axvline(t / 1e6, color="#c00000", ls=":", lw=0.6)
+        for t in expect(fs_stage, fs_host, shift[name], K1):
+            ax.axvline(t / 1e6, color="#00a651", ls=":", lw=0.4, alpha=0.6)
+        ax.set_ylim(-150, 0)
+        ax.set_ylabel("dBFS", fontsize=7)
+        ax.grid(alpha=0.25, lw=0.4)
+        ax.tick_params(labelsize=7)
+        ax.set_title(name, fontsize=8, loc="left", pad=1)
+        ax.set_xlim(-fs_stage / 2e6, fs_stage / 2e6)
+    axes[-1].set_xlabel("MHz (complex baseband at that stage's rate; red = ch0 tones, green = ch1)", fontsize=8)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    out_a = os.path.join(base, f"loop_{tag}_spectra.png")
+    fig.savefig(out_a, dpi=110)
+    plt.close(fig)
+
+    # ------------------------------------------------------------ figure B
+    fig, ax = plt.subplots(2, 2, figsize=(13, 8.2))
+    fig.suptitle(f"loop {tag}: tone-by-tone accuracy, residual, converter usage", fontsize=11)
+
+    # --- analysis: fit the output onto the known 28-tone basis.
+    # A least-squares fit onto exactly the tones that were transmitted makes
+    # the residual the *non-tone* content: distortion, images and noise.  It
+    # cannot be fooled by a delay, a rotation or the channel's comb, which is
+    # what an assumed model kept getting wrong.  All tone amplitudes come out
+    # of the same fit, so flatness is measured, not assumed.
+    out = data["rx host out (16b)"] if fwd else data["tx pins (24b)"]
+    out_name = "rx host out (16b)" if fwd else "tx pins (24b)"
+    n = len(out)
+    t = np.arange(n)
+    out_shift = shift[out_name]
+    if out_shift:
+        out = out * np.exp(-1j * 2 * np.pi * out_shift * IF * t / L)
+
+    kR = 1.0 if fwd else 1.0
+    kR = 2.0 if (fwd and x2) else kR        # x2 output runs at twice the host rate
+    basis, labels = [], []
+    for j, kk in enumerate(K0):
+        basis += [np.exp(1j * 2 * np.pi * kk * t / (L * kR)), np.exp(-1j * 2 * np.pi * kk * t / (L * kR))]
+        labels += [(kk, +1, 0), (kk, -1, 0)]
+    for j, kk in enumerate(K1):
+        basis += [np.exp(1j * 2 * np.pi * kk * t / (L * kR)), np.exp(-1j * 2 * np.pi * kk * t / (L * kR))]
+        labels += [(kk, +1, 1), (kk, -1, 1)]
+    A = np.stack(basis, axis=1)
+    sol, *_ = np.linalg.lstsq(A, out, rcond=None)
+    fit = A @ sol
+    err = out - fit
+    evm = 20 * np.log10(max(np.sqrt(np.mean(np.abs(err) ** 2)) /
+                            np.sqrt(np.mean(np.abs(fit) ** 2)), 1e-12))
+    fs_out = 2**15 if fwd else 2**23
+    tone_dbfs = 20 * np.log10(np.abs(sol).max() / fs_out)
+    spread = 20 * np.log10(np.abs(sol).max() / np.abs(sol).min())
+    resid_lsb = np.sqrt(np.mean(np.abs(err) ** 2))
+    print(f"  {out_name}: {len(labels)} tones fitted, strongest {tone_dbfs:+.2f} dBFS, "
+          f"residual (distortion+noise) {evm:.1f} dB below them ({resid_lsb:.2f} LSB rms)")
+    print(f"  tone level spread {spread:.2f} dB (the channel's comb plus any gain error)")
+
+    a = ax[0][0]
+    # per-tone level error against what was injected: the flatness/linearity
+    # of the whole chain, tone by tone, ch0 solid and the -30 dB coupling open
+    inj = AMP / NT                     # per-tone amplitude, host LSB
+    scale = 256.0 if not fwd else 1.0     # the pin word is the host word x 256
+    amp_db = 20 * np.log10(np.maximum(np.abs(sol), 1e-9) / (inj * scale))
+    ch = np.array([l[2] for l in labels])
+    kk = np.array([l[0] * l[1] for l in labels])
+    a.stem(np.arange(len(sol))[ch == 0], amp_db[ch == 0], linefmt="C0-", markerfmt="C0o",
+           basefmt=" ", label="channel 0 tone")
+    a.plot(np.arange(len(sol))[ch == 1], amp_db[ch == 1], "C1x", ms=4,
+           label="channel 1, seen through the -30 dB coupling")
+    a.axhline(0, color="k", lw=0.6)
+    a.axhline(-30, color="C1", lw=0.6, ls=":")
+    a.set_ylim(-35, 1.5)
+    a.set_xlabel("tone index (28: ch0 pair, ch1 pair, ...)")
+    a.set_ylabel("level error vs injected, dB")
+    a.set_title(f"every tone arrives within "
+                f"{np.abs(amp_db[ch==0]).max():.2f} dB of the injected level", fontsize=9)
+    a.legend(fontsize=6.5, loc="lower left")
+    a.grid(alpha=0.25, lw=0.4)
+    a.tick_params(labelsize=7)
+
+    b = ax[0][1]
+    E = np.fft.fftshift(np.fft.fft(err)) / n
+    fe = np.fft.fftshift(np.fft.fftfreq(n, 1 / fs_dac))
+    ref_amp = np.sqrt(np.mean(np.abs(fit) ** 2))
+    b.plot(fe / 1e6, 20 * np.log10(np.maximum(np.abs(E) / ref_amp, 1e-12)),
+           lw=0.6, color="#7030a0")
+    b.set_title(f"residual spectrum (everything that is not one of the 28 tones): "
+                f"worst {20*np.log10(max(np.abs(E).max()/ref_amp,1e-12)):.0f} dBc", fontsize=8.5)
+    b.set_xlabel("MHz")
+    b.set_ylabel("dBc")
+    b.set_ylim(-150, -20)
+    b.grid(alpha=0.25, lw=0.4)
+    b.tick_params(labelsize=7)
+
+    c = ax[1][0]
+    if fwd:
+        conv = data["tx pins (24b)"] / 4096.0     # 24-bit word -> 12-bit converter
+        cname = "DAC 12-bit code"
+    else:
+        conv = data["air / rx in (24b)"] / 4096.0
+        cname = "ADC 12-bit code"
+    codes = np.round(conv.real)
+    c.hist(np.clip(codes, -2048, 2047), bins=96, color="#1f4e79")
+    clip_frac = 100.0 * np.mean(np.abs(codes) >= 2048)
+    c.set_title(f"{cname}: peak {int(np.abs(codes).max())}/2048, rms "
+                f"{20*np.log10(max(np.std(codes)/2048.0,1e-12)):.1f} dBFS, "
+                f"clipped {clip_frac:.2f}% of samples", fontsize=8)
+    c.set_xlabel("code")
+    c.set_ylabel("samples")
+    c.grid(alpha=0.25, lw=0.4)
+    c.tick_params(labelsize=7)
+
+    d = ax[1][1]
+    ev = err if fwd else err / 256.0      # report in 16-bit LSB either way
+    d.plot(np.abs(ev), lw=0.5, color="#7030a0")
+    d.axhline(np.sqrt(np.mean(np.abs(ev) ** 2)), color="k", lw=0.7, ls="--")
+    d.set_title(f"residual magnitude: mean {np.sqrt(np.mean(np.abs(ev)**2)):.2f} LSB, "
+                f"peak {np.abs(ev).max():.1f} LSB (1 LSB = the host word; the dither step)",
+                fontsize=8.5)
+    d.set_xlabel("sample")
+    d.set_ylabel("|error|, LSB of the output word")
+    d.grid(alpha=0.25, lw=0.4)
+    d.tick_params(labelsize=7)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    out_b = os.path.join(base, f"loop_{tag}_analysis.png")
+    fig.savefig(out_b, dpi=110)
+    plt.close(fig)
+
+    # ---- text metrics for the audit
+    print("  --- stage spurs (dBc of that stage's strongest tone) ---")
+    for name in order:
+        if name not in data:
+            continue
+        fs_stage = rate_of(name)
+        f, X = spectrum(data[name], fs_stage)
+        mag = np.abs(X)
+        tones = np.concatenate([expect(fs_stage, fs_host, shift[name], K0),
+                                expect(fs_stage, fs_host, shift[name], K1)])
+        w, idx = guarded_max(mag, f, tones)
+        img, iidx = guarded_max(mag, f, tones, window=(0.30 * fs_stage, 0.50 * fs_stage))
+        img2, _ = guarded_max(mag, f, tones, window=(-0.50 * fs_stage, -0.30 * fs_stage))
+        j0 = int(np.argmin(np.abs(f)))
+        dc = 20 * np.log10(max(mag[max(0, j0 - 1):j0 + 2].max(), 1e-12) / mag.max())
+        print(f"  {name:22s} worst tone-free bin {w:7.1f} dBc at {f[idx]/1e6:6.2f} MHz"
+              f"   image band {max(img, img2):7.1f} dBc   dc {dc:6.1f} dBc")
+    print(f"  wrote {os.path.relpath(out_a)} and {os.path.relpath(out_b)}")
+
+
+if __name__ == "__main__":
+    for t in (sys.argv[1:] or ["fwd_x1", "fwd_x2", "rev"]):
+        main(t)
