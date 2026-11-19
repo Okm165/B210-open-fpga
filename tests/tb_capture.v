@@ -168,11 +168,19 @@ module tb_capture;
 `endif
 
 `ifdef CONV
+   // What the converter sees on each side.  dac0/1 is the channel model's input
+   // (the TX output when transmitting, the antenna source when looping back);
+   // pind0/1 is always the quantised *transmitter* output, i.e. the word the
+   // DAC actually receives.
    wire signed [23:0] dac0_i = q12(ant0_i), dac0_q = q12(ant0_q);
    wire signed [23:0] dac1_i = q12(ant1_i), dac1_q = q12(ant1_q);
+   wire signed [23:0] pind0_i = q12(tx0_i), pind0_q = q12(tx0_q);
+   wire signed [23:0] pind1_i = q12(tx1_i), pind1_q = q12(tx1_q);
 `else
    wire signed [23:0] dac0_i = ant0_i, dac0_q = ant0_q;
    wire signed [23:0] dac1_i = ant1_i, dac1_q = ant1_q;
+   wire signed [23:0] pind0_i = tx0_i, pind0_q = tx0_q;
+   wire signed [23:0] pind1_i = tx1_i, pind1_q = tx1_q;
 `endif
 
    always @(posedge clk) begin
@@ -351,11 +359,7 @@ module tb_capture;
          $fwrite(fd_rxhost, "%0d %0d\n", $signed(rx0_sample[31:16]), $signed(rx0_sample[15:0]));
          $fwrite(fd_hb,     "%0d %0d\n", $signed(tx0.i_interp), $signed(tx0.q_interp));
          $fwrite(fd_mix,    "%0d %0d\n", $signed(tx0.da_r), $signed(tx0.db_r));
-`ifdef CONV
-         $fwrite(fd_pins,   "%0d %0d\n", $signed(dac0_i), $signed(dac0_q));
-`else
-         $fwrite(fd_pins,   "%0d %0d\n", $signed(tx0_i), $signed(tx0_q));
-`endif
+         $fwrite(fd_pins,   "%0d %0d\n", $signed(pind0_i), $signed(pind0_q));
 `else
 `ifdef CONV
          $fwrite(fd_air,    "%0d %0d\n", $signed(adc0_i),  $signed(adc0_q));
@@ -366,11 +370,7 @@ module tb_capture;
          $fwrite(fd_rxhost, "%0d %0d\n", $signed(rx0_sample[31:16]), $signed(rx0_sample[15:0]));
          $fwrite(fd_hb,     "%0d %0d\n", $signed(tx0.i_interp), $signed(tx0.q_interp));
          $fwrite(fd_mix,    "%0d %0d\n", $signed(tx0.da_r), $signed(tx0.db_r));
-`ifdef CONV
-         $fwrite(fd_pins,   "%0d %0d\n", $signed(dac0_i), $signed(dac0_q));
-`else
-         $fwrite(fd_pins,   "%0d %0d\n", $signed(tx0_i), $signed(tx0_q));
-`endif
+         $fwrite(fd_pins,   "%0d %0d\n", $signed(pind0_i), $signed(pind0_q));
          if (tx0.strobe_hb1)
            $fwrite(fd_host, "%0d %0d\n", $signed(tx0_sample[31:16]), $signed(tx0_sample[15:0]));
 `endif
@@ -430,7 +430,7 @@ module tb_capture;
    end
    always @(posedge clk) begin
       if (dump_en) begin
-         $fwrite(fd_pins1,   "%0d %0d\n", $signed(tx1_i), $signed(tx1_q));
+         $fwrite(fd_pins1,   "%0d %0d\n", $signed(pind1_i), $signed(pind1_q));
          $fwrite(fd_hb1,     "%0d %0d\n", $signed(tx1.i_interp), $signed(tx1.q_interp));
          if (tx1.strobe_hb1)
            $fwrite(fd_host1, "%0d %0d\n", $signed(tx1_sample[31:16]), $signed(tx1_sample[15:0]));
