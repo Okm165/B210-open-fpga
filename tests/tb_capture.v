@@ -433,6 +433,11 @@ module tb_capture;
       run = 1;   // the accumulator only resets while run is low at reset time
       @(negedge clk); run = 0;
 `endif
+`ifdef UNALIGNED
+      // A naive driver: the datapath is already running while the two
+      // channels' registers are written one after the other.
+      run = 1;
+`endif
       // NCO at fs/8 on both sides: the composite RX->TX rotation is exactly 1.
 `ifdef X2
       // BASE+2 = {enable_hb1, enable_hb2, interp_rate}: hb1 on, CIC rate 1 = x2
@@ -445,7 +450,9 @@ module tb_capture;
       rwr(0,8'd0,32'h2000_0000); rwr(0,8'd3,0);
       rwr(1,8'd0,32'h2000_0000); rwr(1,8'd3,0);
 `ifndef ALIGN
-      run = 1;
+   `ifndef UNALIGNED
+      run = 1;            // gated start: both accumulators released together
+   `endif
 `endif
 `ifdef ALIGN
       @(negedge clk); run = 1;

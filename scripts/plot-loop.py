@@ -482,6 +482,174 @@ def levels():
     print(f"  wrote {os.path.relpath(out)}")
 
 
+def retune():
+    """A settings write on a running transmitter: LO retune and rate rewrite."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    path = os.path.join(base, "retune_stream.txt")
+    if not os.path.exists(path):
+        print("  (no retune_stream.txt; run the bench first)")
+        return
+    xs, ys, events, n = [], [], [], 0
+    for line in open(path):
+        f = line.split()
+        if not f:
+            continue
+        if f[0] == "EVENT":
+            events.append((n, int(f[1]), int(f[2], 16) if f[2].startswith("0x") else int(f[2])))
+        else:
+            xs.append(int(f[0]))
+            ys.append(int(f[1]))
+            n += 1
+    x = np.array(xs, float) + 1j * np.array(ys, float)
+    step = np.degrees(np.angle(x[1:] * np.conj(x[:-1])))
+    fig, ax = plt.subplots(2, 1, figsize=(12.5, 6.4), sharex=True)
+    fig.suptitle("a settings write on a running transmitter: LO retune and rate-register rewrite",
+                 fontsize=11)
+    ax[0].plot(step, lw=0.8, color="#1f4e79")
+    ax[0].set_ylabel("phase step, deg/sample")
+    ax[0].set_title("sample-to-sample phase step: 47.81 deg is fs/8 + the tone; a flat line is a clean stream",
+                    fontsize=9)
+    ax[0].grid(alpha=0.25, lw=0.4)
+    ax[0].tick_params(labelsize=7)
+    for (pos, addr, val) in events:
+        ax[0].axvline(pos, color="#c00000", lw=0.7, ls=":")
+        ax[0].text(pos + 8, max(step) * 0.85, f"write {addr:#04x}={val:#010x}",
+                   rotation=90, fontsize=6, color="#c00000", va="top")
+    ax[1].plot(np.abs(x), lw=0.6, color="#7030a0")
+    ax[1].set_ylabel("|sample|")
+    ax[1].set_xlabel("sample at the DAC rate (61.44 MSPS)")
+    ax[1].set_title("magnitude is flat through both writes: no gain glitch, no saturation", fontsize=9)
+    ax[1].grid(alpha=0.25, lw=0.4)
+    ax[1].tick_params(labelsize=7)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    out = os.path.join(base, "loop_retune.png")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    # numbers
+    q = np.abs(np.round(step, 2))
+    print("\n=== retune stream ===")
+    print(f"  {len(x)} samples, {len(events)} writes")
+    print(f"  phase step: median {np.median(step):.3f} deg, "
+          f"{np.sum(np.abs(step - np.median(step)) > 1.0)} samples deviate > 1 deg")
+    print(f"  magnitude: min {np.abs(x).min():.0f}, max {np.abs(x).max():.0f}")
+    print(f"  wrote {os.path.relpath(out)}")
+
+
+def match():
+    """Two channels on the same signal: the RTL's own channel-to-channel error."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    fig, ax = plt.subplots(1, 3, figsize=(14, 4.4))
+    fig.suptitle("channel matching: both channels fed the same signal (coupling off)", fontsize=11)
+    rows = []
+    for tag, label, colour in (("UNALIGNED", "written 2 clocks apart, running", "#c00000"),
+                               ("ALIGN", "oscillators released together", "#1f4e79")):
+        a = load(os.path.join(base, f"cap_{tag}_ch0.txt"))
+        b = load(os.path.join(base, f"cap_{tag}_ch1.txt"))
+        if a is None or b is None:
+            continue
+        n = min(len(a), len(b))
+        best = None
+        for lag in range(0, 40):
+            r = a[:n - lag] - a[:n - lag].mean()
+            q2 = b[lag:n] - b[lag:n].mean()
+            g = np.vdot(r, q2) / np.vdot(r, r)
+            e = np.mean(np.abs(q2 - g * r) ** 2)
+            if best is None or e < best[0]:
+                best = (e, lag, g)
+        e, lag, g = best
+        r = a[:n - lag] - a[:n - lag].mean()
+        q2 = b[lag:n]
+        err = q2 - q2.mean() - g * r
+        evm = 20 * np.log10(max(np.sqrt(np.mean(np.abs(err) ** 2)) /
+                                np.sqrt(np.mean(np.abs(g * r) ** 2)), 1e-12))
+        rows.append((label, abs(g), np.degrees(np.angle(g)), lag, evm))
+        ax[0].plot(np.arange(n)[:400], (a[:n][:400]).real, lw=0.8, color=colour,
+                   alpha=0.7, label=f"ch0, {label}")
+        ax[0].plot(np.arange(n)[:400], (b[:n][:400]).real, lw=0.8, ls="--", color=colour,
+                   label=f"ch1, {label}")
+    ax[0].set_title("first 400 samples: the dashed channel is the solid one", fontsize=9)
+    ax[0].set_xlabel("sample")
+    ax[0].set_ylabel("I (LSB)")
+    ax[0].legend(fontsize=6)
+    ax[0].grid(alpha=0.25, lw=0.4)
+    ax[0].tick_params(labelsize=7)
+
+    labs = [r[0] for r in rows]
+    ax[1].barh(range(len(rows)), [r[1] for r in rows], color=["#c00000", "#1f4e79"])
+    ax[1].set_yticks(range(len(rows)))
+    ax[1].set_yticklabels(["2 clocks apart", "released together"], fontsize=7)
+    ax[1].axvline(1.0, color="k", lw=0.8)
+    ax[1].set_xlim(0.99, 1.01)
+    ax[1].set_xlabel("channel 1 / channel 0 gain")
+    ax[1].set_title("gain ratio", fontsize=9)
+    ax[1].grid(alpha=0.25, lw=0.4, axis="x")
+    ax[1].tick_params(labelsize=7)
+
+    ax[2].barh(range(len(rows)), [r[2] for r in rows], color=["#c00000", "#1f4e79"])
+    ax[2].set_yticks(range(len(rows)))
+    ax[2].set_yticklabels(["2 clocks apart", "released together"], fontsize=7)
+    ax[2].axvline(0.0, color="k", lw=0.8)
+    ax[2].set_xlim(-100, 5)
+    ax[2].set_xlabel("channel 1 - channel 0 phase, deg")
+    ax[2].set_title("phase difference", fontsize=9)
+    ax[2].grid(alpha=0.25, lw=0.4, axis="x")
+    ax[2].tick_params(labelsize=7)
+    for i, r in enumerate(rows):
+        ax[2].text(2, i, f"{r[2]:+.2f} deg\nEVM {r[4]:.0f} dB", va="center", fontsize=7)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    out = os.path.join(base, "loop_match.png")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print("\n=== channel matching ===")
+    for label, g, ph, lag, evm in rows:
+        print(f"  {label:34s} gain {g:.6f}, phase {ph:+.4f} deg, lag {lag}, EVM {evm:.1f} dB")
+    print(f"  wrote {os.path.relpath(out)}")
+
+
+def clkmux():
+    """The MIMO clock switch in time: period of radio_clk against time."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    path = os.path.join(base, "clkmux_edges.txt")
+    if not os.path.exists(path):
+        print("  (no clkmux_edges.txt; run the bench first)")
+        return
+    d = np.loadtxt(path)
+    t, period = d[:, 0], d[:, 1]
+    fig, ax = plt.subplots(2, 1, figsize=(12.5, 6.0), sharex=True)
+    fig.suptitle("MIMO clock switchover: radio_clk period while switching both ways", fontsize=11)
+    ax[0].plot(t, period, lw=0.6, color="#1f4e79")
+    ax[0].axhline(8.138, color="#00a651", lw=0.8, ls="--", label="61.44 MHz (SISO)")
+    ax[0].axhline(16.276, color="#c00000", lw=0.8, ls="--", label="30.72 MHz (MIMO)")
+    ax[0].set_ylabel("interval between edges, ns")
+    ax[0].set_title("two switches: SISO -> MIMO and back; the single truncated pulse is visible as a short gap",
+                    fontsize=9)
+    ax[0].legend(fontsize=7)
+    ax[0].grid(alpha=0.25, lw=0.4)
+    ax[0].tick_params(labelsize=7)
+    ax[0].set_ylim(0, 40)
+    ax[1].semilogy(t, period, ".", ms=2, color="#7030a0")
+    ax[1].set_ylabel("interval, ns (log)")
+    ax[1].set_xlabel("time, ns")
+    ax[1].set_title("every edge: no pulse below half the slow period survives the switchover windows",
+                    fontsize=9)
+    ax[1].grid(alpha=0.25, lw=0.4)
+    ax[1].tick_params(labelsize=7)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    out = os.path.join(base, "loop_clkmux.png")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print("\n=== clock mux ===")
+    print(f"  {len(t)} edges, interval range {period.min():.3f} .. {period.max():.3f} ns")
+    print(f"  half-periods at 8.138 ns (SISO): {int(np.sum(np.abs(period-8.138) < 0.1))}, "
+          f"at 16.276 ns (MIMO): {int(np.sum(np.abs(period-16.276) < 0.1))}, other: "
+          f"{int(np.sum((np.abs(period-8.138) >= 0.1) & (np.abs(period-16.276) >= 0.1)))}")
+    print(f"  wrote {os.path.relpath(out)}")
+
+
 if __name__ == "__main__":
     args = sys.argv[1:] or ["fwd_x1", "fwd_x2", "rev", "conv"]
     for t in args:
@@ -489,6 +657,12 @@ if __name__ == "__main__":
             budget()
         elif t == "levels":
             levels()
+        elif t == "retune":
+            retune()
+        elif t == "match":
+            match()
+        elif t == "clkmux":
+            clkmux()
         else:
             main(t)
     if "budget" not in args:

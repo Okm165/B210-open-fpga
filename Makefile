@@ -232,6 +232,11 @@ CLKMUX_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_clkmux.v
 
+# Transmitter settings-write behaviour: LO retune and rate-register rewrite.
+RETUNE_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_tx_retune.v
+
 # Stage-by-stage capture for `make plots` (not a pass/fail bench).
 CAPTURE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
@@ -273,7 +278,7 @@ HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
 .PHONY: help doctor verify test test-data elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
-        shell build synth pnr bitstream record-image image-check release-check plots hello analyze timing clean image-clean
+        shell build synth pnr bitstream record-image image-check release-check plots plots-extra hello analyze timing clean image-clean
 
 help:
 	@printf '%s\n' \
@@ -833,6 +838,11 @@ test-data:
 	  { echo "ERROR: MIMO clock mux produced runt pulses; see $(SIM_DIR)/tb_clkmux.log"; exit 1; }
 	@grep -q 'CLKMUX: PASS - reverse switch also clean' $(SIM_DIR)/tb_clkmux.log || \
 	  { echo "ERROR: MIMO clock mux reverse switch dirty; see $(SIM_DIR)/tb_clkmux.log"; exit 1; }
+	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_retune -o tb_tx_retune.vvp $(RETUNE_TEST_SRCS)
+	@cd $(SIM_DIR) && $(VVP) -n tb_tx_retune.vvp | tee tb_tx_retune.log | grep -E 'RETUNE:'
+	@grep -q 'RETUNE: PASS' $(SIM_DIR)/tb_tx_retune.log || \
+	  { echo "ERROR: a transmitter settings write disturbs the stream; see $(SIM_DIR)/tb_tx_retune.log"; exit 1; }
 
 # Render the whole-radio loop: three configurations, every intermediate stage
 # dumped by tb_capture, then drawn and measured by scripts/plot-loop.py.
@@ -869,6 +879,27 @@ plots-levels:
 	  cp -f cap_conv_adc.txt     cap_lvl_$${a}_adc.txt; \
 	done
 	cd $(ROOT) && python3 scripts/plot-loop.py levels
+
+# The non-spectral pages: settings writes on a live transmitter, channel
+# matching (naive vs aligned start), and the MIMO clock switchover.
+plots-extra:
+	@mkdir -p $(ROOT)/build/plots
+	@ln -sfn $(ROOT)/src $(ROOT)/build/plots/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_retune -o tb_retune.vvp $(RETUNE_TEST_SRCS)
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
+	  -s tb_clkmux -o tb_clkmux.vvp $(CLKMUX_TEST_SRCS)
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DMATCH -DUNALIGNED \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_capm_u.vvp $(CAPTURE_TEST_SRCS)
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DMATCH -DALIGN \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_capm_a.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_retune.vvp | grep 'RETUNE: PASS'
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_clkmux.vvp | grep 'CLKMUX: PASS'
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_capm_u.vvp > /dev/null && cp -f cap_match_rx_host.txt cap_UNALIGNED_ch0.txt && cp -f cap_match_rx_host1.txt cap_UNALIGNED_ch1.txt
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_capm_a.vvp > /dev/null && cp -f cap_match_rx_host.txt cap_ALIGN_ch0.txt && cp -f cap_match_rx_host1.txt cap_ALIGN_ch1.txt
+	cd $(ROOT) && python3 scripts/plot-loop.py retune match clkmux
+	@echo "plots: $(ROOT)/build/plots/loop_retune.png loop_match.png loop_clkmux.png"
+
 
 
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
