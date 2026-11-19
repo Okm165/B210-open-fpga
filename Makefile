@@ -980,6 +980,16 @@ plots-extra:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -DCONV -DBINSCALE=3 \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx2conv.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/bandx2conv && $(VVP) -n $(SIM_DIR)/tb_bandx2conv.vvp > /dev/null
+	@# MIMO channel match at the band edge: gated and naive start, x1 and x2.
+	@for cfg in "ALIGN:bandmatch:" "UNALIGNED:bandmatchn:" \
+	            "ALIGN:bandmatchx2:-DX2" "UNALIGNED:bandmatchx2n:-DX2"; do \
+	  st=$${cfg%%:*}; rest=$${cfg#*:}; dir=$${rest%%:*}; extra=$${rest#*:}; \
+	  mkdir -p $(ROOT)/build/plots/$$dir; \
+	  ln -sfn $(ROOT)/src $(ROOT)/build/plots/$$dir/src; \
+	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DMATCH -D$$st -DBINSCALE=3 $$extra \
+	    -I $(ROOT)/src/rtl/control -s tb_capture -o tb_$$dir.vvp $(CAPTURE_TEST_SRCS); \
+	  cd $(ROOT)/build/plots/$$dir && $(VVP) -n $(SIM_DIR)/tb_$$dir.vvp > /dev/null; \
+	done
 	@mkdir -p $(ROOT)/build/plots/bandx2s5
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx2s5/src
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -DBINSCALE=3 -DSINGLE -DAMPDEF=1400.0 \
@@ -987,7 +997,7 @@ plots-extra:
 	cd $(ROOT)/build/plots/bandx2s5 && $(VVP) -n $(SIM_DIR)/tb_bandx2s5.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
-	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv
+	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:

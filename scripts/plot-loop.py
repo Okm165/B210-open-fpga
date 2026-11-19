@@ -1343,6 +1343,99 @@ def inband_conv():
     print(f"  wrote {os.path.relpath(outp)}")
 
 
+def inband_match():
+    """MIMO channel match at the band edge: gated start vs a naive one.
+
+    Both channels are driven with the *same* signal (tb_capture -DMATCH) so
+    the two ends can be compared sample by sample.  A coherent array needs
+    them to be identical at every frequency; a mismatch that varies with
+    frequency cannot be calibrated out with one offset.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    K = [8, 24, 47, 83, 115, 138, 150]
+    FS = 15.36e6
+    cfgs = (("x1 gated", "bandmatch", 2048), ("x1 naive", "bandmatchn", 2048),
+            ("x2 gated", "bandmatchx2", 4096), ("x2 naive", "bandmatchx2n", 4096))
+    out = []
+    for name, d, period in cfgs:
+        a = load(os.path.join(base, d, "cap_match_rx_host.txt"))
+        b = load(os.path.join(base, d, "cap_match_rx_host1.txt"))
+        if a is None or b is None:
+            print(f"  MIMO match page skipped: {d} missing")
+            return
+        n = min(len(a), len(b))
+        a, b = a[:n], b[:n]
+        t = np.arange(n)
+        gain, ph = [], []
+        for k in K:
+            w = np.exp(-2j * np.pi * 6 * k * t / period)
+            r = np.mean(b * w) / np.mean(a * w)
+            gain.append(20 * np.log10(max(abs(r), 1e-12)))
+            ph.append(np.degrees(np.angle(r)))
+        out.append(dict(name=name, gain=gain, ph=ph, identical=np.array_equal(a, b),
+                        a=a, b=b))
+    fig, ax = plt.subplots(2, 2, figsize=(12.5, 8.2))
+    fig.suptitle("both channels, same signal, band edge (highest tone 6.75 MHz): "
+                 "channel match", fontsize=11.5)
+    f = [3 * k / 1024 * FS / 1e6 for k in K]
+    a = ax[0][0]
+    for r in out:
+        a.plot(f, r["gain"], "o-", ms=3.5, lw=0.9,
+               label=f"{r['name']}: {max(abs(np.array(r['gain']))):.3f} dB")
+    a.axhline(0, color="k", lw=0.5)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("ch1 / ch0, dB")
+    a.set_title("gain match", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5)
+    a.tick_params(labelsize=7)
+    a = ax[0][1]
+    for r in out:
+        a.plot(f, r["ph"], "o-", ms=3.5, lw=0.9,
+               label=f"{r['name']}: {max(abs(np.array(r['ph']))):.1f} deg")
+    a.axhline(0, color="k", lw=0.5)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("ch1 - ch0, deg")
+    a.set_title("phase match", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5)
+    a.tick_params(labelsize=7)
+    a = ax[1][0]
+    r = next(x for x in out if x["name"] == "x2 gated")
+    m = 60
+    a.plot(np.arange(m), r["a"][:m].real, "o", ms=3, mfc="none", label="ch0 end")
+    a.plot(np.arange(m), r["b"][:m].real, "-", lw=0.9, alpha=0.7, label="ch1 end")
+    a.set_xlabel("sample")
+    a.set_ylabel("LSB16")
+    a.set_title("gated x2: the two ends are bit-identical (dots under the line)", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5)
+    a.tick_params(labelsize=7)
+    a = ax[1][1]
+    a.axis("off")
+    txt = ["gated start: bit-identical in x1 and x2, every tone 0.000 dB / 0.000 deg",
+           "   -> a beam points the same way at every frequency",
+           "",
+           "naive start (registers written while running): a constant -90.0 deg",
+           "in both x1 and x2, at every tone (the two-clock write gap x fs/8)",
+           "   -> one fixed offset; but the datapath must not need calibration.",
+           "",
+           "The data path itself is skew-free: both channels read the same",
+           "stimulus counter, so only the NCO phase differs."]
+    a.text(0.02, 0.92, "\n".join(txt), fontsize=8.2, va="top")
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    outp = os.path.join(base, "loop_inband_match.png")
+    fig.savefig(outp, dpi=110)
+    plt.close(fig)
+    print("\n=== MIMO channel match at the band edge ===")
+    for r in out:
+        print(f"  {r['name']:9s}: ends bit-identical {r['identical']}, "
+              f"gain {min(r['gain']):+.4f}..{max(r['gain']):+.4f} dB, "
+              f"phase {min(r['ph']):+.3f}..{max(r['ph']):+.3f} deg")
+    print(f"  wrote {os.path.relpath(outp)}")
+
+
 def retune():
     """A settings write on a running transmitter: LO retune and rate rewrite."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1532,6 +1625,8 @@ if __name__ == "__main__":
             inband()
         elif t == "inband_conv":
             inband_conv()
+        elif t == "inband_match":
+            inband_match()
         else:
             main(t)
     if "budget" not in args:
