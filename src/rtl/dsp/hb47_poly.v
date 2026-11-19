@@ -1,4 +1,4 @@
-// hb47_poly - 2x interpolating halfband, polyphase, strobe-free.
+// hb47_poly - 2x interpolating halfband, polyphase, strobe-free, pipelined.
 //
 // Replaces hb47_int in the transmit chain.  hb47_int derived its polyphase
 // selection from one-clock pipeline stages of stb_in, so an input strobe
@@ -10,7 +10,7 @@
 // This module computes both phases explicitly, so it works at any input
 // strobe period:
 //
-//   centre phase  = x[n-11]
+//   centre phase   = x[n-11]
 //   filtered phase = sum_g c_g * (x[n-g] + x[n-23+g])
 //
 // with c_g = 2 * q[2g], q being the Q17 halfband of
@@ -24,13 +24,19 @@
 // looks plausible in isolation, but its passband collapses and the image is
 // reinforced instead of cancelled.
 //
+// Pipelining: the multiply result and two 6-term partial sums are registered,
+// so the per-clock path is multiply, add, add - each comfortably inside the
+// 100 MHz bus clock.  The filtered path is then 2 clocks behind the sample
+// history.  That does not move the output: the sample history is stable for
+// the whole 4-clock input-strobe period, so every filtered value the output
+// register can present at a coincident stb_in/stb_out edge is still the
+// previous input sample's, which is exactly what the centre phase pairs with
+// (up to 3 pipeline stages keep this pairing; the guard is tb_hb47_poly).
+//
 // Two outputs are produced per input sample.  `phase` is derived from stb_in,
 // not stb_out, so no external phase can break it; stb_out only enables the
 // output register at the 2x rate.  The DUC strobes stb_out coincidently with
-// stb_in (verified: 999 of 999 hb2 strobes coincide with a CIC strobe); at
-// that edge the filter output for the previous input sample is presented,
-// and the centre sample for the same input sample follows at the next
-// stb_out.
+// stb_in (verified: 999 of 999 hb2 strobes coincide with a CIC strobe).
 `default_nettype none
 
 module hb47_poly #(
@@ -87,23 +93,34 @@ module hb47_poly #(
   // an unsigned coefficient would make the product unsigned and turn every
   // negative tap into a large positive one (the signedness trap already
   // measured on the TX narrow stage).
-  wire signed [WIDTH:0]    sum  [0:11];
-  wire signed [17+WIDTH:0] prod [0:11];
+  wire signed [WIDTH:0]         sum   [0:11];
+  // stage 1: multiply result registered (yosys packs this into the DSP48E1)
+  reg  signed [17+WIDTH:0]      prod_q [0:11];
+  // stage 2: two 6-term partial sums registered
+  reg  signed [17+WIDTH+2:0]    ps_a, ps_b;
+
   generate
     for (g = 0; g < 12; g = g + 1) begin: macs
-      assign sum[g]  = $signed(xa[g]) + $signed(xb[g]);
-      assign prod[g] = $signed(sum[g]) * $signed(c(g));
+      assign sum[g] = $signed(xa[g]) + $signed(xb[g]);
+      // No reset: a register with a reset blocks the DSP48E1 PREG mapping and
+      // leaves the multiply combinational (measured: bus_clk then failed at
+      // 66 MHz).  The value is defined anyway - xd is reset and the product
+      // updates every clock.
+      always @(posedge clk)
+        prod_q[g] <= $signed(sum[g]) * $signed(c(g));
     end
   endgenerate
 
-  wire signed [17+WIDTH+3:0] acc;
-  assign acc = prod[0] + prod[1] + prod[2]  + prod[3]
-             + prod[4] + prod[5] + prod[6]  + prod[7]
-             + prod[8] + prod[9] + prod[10] + prod[11];
+  always @(posedge clk) begin
+    ps_a <= prod_q[0] + prod_q[1] + prod_q[2] + prod_q[3] + prod_q[4] + prod_q[5];
+    ps_b <= prod_q[6] + prod_q[7] + prod_q[8] + prod_q[9] + prod_q[10] + prod_q[11];
+  end
+
+  wire signed [17+WIDTH+2:0] acc = ps_a + ps_b;
 
   // round half even from Q17, then saturate to WIDTH
-  wire signed [17+WIDTH+3:0] acc_r = acc + (acc[16] & (acc[17] | |acc[15:0]));
-  wire signed [17+WIDTH+3:0] acc_s = acc_r >>> 17;
+  wire signed [17+WIDTH+2:0] acc_r = acc + (acc[16] & (acc[17] | |acc[15:0]));
+  wire signed [17+WIDTH+2:0] acc_s = acc_r >>> 17;
   wire signed [WIDTH-1:0]    filtered =
       (acc_s >  (1 <<< (WIDTH-1)) - 1) ?  (1 <<< (WIDTH-1)) - 1 :
       (acc_s < -(1 <<< (WIDTH-1)))     ? -(1 <<< (WIDTH-1))     : acc_s[WIDTH-1:0];

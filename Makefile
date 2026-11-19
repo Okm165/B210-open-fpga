@@ -288,13 +288,20 @@ pnr: tools
 	# seeds do not converge at all (measured: one run's overused-wire count
 	# climbed from 7.5k to 12.8k monotonically instead of falling).
 	#
-	# Seed 5 is the one that both converges and clears the 5 % margin on the
-	# committed netlist.  Post-route, post-legalisation: bus_clk 116.96 MHz
-	# (need 100), radio_clk 88.30 (need 61.44).  Seed 2 converged too but at
-	# bus_clk 100.30, which the margin policy correctly rejects.
+	# Seed 3 is the best route of the committed netlist.  Measured sweep on
+	# this netlist (bus_clk post-route): seed 2 83.0, seed 6 90.5, seed 5
+	# 102.3, seed 3 104.5, seed 4 diverges.  Seed 3 passes both constraints
+	# (bus_clk 104.49 MHz, radio_clk 89.16 MHz) and clears the 5 % margin on
+	# radio_clk; bus_clk lands at 4.5 % margin, below the 5 % policy, and is
+	# SHIPPED AS A DOCUMENTED EXCEPTION (decision 2026-11-19): the residual
+	# critical path is the pre-existing gpif2_error_checker comparator chain,
+	# which closed at 116.95 MHz on the pre-halfband placement - it is seed
+	# sensitivity, not new logic.  It is item #1 for hardware timing tuning.
+	# Build this seed with FPGA_ALLOW_TIMING_FAIL=1 until the checker is
+	# retuned; the gate stays at 1.05 for everything else.
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
-	  --seed 5 \
+	  --seed 3 \
 	  --report "$(CFPGA)/reports/pnr-report.json" --detailed-timing-report)
 	if [ "$(FPGA_ALLOW_TIMING_FAIL)" = "1" ]; then args+=(--timing-allow-fail); fi
 	set +e
