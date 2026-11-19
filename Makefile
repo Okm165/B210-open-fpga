@@ -158,6 +158,10 @@ TX_DC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_dc.v
 
+LATENCY_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_latency.v
+
 TX_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_pins.v
@@ -566,6 +570,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_dc.log tb_tx_dc.vvp
 	@grep -q 'TX-DC: PASS' $(SIM_DIR)/tb_tx_dc.log || \
 	  { echo "ERROR: TX DC gain or CIC rate normalisation wrong; see $(SIM_DIR)/tb_tx_dc.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_latency -o tb_latency.vvp $(LATENCY_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_latency.log tb_latency.vvp
+	@grep -q 'LATENCY: PASS' $(SIM_DIR)/tb_latency.log || \
+	  { echo "ERROR: datapath latency outside its bounds; see $(SIM_DIR)/tb_latency.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_tx_pins -o tb_tx_pins.vvp $(TX_PINS_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pins.log tb_tx_pins.vvp
