@@ -208,6 +208,12 @@ TX_UNDERRUN_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_underrun.v
 
+# Timed transmit: a future-scheduled packet waits and fires on its tick; a
+# packet whose time has passed reports TIME_ERROR and never starts the DAC.
+TX_TIMED_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_tx_timed.v
+
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
@@ -707,6 +713,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_underrun.log tb_tx_underrun.vvp
 	@grep -q 'TX-UNDERRUN: PASS' $(SIM_DIR)/tb_tx_underrun.log || \
 	  { echo "ERROR: TX underrun can present stale samples; see $(SIM_DIR)/tb_tx_underrun.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_timed -o tb_tx_timed.vvp $(TX_TIMED_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_tx_timed.log tb_tx_timed.vvp
+	@grep -q 'TX-TIMED: PASS' $(SIM_DIR)/tb_tx_timed.log || \
+	  { echo "ERROR: timed transmit broken; see $(SIM_DIR)/tb_tx_timed.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
