@@ -377,36 +377,52 @@ module tb_capture;
       end
    end
 
-   // channel 1 is dumped through a second set of handles for the isolation
-   // measurement: rx1 host and tx1 pins only, so the file count stays small.
+   // Channel 1 gets the same end nodes as channel 0 - its host word in, its
+   // interpolator, its pin word and its receive host word - so both channels
+   // are graded identically at the ends, not one measured and one assumed.
    integer fd_dac, fd_adc;
 
-   integer fd_pins1, fd_rxhost1;
+   integer fd_pins1, fd_rxhost1, fd_host1, fd_hb1, fd_air1;
    initial begin
 `ifdef REVERSE
       fd_pins1   = $fopen("cap_rev_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_rev_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_rev_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_rev_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_rev_air1.txt",    "w");
       fd_dac     = $fopen("cap_rev_dac.txt", "w");
       fd_adc     = $fopen("cap_rev_adc.txt", "w");
 `else
    `ifdef MATCH
       fd_pins1   = $fopen("cap_match_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_match_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_match_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_match_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_match_air1.txt",    "w");
       fd_dac     = $fopen("cap_match_dac.txt", "w");
       fd_adc     = $fopen("cap_match_adc.txt", "w");
    `elsif CONV
       fd_pins1   = $fopen("cap_conv_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_conv_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_conv_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_conv_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_conv_air1.txt",    "w");
       fd_dac     = $fopen("cap_conv_dac.txt", "w");
       fd_adc     = $fopen("cap_conv_adc.txt", "w");
    `elsif X2
       fd_pins1   = $fopen("cap_fwd_x2_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_fwd_x2_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_fwd_x2_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_fwd_x2_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_fwd_x2_air1.txt",    "w");
       fd_dac     = $fopen("cap_fwd_x2_dac.txt", "w");
       fd_adc     = $fopen("cap_fwd_x2_adc.txt", "w");
    `else
       fd_pins1   = $fopen("cap_fwd_x1_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_fwd_x1_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_fwd_x1_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_fwd_x1_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_fwd_x1_air1.txt",    "w");
       fd_dac     = $fopen("cap_fwd_x1_dac.txt", "w");
       fd_adc     = $fopen("cap_fwd_x1_adc.txt", "w");
    `endif
@@ -415,7 +431,15 @@ module tb_capture;
    always @(posedge clk) begin
       if (dump_en) begin
          $fwrite(fd_pins1,   "%0d %0d\n", $signed(tx1_i), $signed(tx1_q));
+         $fwrite(fd_hb1,     "%0d %0d\n", $signed(tx1.i_interp), $signed(tx1.q_interp));
+         if (tx1.strobe_hb1)
+           $fwrite(fd_host1, "%0d %0d\n", $signed(tx1_sample[31:16]), $signed(tx1_sample[15:0]));
          $fwrite(fd_rxhost1, "%0d %0d\n", $signed(rx1_sample[31:16]), $signed(rx1_sample[15:0]));
+`ifdef CONV
+         $fwrite(fd_air1,    "%0d %0d\n", $signed(adc1_i), $signed(adc1_q));
+`else
+         $fwrite(fd_air1,    "%0d %0d\n", $signed(air1_i), $signed(air1_q));
+`endif
          $fwrite(fd_dac,     "%0d %0d\n", dac0_i, dac0_q);
          $fwrite(fd_adc,     "%0d %0d\n", adc0_i, adc0_q);
       end
@@ -467,6 +491,7 @@ module tb_capture;
       $fclose(fd_host); $fclose(fd_hb); $fclose(fd_mix); $fclose(fd_pins);
       $fclose(fd_air); $fclose(fd_rxmix); $fclose(fd_rxhost);
       $fclose(fd_pins1); $fclose(fd_rxhost1);
+      $fclose(fd_host1); $fclose(fd_hb1); $fclose(fd_air1);
       $fclose(fd_dac); $fclose(fd_adc);
       $display("CAPTURE: done (%0d clocks dumped)", CLKS);
       $finish;
