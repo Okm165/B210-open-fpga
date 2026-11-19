@@ -73,7 +73,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | FX3 async boundary | `tb_gpif_cdc`, fifo 100 MHz / gpif 101 MHz, 3 ns phase, backpressure | 320/320 words, tlast every packet on the low half, 0 errors |
 | TX sample pairing | `tb_tx_pairing`: even 8, odd 7, burst 6+5, self-checking tag | every host sample reaches the DUC once in order; no duplicate/drop/swap, odd pad never leaks |
 | Timed TX | `tb_tx_timed`: future tick 40, and a past tick | fires exactly at tick 40; past tick reports TIME_ERROR (8) with a one-clock ack and `run` stays 0 |
-| two-tone IMD3 | `tb_imd3`: f1=fs/16, f2=9fs/128 through the TX->RX loopback, 4 levels | output 2f1-f2 / 2f2-f1 = -87 to -101 dBc, improving with level; below a 12-bit converter's own IMD |
+| two-tone IMD3 | `tb_imd3`: f1=fs/16, f2=9fs/128 through the TX->RX loopback, 6 levels to peak 31000 (rail 32768) | output 2f1-f2 / 2f2-f1 = -87 to -113 dBc, improving with level; gain flat to 0.0005 dB, no compression before the rail; below a 12-bit converter's own IMD |
 | two-channel loopback | `tb_loopback2`: TX->RX and RX->TX, 2 channels at once, LO 0 and fs/8 | gain 1.00000 (-0.0005 dB, the 2x cos(0) convention), mirror <= -98 dB, EVM -78..-79 dB (the RX dither floor), crosstalk <= -102 dB |
 | RX overload | `tb_rx_saturate`: full-scale I=Q with a rotating LO | peak +32767, trough -32768, 30-sample rail plateau: clips, never wraps |
 | TX underrun | `tb_tx_underrun`: starved from reset with stale data on the bus | run low for 200 idle cycles (0 clocks high): pin mux stays on tx_idle, no stale sample can reach the DAC |
