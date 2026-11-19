@@ -148,8 +148,96 @@ module tb_tx_dc;
       end
       if (nbad != 0) errors = errors + 1;
 
+      // ---- 3. complex corner: the mixer must saturate, never wrap --------
+      // A host complex sample with |I| = |Q| = full scale has magnitude 1.41,
+      // so rotation by 45 degrees puts 1.41 full scale on one axis and the
+      // 18-bit mixer rail is reached.  Per-axis clipping is the correct
+      // behaviour; a wrap would be a sign inversion.  The reference applies
+      // exactly those clips.  The pipeline delay is unknown but it is a whole
+      // number of clocks, and the LO advances 45 degrees per clock, so the
+      // output phase is the input phase plus 45 deg x (an integer): the bench
+      // tries all 8 phases and requires one that matches everywhere.
+      wr(8'd0, 32'h2000_0000);              // LO at fs/8 = 45 deg/sample
+      wr(8'd1, 32'h0000_8000);              // scale 0.5
+      wr(8'd2, 32'h0000_0001);              // bypass
+      run = 1'b1;
+      sample[31:16] = 32767; sample[15:0] = 32767;
+      repeat (400) @(posedge clk);
+      begin : corner
+         integer n, o, off, best_off, best_bad, bad;
+         integer oi [0:511];
+         integer oq [0:511];
+         real ai, aq, ph;
+         integer ri, rq, e24i, e24q;
+         for (n = 0; n < 512; n = n + 1) begin
+            @(posedge clk); #1;
+            oi[n] = $signed(tx_fe_i);
+            oq[n] = $signed(tx_fe_q);
+         end
+         best_bad = 1000000; best_off = -1;
+         for (off = 0; off < 8; off = off + 1) begin
+            bad = 0;
+            for (n = 64; n < 512; n = n + 1) begin
+               ph = 2.0*3.14159265358979*(((n + off) % 8) * 128)/1024.0;
+               ai = 46340.0 * 4.0 * $cos(ph);      // |x| = sqrt(2)*32767
+               aq = 46340.0 * 4.0 * $sin(ph);
+               ri = $rtoi(ai); rq = $rtoi(aq);
+               if (ri >  131071) ri =  131071;
+               if (ri < -131072) ri = -131072;
+               if (rq >  131071) rq =  131071;
+               if (rq < -131072) rq = -131072;
+               e24i = $rtoi(ri * 64);              // scale 0.5 -> x64
+               e24q = $rtoi(rq * 64);
+               if (e24i >  8388607) e24i =  8388607;
+               if (e24i < -8388608) e24i = -8388608;
+               if (e24q >  8388607) e24q =  8388607;
+               if (e24q < -8388608) e24q = -8388608;
+               // the LUT's cos(0) is 32767/32768 and the two clips round to
+               // different LSB patterns; 1500 LSB24 is 0.02 % of full scale
+               if (oi[n] - e24i > 1500 || e24i - oi[n] > 1500 ||
+                   oq[n] - e24q > 1500 || e24q - oq[n] > 1500) begin
+                  bad = bad + 1;
+                  if (off == 2 && bad < 6)
+                     $display("   dbg n=%0d ph=%0d out (%0d,%0d) ref (%0d,%0d)",
+                              n, (n + off) % 8, oi[n], oq[n], e24i, e24q);
+               end
+            end
+            if (bad < best_bad) begin best_bad = bad; best_off = off; end
+         end
+         $display("TX-DC: complex corner (32767,32767) at 45 deg/sample: best phase offset %0d, %0d of 448 samples mismatch",
+                  best_off, best_bad);
+         if (best_bad > 2) begin
+            errors = errors + 1;
+            $display("TX-DC: FAIL - the corner does not match a saturated rotation at any phase (wrap?)");
+         end
+      end
+
+      // and a corner below the rail must stay linear
+      sample[31:16] = 16000; sample[15:0] = 16000;
+      repeat (200) @(posedge clk);
+      begin : corner_lin
+         integer n, mmin, mmax, mag;
+         real exp_mag, tmp;
+         tmp = $sqrt(2.0) * 16000.0 * 4.0;     // 90510: below the 18-bit rail
+         exp_mag = tmp * 32768.0 / 512.0;
+         mmin = 2000000000; mmax = 0;
+         for (n = 0; n < 512; n = n + 1) begin
+            @(posedge clk); #1;
+            mag = $rtoi($sqrt(1.0*$signed(tx_fe_i)*$signed(tx_fe_i) +
+                              1.0*$signed(tx_fe_q)*$signed(tx_fe_q)));
+            if (mag < mmin) mmin = mag;
+            if (mag > mmax) mmax = mag;
+         end
+         $display("TX-DC: complex corner (16000,16000): output magnitude %0d..%0d, reference %0d",
+                  mmin, mmax, $rtoi(exp_mag));
+         if (mmin < $rtoi(exp_mag * 0.995) || mmax > $rtoi(exp_mag * 1.005)) begin
+            errors = errors + 1;
+            $display("TX-DC: FAIL - a sub-rail corner is not rotated linearly");
+         end
+      end
+
       if (errors == 0)
-         $display("TX-DC: PASS - unity DC gain at every power-of-two rate, CIC contract elsewhere");
+         $display("TX-DC: PASS - unity DC gain at every power-of-two rate, CIC contract elsewhere, complex corner saturates");
       else
          $display("TX-DC: FAIL - %0d configurations wrong", errors);
       $finish;
