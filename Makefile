@@ -274,11 +274,10 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
 
 # The hello world is a second, tiny target that exercises exactly the same
 # tools, flags and images as the B200 flow.  It proves the flow itself works.
-HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
 .PHONY: help doctor verify test test-data test-data2 elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
-        shell build synth pnr bitstream record-image image-check release-check plots plots-extra hello analyze timing clean image-clean
+        shell build synth pnr bitstream record-image image-check release-check plots plots-levels plots-extra deploy hello analyze timing clean image-clean
 
 help:
 	@printf '%s\n' \
@@ -559,6 +558,21 @@ image-check:
 	  echo "image ok: $$got_img"; \
 	  echo "  source $$got_src"; \
 	  echo "  rtl    $$(awk '$$1=="rtl-commit"{print $$2}' scripts/bitstream-provenance.txt)"
+
+# Everything the bench needs in one directory: the image, its identity, and
+# the checklist with the measured level/rate rules.
+deploy: image-check
+	@mkdir -p $(ROOT)/build/deploy
+	cp -f $(ROOT)/build/fpga/bitstream/usrp_b210_fpga.bin $(ROOT)/build/deploy/
+	cp -f $(ROOT)/scripts/bitstream-provenance.txt $(ROOT)/build/deploy/
+	if [ -f $(ROOT)/.context/bring-up-checklist.md ]; then \
+	  cp -f $(ROOT)/.context/bring-up-checklist.md $(ROOT)/build/deploy/; fi
+	{ echo "DEPLOY $(shell date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	  sha256sum $(ROOT)/build/deploy/usrp_b210_fpga.bin; \
+	  cat $(ROOT)/build/deploy/bitstream-provenance.txt; \
+	  echo "rules: see bring-up-checklist.md sections 0 and 8"; } \
+	  > $(ROOT)/build/deploy/DEPLOY.txt
+	@echo "deploy package: $(ROOT)/build/deploy"
 
 release-check: verify image-check test
 	@echo "RELEASE OK: clean tree, image matches source, all benches pass"

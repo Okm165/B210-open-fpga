@@ -104,59 +104,6 @@ def guarded_max(mag, f, tones, guard=3, window=None):
     return 20 * np.log10(max(v, 1e-12) / mag.max()), int(np.argmax(np.where(mask, mag, 0)))
 
 
-def trunc_div(x, d):
-    # Verilog integer division truncates toward zero, per component
-    return np.trunc(x.real / d) + 1j * np.trunc(x.imag / d)
-
-
-def fit_gain_delay(ref, y, max_lag=L + 80):
-    """Pick the lag by minimum residual energy over a full stimulus period.
-
-    The capture window starts on an arbitrary clock, so the reference is offset
-    by an unknown number of samples; because the stimulus is periodic with L,
-    the offset is ambiguous modulo L, and every candidate must be tried.  A
-    single mis-estimated offset rotates each tone by a different phase
-    (2 pi k n0 / L) and looks like massive distortion - which is exactly the
-    trap this search avoids."""
-    n = min(len(ref), len(y))
-    best = None
-    for lag in range(0, max_lag):
-        a = ref[:n - lag]
-        b = y[lag:n]
-        a0 = a - a.mean()
-        g = np.vdot(a0, b - b.mean()) / np.vdot(a0, a0)
-        e = np.mean(np.abs(b - b.mean() - g * a0) ** 2)
-        if best is None or e < best[0]:
-            best = (e, lag, g)
-    e, lag, g = best
-    a = ref[:n - lag] - ref[:n - lag].mean()
-    b = y[lag:n]
-    return g, lag, b, g * a
-
-
-def fit_two(ref, cpl, y, max_lag=L + 80):
-    """Least squares for y = g*ref + c*cpl over the lag, two complex unknowns."""
-    n = min(len(ref), len(y))
-    best = None
-    for lag in range(0, max_lag):
-        a = ref[:n - lag]
-        b = cpl[:n - lag]
-        q = y[lag:n]
-        A = np.stack([a, b], axis=1)
-        Am = A - A.mean(axis=0)
-        qm = q - q.mean()
-        sol, *_ = np.linalg.lstsq(Am, qm, rcond=None)
-        e = np.mean(np.abs(qm - Am @ sol) ** 2)
-        if best is None or e < best[0]:
-            best = (e, lag, sol)
-    e, lag, sol = best
-    g, c = sol
-    a = ref[:n - lag] - ref[:n - lag].mean()
-    b = cpl[:n - lag] - cpl[:n - lag].mean()
-    q = y[lag:n]
-    return g, lag, q, g * a + c * b, c
-
-
 def main(tag):
     here = os.path.dirname(os.path.abspath(__file__))
     base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
@@ -1468,41 +1415,6 @@ def inband_match():
               f"gain {min(r['gain']):+.4f}..{max(r['gain']):+.4f} dB, "
               f"phase {min(r['ph']):+.3f}..{max(r['ph']):+.3f} deg")
     print(f"  wrote {os.path.relpath(outp)}")
-
-def _hb_up(c, x):
-    """One 2x halfband stage, exactly as hb47_poly synthesises it.
-
-    Even output = sum_g c_g (x[n-g] + x[n-23+g]); odd output = x[n-11]
-    (the centre tap).  Circular, because the stimulus is periodic.
-    """
-    n = len(x)
-    y = np.zeros(2 * n, dtype=complex)
-    ev = np.zeros(n, dtype=complex)
-    for g, cg in enumerate(c):
-        ev += cg * (np.roll(x, g) + np.roll(x, 23 - g))
-    y[0::2] = ev
-    y[1::2] = np.roll(x, 11)
-    return y
-
-
-def _hb_cascade(c, f, stages, N=1024):
-    """In-band gain (dB) and adjacent-emission level (dBc) of `stages` halfbands.
-
-    The emission is the tone repeated one host sample rate away, i.e. at f-1 in
-    the stage-1 input units - exactly the line the captures show, which is why
-    it is measured rather than assumed.
-    """
-    n = np.arange(N)
-    x = np.exp(2j * np.pi * f * n)
-    for _ in range(stages):
-        x = _hb_up(c, x)
-    m = np.arange(len(x))
-    s = 2 ** stages
-    sig = abs(np.mean(x * np.exp(-2j * np.pi * (f / s) * m)))
-    img = abs(np.mean(x * np.exp(-2j * np.pi * ((f - 1) / s) * m)))
-    return (20 * np.log10(max(sig, 1e-30)),
-            20 * np.log10(max(img / max(sig, 1e-30), 1e-30)))
-
 
 def _comp_taps():
     """The 15 inverse-sinc compensator taps, read from cic_comp.v."""
