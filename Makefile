@@ -971,6 +971,17 @@ plots-extra:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -DBINSCALE=3 -DSINGLE \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx2s.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/bandx2s && $(VVP) -n $(SIM_DIR)/tb_bandx2s.vvp > /dev/null
+	@# The three transmit rates, one-sided so the interpolation image is a
+	@# distinct line (the +/-k stimulus puts the image on the negative tone).
+	@mkdir -p $(ROOT)/build/plots/bandx1s $(ROOT)/build/plots/bandx4s
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx1s/src
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx4s/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DBINSCALE=3 -DSINGLE \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx1s.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/bandx1s && $(VVP) -n $(SIM_DIR)/tb_bandx1s.vvp > /dev/null
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX4 -DBINSCALE=3 -DSINGLE \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx4s.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/bandx4s && $(VVP) -n $(SIM_DIR)/tb_bandx4s.vvp > /dev/null
 	@mkdir -p $(ROOT)/build/plots/bandconv $(ROOT)/build/plots/bandx2conv
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandconv/src
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx2conv/src
@@ -997,7 +1008,7 @@ plots-extra:
 	cd $(ROOT)/build/plots/bandx2s5 && $(VVP) -n $(SIM_DIR)/tb_bandx2s5.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
-	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match
+	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match rates
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:

@@ -20,6 +20,8 @@
 //   -DREVERSE      reverse:  antenna -> [air] -> RX0/RX1 -> TX0/TX1 -> pins
 //   -DX2           transmit interpolation x2 (the MIMO rate); forward only,
 //                  because the reverse path needs the RX at the full clock.
+//   -DX4           transmit interpolation x4 (two cascaded halfbands, the
+//                  15.36 MS/s host rate); forward only, same reason.
 //
 // The two channels carry disjoint tone sets, so any tone of channel 1 that
 // appears in a channel 0 node is crosstalk, and it is measurable to the dither
@@ -32,10 +34,14 @@ module tb_capture;
    localparam integer NT   = 7;      // tone pairs per channel
    localparam integer NCYC = 2;      // periods captured
 
+`ifdef X4
+   localparam integer CLKS = L * NCYC * 4;   // DAC clocks in the window
+`else
 `ifdef X2
    localparam integer CLKS = L * NCYC * 2;   // DAC clocks in the window
 `else
    localparam integer CLKS = L * NCYC;
+`endif
 `endif
 
    // bin pairs: disjoint between the two channels, |k| <= 150 (0.146 fs)
@@ -321,6 +327,9 @@ module tb_capture;
    `ifdef X2
       $fatal(1, "REVERSE and X2 are mutually exclusive: the reverse path needs the RX at the full clock");
    `endif
+   `ifdef X4
+      $fatal(1, "REVERSE and X4 are mutually exclusive: the reverse path needs the RX at the full clock");
+   `endif
       fd_host   = $fopen("cap_rev_host.txt",   "w");
       fd_hb     = $fopen("cap_rev_tx_hb.txt",  "w");
       fd_mix    = $fopen("cap_rev_tx_mix.txt", "w");
@@ -345,6 +354,14 @@ module tb_capture;
       fd_air    = $fopen("cap_conv_air.txt",    "w");
       fd_rxmix  = $fopen("cap_conv_rx_mix.txt", "w");
       fd_rxhost = $fopen("cap_conv_rx_host.txt","w");
+   `elsif X4
+      fd_host   = $fopen("cap_fwd_x4_host.txt",   "w");
+      fd_hb     = $fopen("cap_fwd_x4_tx_hb.txt",  "w");
+      fd_mix    = $fopen("cap_fwd_x4_tx_mix.txt", "w");
+      fd_pins   = $fopen("cap_fwd_x4_tx_pins.txt","w");
+      fd_air    = $fopen("cap_fwd_x4_air.txt",    "w");
+      fd_rxmix  = $fopen("cap_fwd_x4_rx_mix.txt", "w");
+      fd_rxhost = $fopen("cap_fwd_x4_rx_host.txt","w");
    `elsif X2
       fd_host   = $fopen("cap_fwd_x2_host.txt",   "w");
       fd_hb     = $fopen("cap_fwd_x2_tx_hb.txt",  "w");
@@ -427,6 +444,14 @@ module tb_capture;
       fd_air1    = $fopen("cap_conv_air1.txt",    "w");
       fd_dac     = $fopen("cap_conv_dac.txt", "w");
       fd_adc     = $fopen("cap_conv_adc.txt", "w");
+   `elsif X4
+      fd_pins1   = $fopen("cap_fwd_x4_tx_pins1.txt", "w");
+      fd_rxhost1 = $fopen("cap_fwd_x4_rx_host1.txt","w");
+      fd_host1   = $fopen("cap_fwd_x4_host1.txt",   "w");
+      fd_hb1     = $fopen("cap_fwd_x4_hb1.txt",     "w");
+      fd_air1    = $fopen("cap_fwd_x4_air1.txt",    "w");
+      fd_dac     = $fopen("cap_fwd_x4_dac.txt", "w");
+      fd_adc     = $fopen("cap_fwd_x4_adc.txt", "w");
    `elsif X2
       fd_pins1   = $fopen("cap_fwd_x2_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_fwd_x2_rx_host1.txt","w");
@@ -481,7 +506,12 @@ module tb_capture;
       run = 1;
 `endif
       // NCO at fs/8 on both sides: the composite RX->TX rotation is exactly 1.
-`ifdef X2
+`ifdef X4
+      // BASE+2 = {enable_hb1, enable_hb2, interp_rate} (10 bits: hb1 = 0x200,
+      // hb2 = 0x100, so both halfbands and CIC rate 1 = 0x301 = x4)
+      twr(0,8'd0,32'h2000_0000); twr(0,8'd1,32'h00008000); twr(0,8'd2,32'h0000_0301);
+      twr(1,8'd0,32'h2000_0000); twr(1,8'd1,32'h00008000); twr(1,8'd2,32'h0000_0301);
+`elsif X2
       // BASE+2 = {enable_hb1, enable_hb2, interp_rate}: hb1 on, CIC rate 1 = x2
       twr(0,8'd0,32'h2000_0000); twr(0,8'd1,32'h00008000); twr(0,8'd2,32'h0000_0201);
       twr(1,8'd0,32'h2000_0000); twr(1,8'd1,32'h00008000); twr(1,8'd2,32'h0000_0201);
