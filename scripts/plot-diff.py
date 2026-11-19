@@ -216,22 +216,44 @@ def ends_panel(ax_wave, ax_spec, ax_tone, tag, fwd, ch):
     ax_spec.tick_params(labelsize=7)
 
     ks = K0 if ch == 0 else K1
-    amps = []
+    amps, amps_ch = [], []
     t = np.arange(n)
+    # The forward loop crosses the bench channel, so grading the end against the
+    # raw input charges the channel's own echo to the datapath: that is the
+    # +-1 dB comb every forward panel shows.  The channel is measured (air/pins
+    # at the IF the tone occupies) and divided out for the second curve, so the
+    # plot separates "what the channel did" from "what the loop added".  In the
+    # reverse loop the input is already post-channel, so the two coincide.
+    pins = load(os.path.join(BASE, f"cap_{tag}_tx_pins{'' if ch == 0 else ch}.txt"))
+    air = load(os.path.join(BASE, f"cap_{tag}_air{'' if ch == 0 else ch}.txt"))
     for k in ks:
         wgt = np.exp(-2j * np.pi * k * t / L)
         a = np.mean(out * wgt)
         b = np.mean(src[:n] * wgt) * (1.0 if fwd else 1.0 / 256.0)
         amps.append(20 * np.log10(max(abs(a) / max(abs(b), 1e-9), 1e-9)))
-    ax_tone.plot(ks, amps, "o-", ms=3, color="#1f4e79")
+        h = 1.0
+        if fwd and pins is not None and air is not None:
+            wif = np.exp(-2j * np.pi * (IF + k) * t / L)
+            h = np.mean(air[:n] * wif) / np.mean(pins[:n] * wif)
+        amps_ch.append(amps[-1] - 20 * np.log10(max(abs(h), 1e-9)))
+    ax_tone.plot(ks, amps, "o-", ms=3, color="#1f4e79",
+                 label="vs raw input (includes the channel)" if fwd else "vs input")
+    if fwd:
+        ax_tone.plot(ks, amps_ch, "s-", ms=3, color="#c00000",
+                     label="vs input through the measured channel")
     ax_tone.axhline(0, color="k", lw=0.6)
     ax_tone.set_xlabel("tone bin")
     ax_tone.set_ylabel("level vs input, dB")
-    ax_tone.set_title(f"{tag} {name} per-tone level: spread {max(amps) - min(amps):.2f} dB",
-                      fontsize=8.5)
+    lo = min(amps) if not fwd else min(min(amps), min(amps_ch))
+    hi = max(amps) if not fwd else max(max(amps), max(amps_ch))
+    ax_tone.set_ylim(lo - 0.15, hi + 0.15)
+    ax_tone.set_title(f"{tag} {name} per-tone level: channel-removed spread "
+                      f"{max(amps_ch) - min(amps_ch):.3f} dB", fontsize=8.5)
+    ax_tone.legend(fontsize=6, loc="lower left")
     ax_tone.grid(alpha=0.25, lw=0.4)
     ax_tone.tick_params(labelsize=7)
-    print("  per-tone level vs input (dB): " + ", ".join(f"{x:+.3f}" for x in amps))
+    print("  per-tone level vs raw input (dB): " + ", ".join(f"{x:+.3f}" for x in amps))
+    print("  per-tone level, channel removed (dB): " + ", ".join(f"{x:+.3f}" for x in amps_ch))
     return evm, rms
 
 
