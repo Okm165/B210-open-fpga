@@ -237,11 +237,15 @@ def main():
     e5 = axs[2][0]
     rows5 = []
     for tag, lab in (("fwd_x1", "digital loop"), ("conv", "12-bit converters")):
-        aa = ld(f"cap_{tag}_air.txt")
+        aa = ld("cap_convbase_air.txt" if tag == "conv" else f"cap_{tag}_air.txt")
+        if aa is None:
+            aa = ld(f"cap_{tag}_air.txt")
         xt = np.floor(aa.real / 128.0) * 128.0 + 1j * np.floor(aa.imag / 128.0) * 128.0
         extra = np.mean(xt) - np.mean(aa)
         sig = np.sqrt(np.mean(np.abs(aa) ** 2))
-        yy = ld(f"cap_{tag}_rx_host.txt")
+        yy = ld("cap_convbase_rx_host.txt" if tag == "conv" else f"cap_{tag}_rx_host.txt")
+        if yy is None:
+            yy = ld(f"cap_{tag}_rx_host.txt")
         fit5, err5 = tone_fit(yy)
         E5 = np.abs(np.fft.fft(err5)) / len(err5)
         f5 = np.fft.fftfreq(len(err5), 1 / 61.44e6)
@@ -267,7 +271,11 @@ def main():
     e6 = axs[2][1]
     for tag, lab in (("fwd_x1", "digital loop (full precision channel)"),
                      ("conv", "with 12-bit DAC and ADC")):
-        yy = ld(f"cap_{tag}_rx_host.txt")
+        yy = ld("cap_convbase_rx_host.txt" if tag == "conv" else f"cap_{tag}_rx_host.txt")
+        if yy is None:
+            yy = ld("cap_convbase_rx_host.txt" if tag == "conv" else f"cap_{tag}_rx_host.txt")
+        if yy is None:
+            yy = ld(f"cap_{tag}_rx_host.txt")
         fit6, err6 = tone_fit(yy)
         E6 = np.abs(np.fft.fft(err6)) / len(err6)
         f6 = np.fft.fftfreq(len(err6), 1 / 61.44e6)

@@ -374,7 +374,11 @@ def budget():
                  "the 12-bit converters are", fontsize=11)
     rows = []
     for tag, label in tags:
-        out = load(os.path.join(base, f"cap_{tag}_rx_host.txt"))
+        # cap_convbase_* is the standard-amplitude capture kept by `make plots`;
+        # cap_conv_* may hold the level sweep's last amplitude.
+        cand = [os.path.join(base, f"cap_convbase_rx_host.txt"),
+                os.path.join(base, f"cap_{tag}_rx_host.txt")]
+        out = next((x for x in map(load, cand) if x is not None), None)
         if out is None:
             continue
         err, fit = tone_fit(out)
@@ -402,7 +406,9 @@ def budget():
 
     for j, (suf, name) in enumerate((("dac", "DAC word the chip sees"),
                                      ("adc", "ADC word the chip returns"))):
-        w = load(os.path.join(base, f"cap_conv_{suf}.txt"))
+        w = load(os.path.join(base, f"cap_convbase_{suf}.txt"))
+        if w is None:
+            w = load(os.path.join(base, f"cap_conv_{suf}.txt"))
         codes = np.round(w.real / 4096.0)
         a = ax[1 + j]
         a.hist(np.clip(codes, -2048, 2047), bins=120, color="#1f4e79")

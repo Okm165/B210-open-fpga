@@ -892,6 +892,12 @@ plots:
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_rev.vvp | grep CAPTURE
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_conv.vvp | grep CAPTURE
 	cd $(ROOT) && python3 scripts/plot-loop.py fwd_x1 fwd_x2 rev conv
+	@# The level sweep reuses the cap_conv_* names for each amplitude and leaves
+	@# the last one behind; keep the standard-amplitude copy for the budget page.
+	cp -f $(ROOT)/build/plots/cap_conv_rx_host.txt $(ROOT)/build/plots/cap_convbase_rx_host.txt
+	cp -f $(ROOT)/build/plots/cap_conv_dac.txt     $(ROOT)/build/plots/cap_convbase_dac.txt
+	cp -f $(ROOT)/build/plots/cap_conv_adc.txt     $(ROOT)/build/plots/cap_convbase_adc.txt
+	cp -f $(ROOT)/build/plots/cap_conv_air.txt     $(ROOT)/build/plots/cap_convbase_air.txt
 	@echo "plots: $(ROOT)/build/plots/loop_*.png"
 
 # Converter characterisation: SNR against input level, 12-bit converters in the
