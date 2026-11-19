@@ -227,6 +227,11 @@ LOOP2_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_loopback2.v
 
+# Two-tone third-order intermodulation through the complete TX->RX path.
+IMD3_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_imd3.v
+
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
@@ -794,6 +799,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_loopback2_rev.log tb_loopback2_rev.vvp
 	@grep -q 'LOOP2-REV: PASS' $(SIM_DIR)/tb_loopback2_rev.log || \
 	  { echo "ERROR: two-channel RX->TX loopback failed; see $(SIM_DIR)/tb_loopback2_rev.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
+	@grep -q 'IMD3: PASS' $(SIM_DIR)/tb_imd3.log || \
+	  { echo "ERROR: two-tone intermodulation above the floor; see $(SIM_DIR)/tb_imd3.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
