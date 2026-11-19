@@ -487,6 +487,18 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_rate.log tb_axi_fifo_2clk_rate.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_rate.log || \
 	  { echo "ERROR: CDC FIFO throughput test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_rate.log"; exit 1; }
+	# Gray-pointer integrity must not depend on the two clocks' ratio or
+	# phase: same bench, five relationships (nominal, quarter-phase, far
+	# ratio, 10:1 slow bus, radio faster than bus).
+	cd $(SIM_DIR) && for args in "" \
+	    "+TSLOW=8.138 +TFAST=5.0 +TPHASE=2.5" \
+	    "+TSLOW=9.09 +TFAST=4.55 +TPHASE=3.3" \
+	    "+TSLOW=8.138 +TFAST=50.0 +TPHASE=1.7" \
+	    "+TSLOW=4.0 +TFAST=5.0 +TPHASE=0.0"; do \
+	  $(VVP) -l tb_cdc_phase.log tb_axi_fifo_2clk_cdc.vvp $$args; \
+	  grep -q '^PASS:' tb_cdc_phase.log || \
+	    { echo "ERROR: CDC integrity broken at $$args; see $(SIM_DIR)/tb_cdc_phase.log"; exit 1; }; \
+	done
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_cic_interp \
 	  -o tb_cic_interp.vvp $(CIC_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_cic_interp.log tb_cic_interp.vvp

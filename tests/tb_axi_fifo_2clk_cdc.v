@@ -30,8 +30,28 @@ module tb_axi_fifo_2clk_cdc;
    reg slow_clk = 0;   // 61.44 MHz  (period 16.276 ns)
    reg fast_clk = 0;   // 100 MHz    (period 10 ns)
 
-   always #8.138 slow_clk = ~slow_clk;
-   always #5.000 fast_clk = ~fast_clk;
+   // Periods and phase are overridable so the same integrity check can be run
+   // at clock ratios and alignments other than the nominal 61.44/100 pair:
+   // Gray-pointer correctness must not depend on the two clocks' relationship.
+   // Defaults are initialised at declaration (before time 0), so the first
+   // half period is well defined even when a plusarg overrides them.
+   real tslow = 8.138;      // half period, ns
+   real tfast = 5.000;
+   real tphase = 0.0;
+
+   initial begin
+      if (!$value$plusargs("TSLOW=%f", tslow)) tslow = tslow;
+      if (!$value$plusargs("TFAST=%f", tfast)) tfast = tfast;
+      if (!$value$plusargs("TPHASE=%f", tphase)) tphase = tphase;
+      $display("CDC: half periods slow %.3f ns (%.2f MHz), fast %.3f ns (%.2f MHz), phase %.2f ns",
+               tslow, 500.0/tslow, tfast, 500.0/tfast, tphase);
+   end
+
+   always begin #tslow slow_clk = ~slow_clk; end
+   initial begin
+      #tphase;
+      forever begin #tfast fast_clk = ~fast_clk; end
+   end
 
    // ------------------------------------------------- direction A: radio->bus
    reg         rst_a = 1;
