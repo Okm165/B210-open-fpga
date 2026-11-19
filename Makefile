@@ -807,8 +807,13 @@ test-data:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_airloop -o tb_airloop.vvp $(AIR_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_airloop.log tb_airloop.vvp
-	@grep -q 'AIR: PASS' $(SIM_DIR)/tb_airloop.log || \
-	  { echo "ERROR: air-path loop failed; see $(SIM_DIR)/tb_airloop.log"; exit 1; }
+	@grep -q 'AIR-FWD: PASS' $(SIM_DIR)/tb_airloop.log || \
+	  { echo "ERROR: air-path TX->RX loop failed; see $(SIM_DIR)/tb_airloop.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DREVERSE -I $(ROOT)/src/rtl/control \
+	  -s tb_airloop -o tb_airloop_rev.vvp $(AIR_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_airloop_rev.log tb_airloop_rev.vvp
+	@grep -q 'AIR-REV: PASS' $(SIM_DIR)/tb_airloop_rev.log || \
+	  { echo "ERROR: air-path RX->TX loop failed; see $(SIM_DIR)/tb_airloop_rev.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
