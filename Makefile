@@ -192,6 +192,12 @@ DUC_SINE_TEST_SRCS := $(ELAB_SRCS) \
 GPIF_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/tb_gpif2_error.v
 
+# The FX3 interface across an asynchronous clock boundary (gpif_clk and
+# fifo_clk are different oscillators on the board).
+GPIF_CDC_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_gpif_cdc.v
+
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
@@ -669,6 +675,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_gpif2_error.log tb_gpif2_error.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_gpif2_error.log || \
 	  { echo "ERROR: GPIF error-checker test failed; see $(SIM_DIR)/tb_gpif2_error.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_gpif_cdc -o tb_gpif_cdc.vvp $(GPIF_CDC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_gpif_cdc.log tb_gpif_cdc.vvp
+	@grep -q 'GPIF-CDC: PASS' $(SIM_DIR)/tb_gpif_cdc.log || \
+	  { echo "ERROR: FX3 async boundary corrupts packets; see $(SIM_DIR)/tb_gpif_cdc.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
