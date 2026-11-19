@@ -899,6 +899,7 @@ plots-extra:
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_capm_a.vvp > /dev/null && cp -f cap_match_rx_host.txt cap_ALIGN_ch0.txt && cp -f cap_match_rx_host1.txt cap_ALIGN_ch1.txt
 	cd $(ROOT) && python3 scripts/plot-loop.py retune match clkmux
 	@echo "plots: $(ROOT)/build/plots/loop_retune.png loop_match.png loop_clkmux.png"
+	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 
 
 
