@@ -145,12 +145,14 @@ module tb_imd3;
       twr(8'd0, 32'd0); twr(8'd1, 32'h0000_8000); twr(8'd2, 32'd1);
       rwr(8'd0, 32'd0); rwr(8'd3, 32'd0);
 
-      for (a_idx = 0; a_idx < 4; a_idx = a_idx + 1) begin
+      for (a_idx = 0; a_idx < 6; a_idx = a_idx + 1) begin
          case (a_idx)
            0: amp = 300;     // ~ -40 dBFS per tone
            1: amp = 1000;    // ~ -30 dBFS
            2: amp = 3000;    // ~ -21 dBFS
            3: amp = 8000;    // ~ -12 dBFS (peak envelope 16000)
+           4: amp = 12000;   // peak envelope 24000
+           5: amp = 15500;   // peak envelope 31000, just below the 32768 rail
          endcase
          repeat (600) @(posedge clk);
 
