@@ -32,7 +32,7 @@ module tb_tx_passband;
   task wr(input [7:0] a, input [31:0] d); begin @(negedge clk); set_stb=1; set_addr=a; set_data=d; @(negedge clk); set_stb=0; end endtask
   integer cfg,k,rate,total,nb,n,errors;
   reg [7:0] hb;
-  real frac, w, ph, a16, ci, cq, amp, gain;
+  real frac, w, w2, ph, a16, ci, cq, ci2, cq2, amp, amp2, gain, img_db;
   initial begin
     errors = 0;
     repeat(8) @(posedge clk); @(negedge clk); rst=0;
@@ -46,7 +46,8 @@ module tb_tx_passband;
       for (nb=0; nb<7; nb=nb+1) begin
         case (nb) 0: frac=2.0/64; 1: frac=4.0/64; 2: frac=6.0/64; 3: frac=8.0/64;
                  4: frac=10.0/64; 5: frac=12.0/64; 6: frac=14.0/64; endcase
-        w = 2.0*3.14159265358979*frac/total;   // rad per output sample
+        w  = 2.0*3.14159265358979*frac/total;        // signal, per output sample
+        w2 = 2.0*3.14159265358979*(1.0-frac)/total;  // nearest interpolation image
         // settle with the tone running, integer number of 64-sample windows
         k = 0;
         repeat (4096*total) begin
@@ -58,7 +59,7 @@ module tb_tx_passband;
           end
         end
         // coherent detection over 64 input samples = 64*total output samples
-        ci = 0.0; cq = 0.0; n = 0;
+        ci = 0.0; cq = 0.0; ci2 = 0.0; cq2 = 0.0; n = 0;
         while (n < 64*total) begin
           @(negedge clk);
           if (stb) begin
@@ -67,13 +68,28 @@ module tb_tx_passband;
             k = k + 1;
           end
           @(posedge clk); #1;
-          ci = ci + $signed(ti)*$cos(w*n);
-          cq = cq + $signed(ti)*$sin(w*n);
+          ci  = ci  + $signed(ti)*$cos(w*n);
+          cq  = cq  + $signed(ti)*$sin(w*n);
+          ci2 = ci2 + $signed(ti)*$cos(w2*n);
+          cq2 = cq2 + $signed(ti)*$sin(w2*n);
           n = n + 1;
         end
         amp = 2.0*$sqrt(ci*ci+cq*cq)/(64.0*total);
+        amp2 = 2.0*$sqrt(ci2*ci2+cq2*cq2)/(64.0*total);
         gain = amp/(256000.0);
-        $display("PASSBAND cfg %0d total %2d f=%.3f fs_in  gain %+0.2f dB", cfg, total, frac, 20.0*$log10(gain));
+        img_db = 20.0*$log10(amp2/(amp+1e-9) + 1e-12);
+        if (cfg == 0) img_db = -999.0;   // no interpolation: nothing to reject
+        $display("PASSBAND cfg %0d total %2d f=%.3f fs_in  gain %+0.2f dB  image %6.1f dBc",
+                 cfg, total, frac, 20.0*$log10(gain), img_db);
+        // The interpolation image must be suppressed by the halfbands; a
+        // polyphase phase misalignment would show up here first, near the
+        // band edge.  Loose bound: the design target is -65 dBc, the guard
+        // only has to catch a structural break.
+        if (cfg > 0 && img_db > -45.0) begin
+           errors = errors + 1;
+           $display("PASSBAND: FAIL - image %.1f dBc at %.3f fs_in (total %0d)",
+                    img_db, frac, total);
+        end
         // Bypass must be flat (it is a delay line); a shaped bypass was the
         // defect this bench exists to catch.  Interpolated rates may roll off
         // towards the host Nyquist but must never boost.
