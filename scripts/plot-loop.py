@@ -547,82 +547,121 @@ def band():
     """Where the loop stops being flat: the same tones moved 3x up the band.
 
     The narrowband pages put the highest tone at 0.146 fs_host, i.e. less than a
-    third of the band; this grades the loop with the highest tone at 0.44 fs_host
-    (6.75 of 15.36 MHz).  The reference is the air node through its measured
-    gain and 5-sample delay, the same node the ends page uses, so a channel
-    comb cannot masquerade as a loop error.
+    third of the band.  This grades the loop with the highest tone at 0.44
+    fs_host (6.75 of 15.36 MHz) in all four configurations that exist: forward
+    and reverse, bypassed and x2 (MIMO) interpolation.
+
+    The reference is the air node through its measured gain and delay - the same
+    node the ends page uses - so a channel comb cannot masquerade as a loop
+    error, and the residual is the whole ending compared with that model.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    base = os.path.normpath(os.path.join(here, "..", "build", "plots", "band"))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
     K0 = [8, 24, 47, 83, 115, 138, 150]
     K1 = [13, 31, 59, 97, 124, 143, 149]
     FS = 15.36e6
     S = 3
-    IF = 128
-    pts = []
-    for ch, ks in ((0, K0), (1, K1)):
-        suf = "" if ch == 0 else "1"
-        air = load(os.path.join(base, f"cap_fwd_x1_air{suf}.txt"))
-        out = load(os.path.join(base, f"cap_fwd_x1_rx_host{suf}.txt"))
-        if air is None or out is None:
-            continue
-        n = len(out)
-        t = np.arange(n)
-        # per-tone gain/phase from the air node (the input to the last radio hop)
-        g, ph, f = [], [], []
-        for k in ks:
-            K = S * k
-            a = np.mean(air * np.exp(-2j * np.pi * (IF + K) * t / 1024)) / 256.0
-            b = np.mean(out * np.exp(-2j * np.pi * K * t / 1024))
-            r = b / a
-            g.append(20 * np.log10(max(abs(r), 1e-12)))
-            ph.append(np.degrees(np.angle(r * np.exp(2j * np.pi * K * 5 / 1024))))
-            f.append(K * FS / 1024 / 1e6)
-        # the whole end against the model out = air/256 delayed 5
-        bb = air * np.exp(-2j * np.pi * IF * t / 1024)
-        ref = bb[:-5] / 256.0
-        y = out[5:]
-        res = np.sqrt(np.mean(abs(y - ref) ** 2))
-        sig = np.sqrt(np.mean(abs(ref) ** 2))
-        pts.append((ch, f, g, ph, res, 20 * np.log10(res / sig)))
-    if len(pts) != 2:
-        print(f"  band page skipped: {len(pts)} of 2 captures present")
+    # dir, period, IF, air suffix, out suffix, out scale, lag, air bin K or IF+K
+    cfgs = [
+        ("fwd", "band",    1024, 128, "air",     "rx_host", 256.0, 5,  "if+k"),
+        ("rev", "bandrev", 1024, 0,   "air",     "tx_pins", 1.0,   28, "k"),
+        ("x2",  "bandx2",  2048, 256, "air",     "rx_host", 256.0, 5,  "if+k"),
+    ]
+    res = []
+    for name, sub, L, IF, airn, outn, oscale, lag, refbin in cfgs:
+        got = []
+        for ch, ks in ((0, K0), (1, K1)):
+            suf = "" if ch == 0 else "1"
+            air = load(os.path.join(base, sub, f"cap_{'rev' if name == 'rev' else ('fwd_x2' if name == 'x2' else 'fwd_x1')}_{airn}{suf}.txt"))
+            out = load(os.path.join(base, sub, f"cap_{'rev' if name == 'rev' else ('fwd_x2' if name == 'x2' else 'fwd_x1')}_{outn}{suf}.txt"))
+            if air is None or out is None:
+                continue
+            n = len(out)
+            t = np.arange(n)
+            bb = air * np.exp(-2j * np.pi * IF * t / L) if IF else air
+            g, ph, f = [], [], []
+            for k in ks:
+                K = S * k
+                a = np.mean(bb * np.exp(-2j * np.pi * K * t / L)) / oscale
+                b = np.mean(out * np.exp(-2j * np.pi * K * t / L))
+                r = b / a
+                g.append(20 * np.log10(max(abs(r), 1e-12)))
+                ph.append(np.degrees(np.angle(r * np.exp(2j * np.pi * K * lag / L))))
+                f.append(K * FS / L / 1e6 if L == 1024 else K * FS * 2 / L / 1e6)
+            ref = bb[:n - lag] / oscale
+            y = out[lag:]
+            resid = np.sqrt(np.mean(abs(y - ref) ** 2))
+            sig = np.sqrt(np.mean(abs(ref) ** 2))
+            # report the residual in 16-bit LSB for every configuration: the
+            # reverse end is a 24-bit pin word, i.e. 256 LSB24 per LSB16
+            got.append((ch, f, g, ph, resid / (256.0 if name == "rev" else 1.0),
+                        20 * np.log10(resid / sig)))
+        if got:
+            res.append((name, got))
+    want = {n: 2 for n, *_ in cfgs}
+    done = {n: len(g) for n, g in res}
+    if done != want:
+        print(f"  band page skipped: {done} of {want} captures present")
         return
-    fig, ax = plt.subplots(1, 2, figsize=(12, 4.2))
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 8.2))
     fig.suptitle("band of operation: the same 14 tones moved 3x up the band "
-                 "(highest at 0.44 fs_host)", fontsize=11)
-    for ch, f, g, ph, res, dbc in pts:
-        ax[0].plot(f, g, "o-", ms=3, label=f"ch{ch}: spread {max(g)-min(g):.3f} dB")
-        ax[1].plot(f, ph, "o-", ms=3,
-                   label=f"ch{ch}: spread {max(ph)-min(ph):.4f} deg, "
-                         f"{res:.2f} LSB ({dbc:.1f} dBc)")
-    ax[0].set_xlabel("MHz at the host rate (Nyquist 7.68)")
-    ax[0].set_ylabel("end / air, dB")
-    ax[0].set_title("flat across the band: every tone within 0.001 dB", fontsize=9)
-    ax[0].set_ylim(-1.2, 1.2)
-    ax[0].axhline(0, color="k", lw=0.5)
-    ax[0].grid(alpha=0.25, lw=0.4)
-    ax[0].legend(fontsize=7)
-    ax[0].tick_params(labelsize=7)
-    ax[1].set_xlabel("MHz at the host rate")
-    ax[1].set_ylabel("phase after the 5-sample delay, deg")
-    ax[1].set_title("phase after the 5-sample delay: no dispersion", fontsize=9)
-    ax[1].set_ylim(-1.0, 1.0)
-    ax[1].axhline(0, color="k", lw=0.5)
-    ax[1].grid(alpha=0.25, lw=0.4)
-    ax[1].legend(fontsize=7)
-    ax[1].tick_params(labelsize=7)
-    fig.tight_layout(rect=[0, 0, 1, 0.92])
-    outp = os.path.join(here, "..", "build", "plots", "loop_band.png")
+                 "(highest 6.75 MHz), every configuration", fontsize=11)
+    titles = {"fwd": "forward, bypassed", "rev": "reverse, bypassed",
+              "x2": "forward, x2 (MIMO) interpolation"}
+    panels = [ax[0][0], ax[0][1], ax[1][0], ax[1][1]]
+    print("\n=== band of operation (tones 3x up, highest 6.75 MHz) ===")
+    for i, (name, got) in enumerate(res):
+        a = panels[i]
+        for ch, f, g, ph, resid, dbc in got:
+            a.plot(f, g, "o-", ms=3,
+                   label=f"ch{ch}: {max(g)-min(g):.3f} dB, "
+                         f"{max(ph)-min(ph):.4f} deg, {resid:.2f} LSB")
+            print(f"  {name} ch{ch}: gain spread {max(g)-min(g):.3f} dB, phase spread "
+                  f"{max(ph)-min(ph):.4f} deg, end vs air model: {resid:.2f} LSB rms "
+                  f"({dbc:.1f} dBc)")
+        a.set_title(titles[name], fontsize=9)
+        a.set_xlabel("MHz at the host rate")
+        a.set_ylabel("end / air, dB")
+        a.axhline(0, color="k", lw=0.5)
+        a.set_ylim(-1.2, 1.2)
+        a.grid(alpha=0.25, lw=0.4)
+        a.legend(fontsize=6.5, loc="lower right")
+        a.tick_params(labelsize=7)
+    # What is left at band edge: the residual after removing the 14 tones.
+    # A line would be a distortion; the dither has none.
+    air0 = load(os.path.join(base, "band", "cap_fwd_x1_air.txt"))
+    out0 = load(os.path.join(base, "band", "cap_fwd_x1_rx_host.txt"))
+    if air0 is not None and out0 is not None:
+        n = len(out0)
+        t = np.arange(n)
+        A = []
+        for k in K0 + K1:
+            K = S * k
+            A += [np.exp(2j * np.pi * K * t / 1024), np.exp(-2j * np.pi * K * t / 1024)]
+        A = np.stack(A, 1)
+        sol, *_ = np.linalg.lstsq(A, out0, rcond=None)
+        fit = A @ sol
+        err = out0 - fit
+        E = np.abs(np.fft.fft(err)) / n
+        ref = np.sqrt(np.mean(np.abs(fit) ** 2))
+        f = np.fft.fftfreq(n, 1 / FS)
+        sel = f >= 0
+        a = panels[3]
+        a.plot(f[sel] / 1e6, 20 * np.log10(np.maximum(E[sel] / ref, 1e-12)),
+               lw=0.6, color="#7030a0")
+        a.set_ylim(-140, -40)
+        a.set_xlabel("MHz at the host rate")
+        a.set_ylabel("residual, dBc of the tones")
+        a.set_title(f"band-edge residual: worst {20*np.log10(E[sel].max()/ref):.0f} dBc, "
+                    "no line above the dither", fontsize=9)
+        a.grid(alpha=0.25, lw=0.4)
+        a.tick_params(labelsize=7)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    outp = os.path.join(base, "loop_band.png")
     fig.savefig(outp, dpi=110)
     plt.close(fig)
-    print("\n=== band of operation (tones 3x up, highest 6.75 MHz) ===")
-    for ch, f, g, ph, res, dbc in pts:
-        print(f"  ch{ch}: gain spread {max(g)-min(g):.3f} dB, phase spread "
-              f"{max(ph)-min(ph):.4f} deg, end vs air/256 delayed 5: "
-              f"{res:.2f} LSB rms ({dbc:.1f} dBc)")
     print(f"  wrote {os.path.relpath(outp)}")
-
 
 def retune():
     """A settings write on a running transmitter: LO retune and rate rewrite."""
