@@ -159,7 +159,7 @@ fails if the reference chain is pointed at the wrong register address.
 | full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
 | full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
 | two channels (MIMO capture) | 245.76 | 2 x 30.72 MSPS sc16; the AD9361 bus is 61.44 MSPS total, so this is the converter limit, not the link |
-| shipped bitstream | - | usrp_b210_fpga.bin sha256 `b2cbb4621ea9e060b...`, idcode 0x3651093, seed 3, commit df74352 (halfband rounding, DAC slice round+saturation, dead-code removal); post-route bus_clk 110.02 MHz / radio_clk 81.22 MHz, both PASS the 5 % policy - the earlier 4.5 % exception is retired |
+| shipped bitstream | - | usrp_b210_fpga.bin sha256 `2eabd2ea92bfb4f86b65a10acb867c00de361395ea02391159c62bed648854d0`, idcode 0x3651093, seed 3, RTL of commit 909f85d (halfband rounding, DAC slice round+saturation, comp bypass at rate 1, dead-code removal); post-route bus_clk 106.45 MHz / radio_clk 94.77 MHz, both PASS the 5 % policy without the exception flag |
 | packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
 | USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
 | USB stall, sustained | - | 25 % duty absorbed; the interface ceiling is 400 MB/s against 246 MB/s of payload |
