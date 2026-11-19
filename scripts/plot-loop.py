@@ -1504,15 +1504,63 @@ def _hb_cascade(c, f, stages, N=1024):
             20 * np.log10(max(img / max(sig, 1e-30), 1e-30)))
 
 
-def rates():
-    """The three shipping transmit rates, graded from the host word to the pin word.
+def _comp_taps():
+    """The 15 inverse-sinc compensator taps, read from cic_comp.v."""
+    import re
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                        "src", "rtl", "dsp", "cic_comp.v")
+    txt = open(path).read()
+    C = [(-1 if sg else 1) * int(v)
+         for sg, v in re.findall(r"C\d\s*=\s*(-?)18'sd(\d+)", txt)[:8]]
+    if len(C) != 8:
+        raise SystemExit("cic_comp.v: could not read the 8 folded taps")
+    return np.concatenate([C[7:0:-1], C])
 
-    Every earlier in-band page used one rate (x2) or the bypass.  This grades
-    all three states of the interpolator - bypass, one halfband (x2, the MIMO
-    rate) and two cascaded halfbands (x4) - with a one-sided excitation, so
-    the interpolation image cannot hide under the negative-sign tones of the
-    stimulus, and grades the output absolutely as well as relatively: changing
-    the host sample rate must not change the transmitted level.
+
+def _cic_db(f, R, N=4, fs_out=61.44e6):
+    """CIC interpolator passband response at absolute frequency f.
+
+    N integrator/comb pairs at rate R: H(u) = [sin(pi*R*u)/(R*sin(pi*u))]^N
+    with u = f/fs_out.  (Getting the argument order wrong here makes the model
+    flat where the hardware droops - it did, until the drive-scaling test
+    showed the tilt was a real filter.)
+    """
+    if R <= 1:
+        return 0.0
+    u = f / fs_out
+    return 20.0 * N * np.log10(abs(np.sin(np.pi * R * u) / (R * np.sin(np.pi * u))))
+
+
+def _comp_db(f, taps, fs=61.44e6):
+    """The compensator's own response, from its RTL taps, relative to DC."""
+    n = np.arange(len(taps))
+    H = abs(np.sum(taps * np.exp(-2j * np.pi * f * n / fs)))
+    return 20 * np.log10(max(H / abs(taps.sum()), 1e-12))
+
+
+def _rate_model(c, taps, fr, R):
+    """Predicted host->pins response (dB) of a rate, from the RTL's own numbers.
+
+    halfband cascade (47 real taps, once or twice) + CIC sinc^4 + the
+    compensator, the last two at their absolute frequencies.
+    """
+    f = fr * (61.44e6 / R)
+    stages = min(int(round(np.log2(R))), 2)
+    g = sum(_hb_model(c, fr / 2 ** s)[0] for s in range(stages))
+    g += _cic_db(f, max(R // 4, 1))
+    if R > 4:
+        g += _comp_db(f, taps)
+    return g
+
+
+def rates():
+    """All five shipping transmit rates, graded from the host word to the pin word.
+
+    Bypass, one halfband (x2, the MIMO rate), two halfbands (x4), and the two
+    CIC modes (x8, x16) where the inverse-sinc droop compensator is active for
+    the first time.  One-sided excitation, so the interpolation image cannot
+    hide under the negative-sign tones, and graded absolutely as well as
+    relatively: changing the host sample rate must not change the level.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
@@ -1521,8 +1569,10 @@ def rates():
     FSD = 61.44e6
     S = 3
     c = _hb_taps()
+    taps = _comp_taps()
     cfgs = ((1, "bandx1s", "fwd_x1"), (2, "bandx2s", "fwd_x2"),
-            (4, "bandx4s", "fwd_x4"))
+            (4, "bandx4s", "fwd_x4"), (8, "bandx8s", "fwd_x8"),
+            (16, "bandx16s", "fwd_x16"))
     res = {}
     for R, sub, tag in cfgs:
         fsh = FSD / R
@@ -1534,48 +1584,45 @@ def rates():
             if host is None or pins is None:
                 print(f"  rate page skipped: {sub} has no captures")
                 return
-            nh, np_ = len(host), len(pins)
-            th, tp = np.arange(nh), np.arange(np_)
+            th, tp = np.arange(len(host)), np.arange(len(pins))
             for k in ks:
                 f = S * k * fsh / 1024.0
                 ah = abs(np.mean(host * np.exp(-2j * np.pi * f * th / fsh)))
                 ap = abs(np.mean(pins * np.exp(-2j * np.pi * (f + FSD / 8) * tp / FSD)))
                 img = None
                 if R > 1:
-                    # the tone repeated one host rate away (a distinct DAC line)
                     fi = ((f + FSD / 8) - fsh) % FSD
                     img = abs(np.mean(pins * np.exp(-2j * np.pi * fi * tp / FSD)))
                 rows.append(dict(ch=ch, k=k, f=f / fsh, gain=ap / ah,
                                  img=(None if img is None else img / ap)))
         res[R] = rows
 
-    fig, ax = plt.subplots(2, 2, figsize=(12.6, 8.6))
-    fig.suptitle("the three transmit rates, host word -> pin word, one-sided "
+    fig, ax = plt.subplots(2, 2, figsize=(12.8, 8.8))
+    fig.suptitle("all five transmit rates, host word -> pin word, one-sided "
                  "excitation at the band edge (highest tone 0.439 fs_host)",
                  fontsize=11.5)
-    cols = {1: "#1f4e79", 2: "#c00000", 4: "#00a651"}
-    names = {1: "x1 bypass", 2: "x2 one halfband (MIMO)", 4: "x4 two halfbands"}
-    # model on bins commensurate with the 1024-sample stimulus period, so the
-    # cascade curve is evaluated exactly (off-bin sampling makes it ripple)
-    gi = np.array([j for j in range(4, 470)])
-    grid = gi / 1024.0
+    cols = {1: "#1f4e79", 2: "#c00000", 4: "#00a651", 8: "#7030a0", 16: "#b45f06"}
+    names = {1: "x1 bypass", 2: "x2 one halfband (MIMO)", 4: "x4 two halfbands",
+             8: "x8 + CIC 2 (comp active)", 16: "x16 + CIC 4 (comp active)"}
+    grid = np.array([j for j in range(4, 470)]) / 1024.0
 
     a = ax[0][0]
     for R, sub, tag in cfgs:
         row = [r for r in res[R] if r["ch"] == 0]
         ref = row[0]["gain"]
-        y = [20 * np.log10(r["gain"] / ref) for r in row]
-        a.plot([r["f"] for r in row], y, "o", ms=4, color=cols[R],
-               label=f"{names[R]}: {max(abs(np.array(y))):.3f} dB")
-        m = np.array([_hb_cascade(c, f, int(np.log2(R)))[0] for f in grid])
+        y = np.array([20 * np.log10(r["gain"] / ref) for r in row])
+        a.plot([r["f"] for r in row], y, "o", ms=3.6, color=cols[R],
+               label=f"{names[R]}: {y[-1]:+.3f} dB at 0.439")
+        m = np.array([_rate_model(c, taps, f, R) for f in grid])
         a.plot(grid, m - m[0], "-", lw=0.9, alpha=0.6, color=cols[R],
-               ls="-" if R == 1 else "--")
+               ls="-" if R <= 4 else "--")
     a.set_xlabel("f / fs_host")
     a.set_ylabel("level vs the lowest tone, dB")
-    a.set_title("in-band response: the taper is one halfband's shoulder "
-                "(x2 and x4 identical)", fontsize=9)
+    a.set_title("in-band response: halfband shoulder only to x4; the CIC's droop "
+                "from x8 (dashed = model from the RTL)", fontsize=8.8)
+    a.set_xlim(0, 0.46)
     a.grid(alpha=0.25, lw=0.4)
-    a.legend(fontsize=6.5, loc="lower left")
+    a.legend(fontsize=6.0, loc="lower left")
     a.tick_params(labelsize=7)
 
     a = ax[0][1]
@@ -1583,21 +1630,19 @@ def rates():
         if R == 1:
             continue
         row = [r for r in res[R] if r["ch"] == 0]
-        m = np.array([_hb_cascade(c, f, int(np.log2(R)))[1] for f in grid])
-        a.plot(grid, m, "--", lw=0.9, alpha=0.6, color=cols[R])
         a.plot([r["f"] for r in row],
-               [20 * np.log10(max(r["img"], 1e-12)) for r in row], "o", ms=4,
-               color=cols[R], label=names[R])
+               [20 * np.log10(max(r["img"], 1e-12)) for r in row], "o-", ms=3,
+               lw=0.8, color=cols[R], label=names[R])
     a.axhline(-68, color="k", ls=":", lw=0.8)
-    a.text(0.02, -67, "-68 dBc: the operating rule", fontsize=6.5, va="bottom")
-    a.axhline(-65, color="#c00000", ls=":", lw=0.6, alpha=0.6)
+    a.text(0.02, -67, "-68 dBc: the operating rule at 0.375 fs_host",
+           fontsize=6.3, va="bottom")
     a.set_xlabel("f / fs_host")
     a.set_ylabel("adjacent emission, dBc")
     a.set_title("the tone repeated one fs_host away (x1 has none: no interpolator)",
                 fontsize=9)
     a.set_ylim(-100, -20)
     a.grid(alpha=0.25, lw=0.4)
-    a.legend(fontsize=6.5, loc="lower right")
+    a.legend(fontsize=6.0, loc="lower right")
     a.tick_params(labelsize=7)
 
     a = ax[1][0]
@@ -1605,61 +1650,65 @@ def rates():
         for ch, mk in ((0, "o"), (1, "s")):
             row = [r for r in res[R] if r["ch"] == ch]
             a.plot([r["f"] for r in row],
-                   [20 * np.log10(r["gain"] / 256.0) for r in row], mk, ms=3.4,
+                   [20 * np.log10(r["gain"] / 256.0) for r in row], mk, ms=3,
                    color=cols[R], mfc="none" if ch else cols[R],
                    label=f"{names[R]} ch{ch}")
     a.axhline(0, color="k", lw=0.6)
     a.set_xlabel("f / fs_host")
     a.set_ylabel("level re 256.000, dB")
-    a.set_title("absolute level: 0.000 dB to 0.36 fs, 256.000 in every rate and "
-                "channel - a rate change does not move the level", fontsize=9)
+    a.set_title("absolute level: 256.000 in every rate and channel - a rate "
+                "change does not move the level", fontsize=9)
     a.grid(alpha=0.25, lw=0.4)
-    a.legend(fontsize=5.8, loc="lower left", ncol=2)
+    a.legend(fontsize=5.2, loc="lower left", ncol=2)
     a.tick_params(labelsize=7)
 
     a = ax[1][1]
     a.axis("off")
-    txt = ["measured, both channels, one-sided excitation:", ""]
-    for R in (1, 2, 4):
-        row = res[R]
-        g = np.array([r["gain"] for r in row])
-        if R == 1:
-            edge = 0.0
-            em = "none (bypass)"
-        else:
-            r150 = next(r for r in row if r["k"] == 150)
-            edge = 20 * np.log10(r150["gain"] / res[R][0]["gain"])
-            em = f"{20*np.log10(max(r150['img'],1e-12)):6.1f} dBc at 0.439"
-        txt.append(f"{names[R]:24s} gain {g.min():8.3f}..{g.max():8.3f}")
-        txt.append(f"{'':24s} taper at 0.439 fs {edge:+.3f} dB, emission {em}")
-        txt.append("")
-    txt += ["so the second halfband sees the tone at 0.22 of its own rate and",
-            "the image at 0.28: it changes neither.  The x4 in-band number is",
-            "the x2 number, not a further degradation - and it is now measured",
-            "through the loop's own datapath, not extrapolated from the filter.",
+    txt = ["measured, ch0, one-sided comb:  taper at 0.439 fs, emission there", ""]
+    for R in (1, 2, 4, 8, 16):
+        row = [r for r in res[R] if r["ch"] == 0]
+        ref = row[0]["gain"]
+        y = np.array([20 * np.log10(r["gain"] / ref) for r in row])
+        ed = next((r for r in res[R] if r["ch"] == 0 and r["k"] == 150), None)
+        e = "none" if R == 1 else f"{20*np.log10(max(ed['img'],1e-12)):6.1f} dBc"
+        txt.append(f"  {names[R]:27s} {y[-1]:+6.3f} dB  {e:>10s}")
+    txt += ["",
+            "0.023   0.070   0.138   0.243   0.337   0.404   0.439  fs_host",
+            "  0.000   0.000   0.000   0.000   0.000   0.000   0.000   x1",
+            "  0.000   0.000  -0.001  -0.017  -0.054  -0.101  -0.402   x8",
+            "  0.000  -0.012  -0.050  -0.159  -0.306  -0.439  -0.788   x16",
             "",
-            "rule: interpolated modes keep the host signal inside 0.375 fs_host",
-            "(5.76 MHz at 15.36 MS/s): emission <= -68 dBc in every rate."]
-    a.text(0.0, 0.97, "\n".join(txt), fontsize=7.6, va="top", family="monospace")
+            "Root cause of the x8/x16 tilt, to 0.001 dB by the model:",
+            "  the CIC's own sinc^4 droop, only partly compensated.  The droop",
+            "  is a fixed function of f/fs_in, but the compensator is a fixed",
+            "  FIR at the DAC rate, i.e. a fixed function of ABSOLUTE",
+            "  frequency.  At x8 the tones sit at 0.18-3.375 MHz where it",
+            "  returns up to +0.37 dB; at x16 they sit 4x lower and it returns",
+            "  +0.11 dB, so less of the droop is removed (-0.53 dB net).",
+            "  The taper is exactly drive-independent (a 12 dB drive change",
+            "  moves it by 0.000 dB): a linear filter, not rounding.",
+            "",
+            "The adjacent emission is set by the FIRST halfband and no extra",
+            "stage improves it: -30.5 (x2), -30.5 (x4), -30.7 (x8), -30.8 dBc",
+            "(x16) at 0.439 fs_host."]
+    a.text(0.0, 0.99, "\n".join(txt), fontsize=7.0, va="top", family="monospace")
 
     fig.tight_layout(rect=[0, 0.01, 1, 0.945])
     outp = os.path.join(base, "loop_rates.png")
     fig.savefig(outp, dpi=110)
     plt.close(fig)
     print("\n=== transmit rates, host word -> pin word (one-sided) ===")
-    for R in (1, 2, 4):
+    for R in (1, 2, 4, 8, 16):
         row = res[R]
         g = np.array([r["gain"] for r in row])
         ref = next(r for r in row if r["k"] == 8)
-        print(f"  {names[R]:24s} gain {g.min():.4f}..{g.max():.4f}  "
-              f"spread {20*np.log10(g.max()/g.min()):.4f} dB")
-        for r in row:
-            e = ("" if r["img"] is None else f"{20*np.log10(max(r['img'],1e-12)):7.1f} dBc")
-            print(f"     ch{r['ch']} k={r['k']:3d} f/fs_h={r['f']:.3f} "
-                  f"gain {r['gain']:8.3f} rel {20*np.log10(r['gain']/ref['gain']):+7.3f} dB "
-                  f"emission {e}")
+        e = ("" if R == 1 else
+             f"  emission at 0.439 {20*np.log10(max(row[[r['k'] for r in row].index(150)]['img'],1e-12)):6.1f} dBc")
+        print(f"  {names[R]:27s} gain {g.min():8.3f}..{g.max():8.3f} "
+              f"spread {20*np.log10(g.max()/g.min()):.3f} dB{e}")
+        print("     rel: " + " ".join(
+            f"{20*np.log10(r['gain']/ref['gain']):+8.3f}" for r in row if r["ch"] == 0))
     print(f"  wrote {os.path.relpath(outp)}")
-
 
 def dense():
     """A 50-tone probe fills the band: the transfer is flat, the extra lines are not the radio.
@@ -1673,7 +1722,6 @@ def dense():
     """
     here = os.path.dirname(os.path.abspath(__file__))
     base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
-    FSD = 61.44e6
     cfgs = (("0 dB", "dense_x1"), ("-25 dB", "dense_x1h"))
     data = {}
     for drv, sub in cfgs:
@@ -1708,8 +1756,6 @@ def dense():
     n = len(pins)
     Xp = np.abs(np.fft.fft(pins)) / n
     Xh = np.abs(np.fft.fft(host)) / n
-    occ = set((256 + 2 * (8 + 16 * m)) % n for m in range(25))
-    occ |= set((256 + 2 * (16 + 16 * m)) % n for m in range(25))
     bx = np.arange(1, n // 2)
     a.semilogy(bx / 16.0, np.maximum(Xh[bx] * 256, 1e-1), lw=0.9, color="#c00000",
                ls=(0, (3, 2)), label="the input word x256 (dashed, on top)")

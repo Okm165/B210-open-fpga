@@ -974,15 +974,24 @@ plots-extra:
 	cd $(ROOT)/build/plots/bandx2s && $(VVP) -n $(SIM_DIR)/tb_bandx2s.vvp > /dev/null
 	@# The three transmit rates, one-sided so the interpolation image is a
 	@# distinct line (the +/-k stimulus puts the image on the negative tone).
-	@mkdir -p $(ROOT)/build/plots/bandx1s $(ROOT)/build/plots/bandx4s
+	@mkdir -p $(ROOT)/build/plots/bandx1s $(ROOT)/build/plots/bandx4s \
+	           $(ROOT)/build/plots/bandx8s $(ROOT)/build/plots/bandx16s
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx1s/src
 	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx4s/src
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx8s/src
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx16s/src
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DBINSCALE=3 -DSINGLE \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx1s.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/bandx1s && $(VVP) -n $(SIM_DIR)/tb_bandx1s.vvp > /dev/null
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX4 -DBINSCALE=3 -DSINGLE \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx4s.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/bandx4s && $(VVP) -n $(SIM_DIR)/tb_bandx4s.vvp > /dev/null
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX8 -DBINSCALE=3 -DSINGLE \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx8s.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/bandx8s && $(VVP) -n $(SIM_DIR)/tb_bandx8s.vvp > /dev/null
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX16 -DBINSCALE=3 -DSINGLE \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx16s.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/bandx16s && $(VVP) -n $(SIM_DIR)/tb_bandx16s.vvp > /dev/null
 	@# A 50-tone dense probe (one-sided) at two drives: a product of the signal
 	@# scales with the drive, the probe's own quantisation does not.
 	@mkdir -p $(ROOT)/build/plots/dense_x1 $(ROOT)/build/plots/dense_x1h
