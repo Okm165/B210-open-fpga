@@ -214,6 +214,12 @@ TX_TIMED_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_timed.v
 
+# TX sample pairing: even, odd-length and burst packets must deliver every
+# host sample to the DUC exactly once, in order.
+TX_PAIRING_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_tx_pairing.v
+
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
@@ -718,6 +724,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_timed.log tb_tx_timed.vvp
 	@grep -q 'TX-TIMED: PASS' $(SIM_DIR)/tb_tx_timed.log || \
 	  { echo "ERROR: timed transmit broken; see $(SIM_DIR)/tb_tx_timed.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_pairing -o tb_tx_pairing.vvp $(TX_PAIRING_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_tx_pairing.log tb_tx_pairing.vvp
+	@grep -q 'TX-PAIR: PASS' $(SIM_DIR)/tb_tx_pairing.log || \
+	  { echo "ERROR: TX sample pairing broken; see $(SIM_DIR)/tb_tx_pairing.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
