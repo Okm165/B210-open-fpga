@@ -246,7 +246,7 @@ HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
 .PHONY: help doctor verify test test-data elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
-        shell build synth pnr bitstream hello analyze timing clean image-clean
+        shell build synth pnr bitstream record-image image-check hello analyze timing clean image-clean
 
 help:
 	@printf '%s\n' \
@@ -475,6 +475,52 @@ verify:
 	@cd $(ROOT) && ! git ls-files build | grep -q . || \
 	  { echo "ERROR: build/ content is tracked"; exit 1; }
 	@echo "source state ok"
+
+# Deployment provenance: the shipped image must be the one this tree builds.
+# `record-image` stamps the pair (image hash, source digest) after a build;
+# `image-check` refuses to call an image deployable if either has moved.
+record-image:
+	@test -s $(ROOT)/build/fpga/bitstream/usrp_b210_fpga.bin || \
+	  { echo "ERROR: no image to record; run make bitstream"; exit 1; }
+	@cd $(ROOT) && { \
+	  echo "# Bitstream provenance.  Written by \`make record-image\` after a build and"; \
+	  echo "# checked by \`make image-check\`.  The image is deployable only if both"; \
+	  echo "# hashes match the current tree and the current file."; \
+	  echo "#"; \
+	  echo "#   image       sha256 of build/fpga/bitstream/usrp_b210_fpga.bin"; \
+	  echo "#   source      scripts/source-digest.sh over the RTL, source list, XDC, defines"; \
+	  echo "#   rtl-commit  last commit that touched src/"; \
+	  echo "#"; \
+	  echo "# Toolchain: the container image tag in the Makefile pins yosys/nextpnr; the"; \
+	  echo "# digest deliberately does not, so bump the tag in the same change as a tool"; \
+	  echo "# upgrade and regenerate this file."; \
+	  echo "image  $$(sha256sum build/fpga/bitstream/usrp_b210_fpga.bin | cut -d' ' -f1)"; \
+	  echo "source $$(scripts/source-digest.sh)"; \
+	  echo "rtl-commit $$(git log -1 --format=%h -- src/)"; \
+	  } > scripts/bitstream-provenance.txt
+	@cat $(ROOT)/scripts/bitstream-provenance.txt
+
+image-check:
+	@set -e; cd $(ROOT); \
+	  img=build/fpga/bitstream/usrp_b210_fpga.bin; \
+	  test -s "$$img" || { echo "ERROR: no image; run make bitstream"; exit 1; }; \
+	  want_img=$$(awk '$$1=="image"{print $$2}' scripts/bitstream-provenance.txt); \
+	  want_src=$$(awk '$$1=="source"{print $$2}' scripts/bitstream-provenance.txt); \
+	  got_img=$$(sha256sum "$$img" | cut -d' ' -f1); \
+	  got_src=$$(scripts/source-digest.sh); \
+	  if [ "$$got_src" != "$$want_src" ]; then \
+	    echo "ERROR: RTL changed since the image was recorded; rebuild and re-record"; \
+	    echo "  recorded source $$want_src"; \
+	    echo "  current  source $$got_src"; exit 1; \
+	  fi; \
+	  if [ "$$got_img" != "$$want_img" ]; then \
+	    echo "ERROR: image does not match its recorded hash"; \
+	    echo "  recorded image $$want_img"; \
+	    echo "  current  image $$got_img"; exit 1; \
+	  fi; \
+	  echo "image ok: $$got_img"; \
+	  echo "  source $$got_src"; \
+	  echo "  rtl    $$(awk '$$1=="rtl-commit"{print $$2}' scripts/bitstream-provenance.txt)"
 
 test:
 	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command

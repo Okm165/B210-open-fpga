@@ -1,0 +1,14 @@
+# Bitstream provenance.  Written by `make record-image` after a build and
+# checked by `make image-check`.  The image is deployable only if both
+# hashes match the current tree and the current file.
+#
+#   image       sha256 of build/fpga/bitstream/usrp_b210_fpga.bin
+#   source      scripts/source-digest.sh over the RTL, source list, XDC, defines
+#   rtl-commit  last commit that touched src/
+#
+# Toolchain: the container image tag in the Makefile pins yosys/nextpnr; the
+# digest deliberately does not, so bump the tag in the same change as a tool
+# upgrade and regenerate this file.
+image  2eabd2ea92bfb4f86b65a10acb867c00de361395ea02391159c62bed648854d0
+source ea88f37acddb14d516be9a65922c7a6069cd7f001c1d0bc8d810a20140c5eb72
+rtl-commit 8eb2502
