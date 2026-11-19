@@ -64,6 +64,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | TX halfband impulse response | 47 taps, isolated | centre 65536, +-1 41508, +-3 -13273 ...; H(0) 2.0000, H(fs/2) -92.8 dB |
 | TX halfband regression | 26th make-test group | taps on odd offsets, phase alignment, image gain and DC pinned |
 | TX pin quantiser | full chain, DC and tones | round-half-even at the 12-bit slice (was truncation: -0.5 LSB bias) |
+| RX static transfer | all 4096 ADC codes, LO at DC | gain 15.9993/16, worst error 1.141 LSB16 (dither), no bias, no rail hit, control-bit map measured |
 | full build | - | hello.bin, idcode 0x3651093 |
 
 ## Operator error budget
