@@ -843,6 +843,23 @@ plots:
 	cd $(ROOT) && python3 scripts/plot-loop.py fwd_x1 fwd_x2 rev conv
 	@echo "plots: $(ROOT)/build/plots/loop_*.png"
 
+# Converter characterisation: SNR against input level, 12-bit converters in the
+# loop, four amplitudes.  Slower than `plots` (four more compiles), so it is
+# separate; the figure lands in build/plots/loop_level_sweep.png.
+plots-levels:
+	@mkdir -p $(ROOT)/build/plots
+	@ln -sfn $(ROOT)/src $(ROOT)/build/plots/src
+	@for a in 3500 7000 12000 16000; do \
+	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DCONV -DAMPDEF=$$a.0 \
+	    -I $(ROOT)/src/rtl/control -s tb_capture -o tb_lvl_$$a.vvp $(CAPTURE_TEST_SRCS) || exit 1; \
+	  cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_lvl_$$a.vvp > /dev/null || exit 1; \
+	  cp -f cap_conv_rx_host.txt cap_lvl_$${a}_rx.txt; \
+	  cp -f cap_conv_dac.txt     cap_lvl_$${a}_dac.txt; \
+	  cp -f cap_conv_adc.txt     cap_lvl_$${a}_adc.txt; \
+	done
+	cd $(ROOT) && python3 scripts/plot-loop.py levels
+
+
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp

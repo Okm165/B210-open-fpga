@@ -42,13 +42,24 @@ module tb_capture;
    integer kidx0 [0:NT-1];
    integer kidx1 [0:NT-1];
    initial begin
+`ifdef MATCH
+      kidx0[0]=8;   kidx0[1]=24;  kidx0[2]=47;  kidx0[3]=83;
+      kidx0[4]=115; kidx0[5]=138; kidx0[6]=150;
+      kidx1[0]=8;   kidx1[1]=24;  kidx1[2]=47;  kidx1[3]=83;
+      kidx1[4]=115; kidx1[5]=138; kidx1[6]=150;
+`else
       kidx0[0]=8;   kidx0[1]=24;  kidx0[2]=47;  kidx0[3]=83;
       kidx0[4]=115; kidx0[5]=138; kidx0[6]=150;
       kidx1[0]=13;  kidx1[1]=31;  kidx1[2]=59;  kidx1[3]=97;
       kidx1[4]=124; kidx1[5]=143; kidx1[6]=149;
+`endif
    end
 
-   localparam real AMP = 7000.0;    // per channel peak envelope, host units
+`ifdef AMPDEF
+   localparam real AMP = `AMPDEF;    // level sweep: -DAMPDEF=16000.0
+`else
+   localparam real AMP = 7000.0;    // per channel tone-set amplitude, host units
+`endif
    localparam real PI  = 3.14159265358979323846;
 
    real s0i [0:L-1], s0q [0:L-1], s1i [0:L-1], s1q [0:L-1];
@@ -66,11 +77,19 @@ module tb_capture;
             acc = 2.0*PI*(-kidx0[k])*n/L + ph + PI/3.0;
             s0i[n] = s0i[n] + (AMP/NT)*$cos(acc);
             s0q[n] = s0q[n] + (AMP/NT)*$sin(acc);
+`ifdef MATCH
+            ph = 2.0*PI*(((k*37 + 11) % 181)/181.0);
+`else
             ph = 2.0*PI*(((k*53 + 97) % 227)/227.0);
+`endif
             acc = 2.0*PI*kidx1[k]*n/L + ph;
             s1i[n] = s1i[n] + (AMP/NT)*$cos(acc);
             s1q[n] = s1q[n] + (AMP/NT)*$sin(acc);
+`ifdef MATCH
+            acc = 2.0*PI*(-kidx1[k])*n/L + ph + PI/3.0;
+`else
             acc = 2.0*PI*(-kidx1[k])*n/L + ph + 2.0*PI/5.0;
+`endif
             s1i[n] = s1i[n] + (AMP/NT)*$cos(acc);
             s1q[n] = s1q[n] + (AMP/NT)*$sin(acc);
          end
@@ -96,6 +115,7 @@ module tb_capture;
 
    reg clk = 0; always #5 clk = ~clk;
    reg rst = 1;
+   reg run = 0;          // held low through the register writes in -DALIGN
 
    // ---- chains -----------------------------------------------------------
    reg        t0_stb=0; reg [7:0] t0_addr=0; reg [31:0] t0_data=0;
@@ -118,17 +138,21 @@ module tb_capture;
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(t0_stb), .set_addr(t0_addr), .set_data(t0_data),
       .tx_fe_i(tx0_i), .tx_fe_q(tx0_q),
-      .sample(tx0_sample), .run(1'b1), .strobe(tx0_strobe), .debug(tx0_debug));
+      .sample(tx0_sample), .run(run), .strobe(tx0_strobe), .debug(tx0_debug));
 
    duc_chain #(.BASE(0), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) tx1 (
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(t1_stb), .set_addr(t1_addr), .set_data(t1_data),
       .tx_fe_i(tx1_i), .tx_fe_q(tx1_q),
-      .sample(tx1_sample), .run(1'b1), .strobe(tx1_strobe), .debug(tx1_debug));
+      .sample(tx1_sample), .run(run), .strobe(tx1_strobe), .debug(tx1_debug));
 
    // ---- air model: delay 3, two-path multipath -18 dB, -30 dB coupling ----
    localparam integer D = 3;
+`ifdef MATCH
+   integer beta_den = 8, alpha_den = 1000000;   // no coupling: channels independent
+`else
    integer beta_den = 8, alpha_den = 32;
+`endif
    reg signed [23:0] d0i [0:D-1], d0q [0:D-1], d1i [0:D-1], d1q [0:D-1];
    integer di;
 `ifdef REVERSE
@@ -160,10 +184,23 @@ module tb_capture;
       d1i[0] <= dac1_i; d1q[0] <= dac1_q;
    end
 
-   wire signed [23:0] air0_i = dac0_i - (d0i[D-1] / beta_den) + (dac1_i / alpha_den);
-   wire signed [23:0] air0_q = dac0_q - (d0q[D-1] / beta_den) + (dac1_q / alpha_den);
-   wire signed [23:0] air1_i = dac1_i - (d1i[D-1] / beta_den) + (dac0_i / alpha_den);
-   wire signed [23:0] air1_q = dac1_q - (d1q[D-1] / beta_den) + (dac0_q / alpha_den);
+   // The channel's sum is clamped to the converter's range instead of wrapping:
+   // a real ADC saturates, and a wrapping model would fake a catastrophic
+   // distortion that the hardware cannot produce.
+   function signed [23:0] sat24(input signed [25:0] x);
+      begin
+         sat24 = (x > 26'sd8388607)  ? 24'sd8388607 :
+                 (x < -26'sd8388608) ? -24'sd8388608 : x[23:0];
+      end
+   endfunction
+
+   wire signed [25:0] sum0_i = dac0_i - (d0i[D-1] / beta_den) + (dac1_i / alpha_den);
+   wire signed [25:0] sum0_q = dac0_q - (d0q[D-1] / beta_den) + (dac1_q / alpha_den);
+   wire signed [25:0] sum1_i = dac1_i - (d1i[D-1] / beta_den) + (dac0_i / alpha_den);
+   wire signed [25:0] sum1_q = dac1_q - (d1q[D-1] / beta_den) + (dac0_q / alpha_den);
+
+   wire signed [23:0] air0_i = sat24(sum0_i), air0_q = sat24(sum0_q);
+   wire signed [23:0] air1_i = sat24(sum1_i), air1_q = sat24(sum1_q);
 
 `ifdef CONV
    wire signed [23:0] adc0_i = q12(air0_i), adc0_q = q12(air0_q);
@@ -177,13 +214,13 @@ module tb_capture;
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(r0_stb), .set_addr(r0_addr), .set_data(r0_data),
       .rx_fe_i(adc0_i), .rx_fe_q(adc0_q),
-      .sample(rx0_sample), .run(1'b1), .strobe(rx0_strobe), .debug());
+      .sample(rx0_sample), .run(run), .strobe(rx0_strobe), .debug());
 
    ddc_chain #(.BASE(0), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) rx1 (
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(r1_stb), .set_addr(r1_addr), .set_data(r1_data),
       .rx_fe_i(adc1_i), .rx_fe_q(adc1_q),
-      .sample(rx1_sample), .run(1'b1), .strobe(rx1_strobe), .debug());
+      .sample(rx1_sample), .run(run), .strobe(rx1_strobe), .debug());
 
 `ifdef REVERSE
    always @(posedge clk) begin
@@ -229,6 +266,17 @@ module tb_capture;
       if (tx0.strobe_hb1) begin
          si0 = $rtoi(s0i[p0]); sq0 = $rtoi(s0q[p0]);
          si1 = $rtoi(s1i[p1]); sq1 = $rtoi(s1q[p1]);
+         // A multitone sums to up to 2x its per-component amplitude, so the
+         // generator must saturate at the 16-bit rail like a host would; a
+         // truncated word would wrap and fake a catastrophic distortion.
+         if (si0 >  32767) si0 =  32767;
+         if (si0 < -32768) si0 = -32768;
+         if (sq0 >  32767) sq0 =  32767;
+         if (sq0 < -32768) sq0 = -32768;
+         if (si1 >  32767) si1 =  32767;
+         if (si1 < -32768) si1 = -32768;
+         if (sq1 >  32767) sq1 =  32767;
+         if (sq1 < -32768) sq1 = -32768;
          tx0_sample <= { si0[15:0], sq0[15:0] };
          tx1_sample <= { si1[15:0], sq1[15:0] };
          p0 <= (p0 == L-1) ? 0 : p0 + 1;
@@ -255,7 +303,15 @@ module tb_capture;
       fd_rxmix  = $fopen("cap_rev_rx_mix.txt", "w");
       fd_rxhost = $fopen("cap_rev_rx_host.txt","w");
 `else
-   `ifdef CONV
+   `ifdef MATCH
+      fd_host   = $fopen("cap_match_host.txt",   "w");
+      fd_hb     = $fopen("cap_match_tx_hb.txt",  "w");
+      fd_mix    = $fopen("cap_match_tx_mix.txt", "w");
+      fd_pins   = $fopen("cap_match_tx_pins.txt","w");
+      fd_air    = $fopen("cap_match_air.txt",    "w");
+      fd_rxmix  = $fopen("cap_match_rx_mix.txt", "w");
+      fd_rxhost = $fopen("cap_match_rx_host.txt","w");
+   `elsif CONV
       fd_host   = $fopen("cap_conv_host.txt",   "w");
       fd_hb     = $fopen("cap_conv_tx_hb.txt",  "w");
       fd_mix    = $fopen("cap_conv_tx_mix.txt", "w");
@@ -333,7 +389,12 @@ module tb_capture;
       fd_dac     = $fopen("cap_rev_dac.txt", "w");
       fd_adc     = $fopen("cap_rev_adc.txt", "w");
 `else
-   `ifdef CONV
+   `ifdef MATCH
+      fd_pins1   = $fopen("cap_match_tx_pins1.txt", "w");
+      fd_rxhost1 = $fopen("cap_match_rx_host1.txt","w");
+      fd_dac     = $fopen("cap_match_dac.txt", "w");
+      fd_adc     = $fopen("cap_match_adc.txt", "w");
+   `elsif CONV
       fd_pins1   = $fopen("cap_conv_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_conv_rx_host1.txt","w");
       fd_dac     = $fopen("cap_conv_dac.txt", "w");
@@ -365,6 +426,13 @@ module tb_capture;
       @(negedge clk); rst = 0;
       repeat (4) @(negedge clk);
 
+`ifdef ALIGN
+      // Both oscillators start from phase 0 at the same clock: write the
+      // frequencies with run low, then release.  Without this the second
+      // channel's write lands two clocks later and its NCO is 90 deg ahead.
+      run = 1;   // the accumulator only resets while run is low at reset time
+      @(negedge clk); run = 0;
+`endif
       // NCO at fs/8 on both sides: the composite RX->TX rotation is exactly 1.
 `ifdef X2
       // BASE+2 = {enable_hb1, enable_hb2, interp_rate}: hb1 on, CIC rate 1 = x2
@@ -376,6 +444,12 @@ module tb_capture;
 `endif
       rwr(0,8'd0,32'h2000_0000); rwr(0,8'd3,0);
       rwr(1,8'd0,32'h2000_0000); rwr(1,8'd3,0);
+`ifndef ALIGN
+      run = 1;
+`endif
+`ifdef ALIGN
+      @(negedge clk); run = 1;
+`endif
       repeat (400) @(posedge clk);
 
       $display("CFG: sr2=0x%03x hb1=%0d hb2=%0d rate=%0d strobe_hb1=%0d", tx0.sr_2.out, tx0.enable_hb1, tx0.enable_hb2, tx0.interp_rate, tx0.strobe_hb1);

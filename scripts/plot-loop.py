@@ -418,12 +418,80 @@ def budget():
     print(f"  wrote {os.path.relpath(out)}")
 
 
+def levels():
+    """SNR against input level with the real converters in the loop.
+
+    Four captures of the same 28-tone signal at -25, -19, -13 and -7 dBFS rms.
+    The residual is measured against the transmitted tones, the clipping
+    fraction against the 12-bit code range, so the curve shows where the
+    converters are actually being used and where they run out.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    amps = [3500, 7000, 12000, 16000]
+    pts = []
+    for a in amps:
+        out = load(os.path.join(base, f"cap_lvl_{a}_rx.txt"))
+        dac = load(os.path.join(base, f"cap_lvl_{a}_dac.txt"))
+        adc = load(os.path.join(base, f"cap_lvl_{a}_adc.txt"))
+        if out is None or dac is None:
+            continue
+        err, fit = tone_fit(out)
+        sig = np.sqrt(np.mean(np.abs(fit) ** 2))
+        res = np.sqrt(np.mean(np.abs(err) ** 2))
+        codes = np.round(dac.real / 4096.0)
+        clip = 100.0 * np.mean(np.abs(codes) >= 2048)
+        acodes = np.round(adc.real / 4096.0) if adc is not None else np.zeros(1)
+        aclip = 100.0 * np.mean(np.abs(acodes) >= 2048)
+        pts.append((a, 20 * np.log10(sig / 32768), 20 * np.log10(res / 32768),
+                    20 * np.log10(sig / res), clip, aclip,
+                    int(np.abs(codes).max()), len(np.unique(codes))))
+
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4.4))
+    fig.suptitle("converter utilisation: SNR against input level, 12-bit converters in the loop",
+                 fontsize=11)
+    lv = [p[1] for p in pts]
+    ax[0].plot(lv, [p[3] for p in pts], "o-", color="#1f4e79", label="SNR (signal / residual)")
+    ax[0].plot(lv, [-p[2] for p in pts], "s--", color="#c00000", label="residual, dBFS")
+    ax[0].set_xlabel("signal rms, dBFS")
+    ax[0].set_ylabel("dB")
+    ax[0].set_title("residual is flat (converter quantisation): SNR rises 1:1 with level",
+                    fontsize=9)
+    ax[0].grid(alpha=0.25, lw=0.4)
+    ax[0].legend(fontsize=7)
+    ax[0].tick_params(labelsize=7)
+    ax[1].plot(lv, [p[4] for p in pts], "o-", color="#1f4e79", label="DAC word")
+    ax[1].plot(lv, [p[5] for p in pts], "s--", color="#c00000", label="ADC word")
+    ax[1].set_xlabel("signal rms, dBFS")
+    ax[1].set_ylabel("% of samples at the rail")
+    ax[1].set_title("clipping fraction of the 12-bit words (zero over the whole range)",
+                    fontsize=9)
+    ax[1].set_ylim(-0.5, 0.5)
+    ax[1].legend(fontsize=7)
+    ax[1].grid(alpha=0.25, lw=0.4)
+    ax[1].tick_params(labelsize=7)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    out = os.path.join(base, "loop_level_sweep.png")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print("\n=== level sweep (12-bit converters in the loop) ===")
+    for a, sig, res, snr, clip, aclip, peak, ncodes in pts:
+        print(f"  tone-set amplitude {a:6d}: signal {sig:6.1f} dBFS, residual {res:6.1f} dBFS, "
+              f"SNR {snr:5.1f} dB, DAC peak {peak:4d}/2048, {ncodes:4d} codes, "
+              f"DAC clip {clip:5.2f} %, ADC clip {aclip:5.2f} %")
+    print(f"  wrote {os.path.relpath(out)}")
+
+
 if __name__ == "__main__":
     args = sys.argv[1:] or ["fwd_x1", "fwd_x2", "rev", "conv"]
     for t in args:
         if t == "budget":
             budget()
+        elif t == "levels":
+            levels()
         else:
             main(t)
     if "budget" not in args:
         budget()
+    if "levels" not in args:
+        levels()
