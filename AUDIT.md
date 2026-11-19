@@ -107,7 +107,10 @@ the digital path costs 0.04 dB. The converter, not the pipeline, is the limit.
 Rate change and "lossy" operators: the receive path contains none. There is no
 decimator, no halfband, no CIC and no filter between the ADC pins and the USB
 words, so nothing can droop, alias or be discarded - the host receives every
-sample at the full 61.44 MSPS. The transmit path does contain halfband
+sample at the full 61.44 MSPS. The band-limiting the receive path relies on is
+therefore the AD9361's own digital filters, configured by the driver and outside
+this repository; at 30.72 MSPS per channel (MIMO) the chip halves its own rate
+and this RTL is unchanged. The transmit path does contain halfband
 interpolators, but interpolation is not a lossy operation: it inserts samples
 the DAC needs at a higher rate and removes nothing; its filters run at the
 transmit rate and cannot affect the received data.
