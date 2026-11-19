@@ -73,6 +73,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | FX3 async boundary | `tb_gpif_cdc`, fifo 100 MHz / gpif 101 MHz, 3 ns phase, backpressure | 320/320 words, tlast every packet on the low half, 0 errors |
 | TX sample pairing | `tb_tx_pairing`: even 8, odd 7, burst 6+5, self-checking tag | every host sample reaches the DUC once in order; no duplicate/drop/swap, odd pad never leaks |
 | Timed TX | `tb_tx_timed`: future tick 40, and a past tick | fires exactly at tick 40; past tick reports TIME_ERROR (8) with a one-clock ack and `run` stays 0 |
+| whole-radio air loop | `tb_airloop`: 2 channels -> delay+multipath(-18 dB, 3 samples)+AWGN+coupling(-30 dB) -> 2 RX | tracks the analytic model to 0.013 %; EVM -77.6 dB (dither) and rises with injected noise; coupled tone passes at 250.00/250.00 |
 | two-tone IMD3 | `tb_imd3`: f1=fs/16, f2=9fs/128 through the TX->RX loopback, 6 levels to peak 31000 (rail 32768) | output 2f1-f2 / 2f2-f1 = -87 to -113 dBc, improving with level; gain flat to 0.0005 dB, no compression before the rail; below a 12-bit converter's own IMD |
 | two-channel loopback | `tb_loopback2`: TX->RX and RX->TX, 2 channels at once, LO 0 and fs/8 | gain 1.00000 (-0.0005 dB, the 2x cos(0) convention), mirror <= -98 dB, EVM -78..-79 dB (the RX dither floor), crosstalk <= -102 dB |
 | RX overload | `tb_rx_saturate`: full-scale I=Q with a rotating LO | peak +32767, trough -32768, 30-sample rail plateau: clips, never wraps |
@@ -210,6 +211,8 @@ Each one fails loudly if a future change breaks it:
 - `tb_tx_timed`   a future-scheduled packet fires at exactly its tick; a past
                   tick raises TIME_ERROR without starting the DAC
 - `tb_imd3`      two-tone products at -87..-101 dBc and not growing with level
+- `tb_airloop`   two channels through delay+multipath+noise+coupling: tracks
+                  the model, EVM at the dither floor, coupling linear
 - `tb_loopback2`  two channels, both directions, at once: unity gain, no
                   conjugate, no I/Q leakage, no crosstalk, EVM at the dither
                   floor (LO=0 and a non-zero LO that must cancel)
