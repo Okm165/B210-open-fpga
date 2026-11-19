@@ -96,6 +96,11 @@ def chan(tag, fwd, ch):
     return ld("air"), ld("tx_pins")
 
 
+def _bb(x):
+    """The air node downconverted to baseband: the form in which a hop is a gain."""
+    return x * np.exp(-2j * np.pi * IF * np.arange(len(x)) / L)
+
+
 def hop_rows(tag, fwd, ch):
     def ld(suf):
         return load(os.path.join(BASE, f"cap_{tag}_{suf}{'' if ch == 0 else ch}.txt"))
@@ -115,10 +120,10 @@ def hop_rows(tag, fwd, ch):
             rows.append(("host -> TX interp (widen x4)",) + fit_hop(host, hb))
             rows.append(("TX interp -> pin word (x64, shift removed)",) +
                         fit_hop(hb, pins, +w))
-        rows.append(("RX in -> host word",) + fit_hop(air, rxhost, -w))
+        rows.append(("RX in -> host word",) + fit_hop(_bb(air), rxhost))
     else:
         mix, pins = ld("tx_mix"), ld("tx_pins")
-        rows.append(("RX in -> host word",) + fit_hop(air, rxhost, -w))
+        rows.append(("RX in -> host word",) + fit_hop(_bb(air), rxhost))
         if ch == 0:
             rows.append(("host -> TX interp (widen x4)",) + fit_hop(rxhost, hb))
             rows.append(("TX interp -> mixer (shift removed)",) + fit_hop(hb, mix, +w))
@@ -143,14 +148,54 @@ def ends_panel(ax_wave, ax_spec, ax_tone, tag, fwd, ch):
     evm = 20 * np.log10(np.sqrt(np.mean(np.abs(err) ** 2)) /
                         np.sqrt(np.mean(np.abs(fit) ** 2)))
     rms = np.sqrt(np.mean(np.abs(err) ** 2))
+    # The waveform panel must compare the output with what actually entered the
+    # front end - not with a fit to the output, which matches by construction
+    # and would hide any difference.  The reference is the dumped node just
+    # before the radio's last hop, through its measured gain and delay.
+    if fwd:
+        front = load(os.path.join(BASE, f"cap_{tag}_air{'' if ch == 0 else ch}.txt"))
+        n = min(len(front), len(out))
+        x = front[:n] * np.exp(-2j * np.pi * IF * np.arange(n) / L)
+        e2, lag, g, r2 = [None] * 4
+        best = None
+        for lg in range(0, 64):
+            xx = np.roll(x, lg)
+            x0, y0 = xx - xx.mean(), out[:n] - out[:n].mean()
+            gg = np.vdot(x0, y0) / np.vdot(x0, x0)
+            rr = y0 - gg * x0
+            ee = np.mean(np.abs(rr) ** 2)
+            if best is None or ee < best[0]:
+                best = (ee, lg, gg, rr)
+        _, lag, g, r2 = best
+        ref_td = g * np.roll(x, lag)
+        lab_ref = "air in (measured gain/delay)"
+    else:
+        front = load(os.path.join(BASE, f"cap_{tag}_air{'' if ch == 0 else ch}.txt"))
+        n = min(len(front), len(out))
+        best = None
+        for lg in range(0, 128):
+            xx = np.roll(front[:n], lg)
+            x0, y0 = xx - xx.mean(), out[:n] - out[:n].mean()
+            gg = np.vdot(x0, y0) / np.vdot(x0, x0)
+            rr = y0 - gg * x0
+            ee = np.mean(np.abs(rr) ** 2)
+            if best is None or ee < best[0]:
+                best = (ee, lg, gg, rr)
+        _, lag, g, r2 = best
+        ref_td = g * np.roll(front[:n], lag)
+        lab_ref = "antenna in (measured gain/delay)"
+    td_rms = np.sqrt(np.mean(np.abs(r2) ** 2))
     print(f"\n=== {tag} {name}: {lab_in} -> {lab_out} ===")
     print(f"  28-tone fit: residual {evm:.1f} dB below the tones, {rms:.2f} LSB rms")
+    print(f"  output vs the input through its measured gain and delay: "
+          f"gain {abs(g):.6f} @ {np.degrees(np.angle(g)):+.2f} deg, lag {lag}, "
+          f"residual {td_rms:.2f} LSB rms")
 
     m = 160
-    ax_wave.plot(np.arange(m), out[:m].real, ".", ms=2.5, color="#1f4e79", label="out I")
-    ax_wave.plot(np.arange(m), fit[:m].real, "-", lw=0.9, color="#c00000", label="tone fit I")
-    ax_wave.set_title(f"{tag} {name} {lab_out}: residual {evm:.1f} dB, {rms:.2f} LSB rms",
-                      fontsize=9)
+    ax_wave.plot(np.arange(m), out[:m].real, ".", ms=2.6, color="#1f4e79", label="output I")
+    ax_wave.plot(np.arange(m), ref_td[:m].real, "-", lw=1.0, color="#c00000", label=lab_ref)
+    ax_wave.set_title(f"{tag} {name} {lab_out}: output - input through its gain/delay "
+                      f"= {td_rms:.2f} LSB rms", fontsize=9)
     ax_wave.set_xlabel("sample")
     ax_wave.set_ylabel("LSB")
     ax_wave.legend(fontsize=6.5, ncol=2)
