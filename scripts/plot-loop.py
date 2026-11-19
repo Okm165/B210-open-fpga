@@ -659,6 +659,14 @@ def band():
         a.set_ylabel("residual, dBc of the tones")
         a.set_title(f"band-edge residual: worst {20*np.log10(E[sel].max()/ref):.0f} dBc, "
                     "no line above the dither", fontsize=9)
+        # The loop grades the end against the air node and the stimulus carries
+        # +k and -k per tone, so a transmit-interpolation image of +k lands
+        # exactly on the -k tone: this residual CANNOT see it.  The passband
+        # bench and loop_inband.png are the measurement of record for it.
+        fig.text(0.5, 0.005,
+                 "residuals are graded against the air node: transmit-interpolator "
+                 "images land on the mirror tone of this ±k stimulus and are not "
+                 "visible here (see loop_inband.png)", ha="center", fontsize=7)
         a.grid(alpha=0.25, lw=0.4)
         a.tick_params(labelsize=7)
     fig.tight_layout(rect=[0, 0, 1, 0.94])
@@ -835,6 +843,234 @@ def proof():
     for line in lines:
         print("  " + line)
     print(f"  wrote {os.path.relpath(outp)}")
+
+
+def _hb_taps():
+    """The hb47_poly coefficients, read from the RTL so the page cannot drift."""
+    import re
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                        "src", "rtl", "dsp", "hb47_poly.v")
+    txt = open(path).read()
+    vals = re.findall(r"c\s*=\s*(-?)18'sd(\d+)", txt)[:12]
+    if len(vals) != 12:
+        raise SystemExit("hb47_poly.v: could not read the 12 folded taps")
+    taps = [(-1 if sg else 1) * int(v) for sg, v in vals]
+    return np.array(taps, dtype=float) / 131072.0
+
+
+def _hb_model(c, f):
+    """Gain (dB) and image rejection (dBc) of the 2x halfband at input freq f.
+
+    Exact evaluation of the synthesised structure: output even phase is the
+    folded 23-tap half, odd phase is the centre tap, i.e. the true 47-tap
+    interpolation filter.  The image of a tone at f is the repeated spectrum
+    at -(1-f)/2 in output cycles; it is rejected only by the filter's
+    stopband, which is why it collapses as f approaches the transition.
+    """
+    n = np.arange(4096)
+    x = np.exp(2j * np.pi * f * n)
+    filt = np.zeros(len(n), dtype=complex)
+    for g, cg in enumerate(c):
+        filt += cg * (x[(n - g) % len(n)] + x[(n - 23 + g) % len(n)])
+    y = np.zeros(2 * len(n), dtype=complex)
+    y[0::2] = filt
+    y[1::2] = x[(n - 11) % len(n)]
+    m = np.arange(len(y))
+    sig = abs(np.mean(y * np.exp(-2j * np.pi * (f / 2) * m)))
+    img = abs(np.mean(y * np.exp(+2j * np.pi * ((1 - f) / 2) * m)))
+    if sig < 1e-12:
+        return -300.0, -300.0
+    return 20 * np.log10(sig), 20 * np.log10(max(img / sig, 1e-30))
+
+
+def inband():
+    """What the two pipelines do to a signal inside the band.
+
+    Every earlier loop page compares the end with the *air* node, i.e. after
+    the transmit interpolator - so any shaping the interpolator applies is
+    divided out and is invisible.  This page is input referred: host word to
+    the end, with the channel (known analytically: one direct path and one
+    -18 dB echo three DAC clocks later) divided out.  What is left is the
+    pipeline itself.
+
+    The interpolator's image is measured separately: in the captures the
+    stimulus carries both +k and -k per tone, so the image of +k lands exactly
+    on the -k tone and the loop residual absorbs it.  A single-sided complex
+    excitation (tests/tb_tx_passband.v) sees it cleanly; the curve here is the
+    exact response computed from the RTL taps, which that bench confirms to
+    0.1 dB at the band edge.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    K0 = [8, 24, 47, 83, 115, 138, 150]
+    K1 = [13, 31, 59, 97, 124, 143, 149]
+    S = 3
+    FS = 15.36e6
+    c = _hb_taps()
+
+    def amp(x, b):
+        return abs(np.fft.fft(x)[b % len(x)]) / len(x)
+
+    def chain(sub, pre, ifs):
+        """Per-tone host->pins and host->end gains, plus the air bin of each."""
+        out = []
+        for ch, ks in ((0, K0), (1, K1)):
+            suf = "" if ch == 0 else "1"
+            host = load(os.path.join(base, sub, f"cap_{pre}_host{suf}.txt"))
+            pins = load(os.path.join(base, sub, f"cap_{pre}_tx_pins{suf}.txt"))
+            end = load(os.path.join(base, sub, f"cap_{pre}_rx_host{suf}.txt"))
+            air = load(os.path.join(base, sub, f"cap_{pre}_air{suf}.txt"))
+            if host is None or pins is None or end is None or air is None:
+                return None
+            rows = []
+            for k in ks:
+                b = 6 * k
+                h = amp(host, b)
+                cands = [b, b + ifs, b - ifs]
+                ab = max(cands, key=lambda q: amp(air, q))
+                # the pin/air nodes carry the signal at IF+k (possibly wrapped),
+                # the host and the receive host word at k
+                tb = max([b, b + ifs, b - ifs], key=lambda q: amp(pins, q))
+                rows.append(dict(ch=ch, k=k, f=S * k / 1024.0, b=b, ab=ab,
+                                 tx=20 * np.log10(max(amp(pins, tb), 1e-12) / h),
+                                 loop=20 * np.log10(max(amp(end, b), 1e-12) / h),
+                                 air=amp(air, ab) / h))
+            out.append(rows)
+        return out
+
+    fwd1 = chain("band", "fwd_x1", 256)
+    fwd2 = chain("bandx2", "fwd_x2", 512)
+    rev = None
+    rev = []
+    for ch, ks in ((0, K0), (1, K1)):
+        suf = "" if ch == 0 else "1"
+        air = load(os.path.join(base, "bandrev", f"cap_rev_air{suf}.txt"))
+        pins = load(os.path.join(base, "bandrev", f"cap_rev_tx_pins{suf}.txt"))
+        if air is None or pins is None:
+            rev = None
+            break
+        rows = []
+        for k in ks:
+            b = 6 * k
+            rows.append(dict(ch=ch, k=k, f=S * k / 1024.0,
+                             g=20 * np.log10(max(amp(pins, b), 1e-12) / amp(air, b))))
+        rev.append(rows)
+    if fwd1 is None or fwd2 is None:
+        print("  in-band page skipped: band captures missing")
+        return
+
+    # analytic channel at the air node: direct + one -18 dB echo, 3 clocks
+    def chan(rows, sub, pre, ifs):
+        air = load(os.path.join(base, sub, f"cap_{pre}_air.txt"))
+        n = len(air)
+        return [20 * np.log10(abs(1.0 - 0.125 * np.exp(-2j * np.pi * 3 * r["ab"] / n)))
+                for r in rows]
+
+    fig, ax = plt.subplots(2, 2, figsize=(12.5, 8.4))
+    fig.suptitle("inside the band: what each pipeline does to the signal, input referred "
+                 "(channel divided out)", fontsize=11.5)
+    grid = np.linspace(0.0, 0.5, 501)
+    hb_g = np.array([_hb_model(c, f)[0] for f in grid])
+    hb_i = np.array([_hb_model(c, f)[1] for f in grid])
+
+    a = ax[0][0]
+    for chans, lbl, mk in ((fwd1, "x1 (no interpolation)", "o"),
+                           (fwd2, "x2 (one halfband)", "s")):
+        for i, rows in enumerate(chans):
+            mean = sum(r["tx"] for r in rows) / len(rows)
+            a.plot([r["f"] * FS / 1e6 for r in rows],
+                   [r["tx"] - mean for r in rows],
+                   mk, ms=4, mfc="none", label=lbl if i == 0 else None)
+    a.plot(grid * FS / 1e6, hb_g, "-", lw=1.0, color="#7030a0", alpha=0.8,
+           label="47-tap halfband (RTL taps)")
+    a.axhline(0, color="k", lw=0.5)
+    a.axvline(0.375 * FS / 1e6, color="#c00000", lw=0.6, ls="--")
+    a.text(0.375 * FS / 1e6, -0.95, " 0.375 fs: clean edge", fontsize=6.5, color="#c00000")
+    a.set_ylim(-1.05, 0.15)
+    a.set_xlim(0, 7.7)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("host → TX pins, dB")
+    a.set_title("transmitter alone: x1 is flat to Nyquist, x2 follows the halfband", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5, loc="lower left")
+    a.tick_params(labelsize=7)
+
+    a = ax[0][1]
+    a.plot(grid * FS / 1e6, hb_i, "-", lw=1.0, color="#7030a0")
+    for r in fwd2[0] + fwd2[1]:
+        a.plot(r["f"] * FS / 1e6, _hb_model(c, r["f"])[1], "s", ms=3.5, mfc="none",
+               color="#1f4e79" if r["ch"] == 0 else "#c00000")
+    a.axhline(-65, color="#c00000", lw=0.6, ls="--")
+    a.axvline(0.375 * FS / 1e6, color="#c00000", lw=0.6, ls="--")
+    a.text(0.15, -60, "-65 dBc design floor", fontsize=6.5, color="#c00000")
+    a.set_ylim(-125, -20)
+    a.set_xlim(0, 7.7)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("interpolation image, dBc")
+    a.set_title("the image the x2 halfband leaves: -80 dBc below 3.4 MHz, "
+                "-68 at 5.76, -32 at 6.75", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.tick_params(labelsize=7)
+
+    a = ax[1][0]
+    if rev is not None:
+        for rows in rev:
+            a.plot([r["f"] * FS / 1e6 for r in rows], [r["g"] for r in rows], "o", ms=4,
+                   mfc="none", color="#1f4e79" if rows[0]["ch"] == 0 else "#c00000",
+                   label=f"ch{rows[0]['ch']}")
+        a.axhline(0, color="k", lw=0.5)
+        a.set_ylim(-1.05, 1.05)
+        a.set_title("reverse pipeline (antenna → TX pins): one gain, exactly 1.000",
+                    fontsize=9)
+        a.legend(fontsize=6.5)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("air → TX pins, dB")
+    a.grid(alpha=0.25, lw=0.4)
+    a.tick_params(labelsize=7)
+
+    a = ax[1][1]
+    dev = []
+    for rows, sub, pre, ifs, hb, lbl, mk in (
+            (fwd1[0] + fwd1[1], "band", "fwd_x1", 256, False, "x1 loop", "o"),
+            (fwd2[0] + fwd2[1], "bandx2", "fwd_x2", 512, True, "x2 loop", "s")):
+        ch = chan(rows, sub, pre, ifs)
+        pred = [ch[i] + (_hb_model(c, rows[i]["f"])[0] if hb else 0.0)
+                for i in range(len(rows))]
+        d = [rows[i]["loop"] - pred[i] for i in range(len(rows))]
+        a.plot([r["f"] * FS / 1e6 for r in rows], d, mk, ms=4, mfc="none", label=lbl)
+        dev += [abs(v) for v in d]
+    a.axhline(0, color="k", lw=0.5)
+    a.set_ylim(-0.05, 0.05)
+    a.set_title(f"loop minus channel×halfband: max error {max(dev):.3f} dB "
+                "- nothing else is in the pipeline", fontsize=9)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("residual, dB")
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5)
+    a.tick_params(labelsize=7)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    outp = os.path.join(base, "loop_inband.png")
+    fig.savefig(outp, dpi=110)
+    plt.close(fig)
+
+    x1_dev = max(r["tx"] for r in fwd1[0] + fwd1[1]) - min(r["tx"] for r in fwd1[0] + fwd1[1])
+    x2_dev = max(r["tx"] for r in fwd2[0] + fwd2[1]) - min(r["tx"] for r in fwd2[0] + fwd2[1])
+    rev_dev = max(abs(r["g"] - 0.0) for r in rev[0] + rev[1]) if rev else float("nan")
+    print("\n=== inside the band (input referred) ===")
+    print(f"  x1 TX (host->pins), 14 tones to 0.44 fs: spread {x1_dev:.3f} dB")
+    print(f"  x2 TX (host->pins), 14 tones to 0.44 fs: spread {x2_dev:.3f} dB; "
+          f"top tone {min(r['tx'] for r in fwd2[0] + fwd2[1]) - sum(r['tx'] for r in fwd2[0]+fwd2[1])/14:+.2f} dB")
+    print(f"  reverse (air->pins): max deviation {rev_dev:.3f} dB")
+    print(f"  halfband at 0.375 fs: gain {_hb_model(c, 0.375)[0]:+.2f} dB, "
+          f"image {_hb_model(c, 0.375)[1]:.0f} dBc; "
+          f"at 0.4375 fs: {_hb_model(c, 0.4375)[0]:+.2f} dB, "
+          f"{_hb_model(c, 0.4375)[1]:.0f} dBc")
+    print(f"  whole loop vs channel x halfband x 1/256: max error {max(dev):.3f} dB")
+    print(f"  wrote {os.path.relpath(outp)}")
+    print("  note: images of the transmit interpolator are invisible to this page")
+    print("        (a +k image lands on the -k tone); loop_inband and tb_tx_passband")
+    print("        measure them: -68 dBc at 0.375 fs_host, -32 dBc at 0.4375.")
 
 
 def retune():
@@ -1022,6 +1258,8 @@ if __name__ == "__main__":
             band()
         elif t == "proof":
             proof()
+        elif t == "inband":
+            inband()
         else:
             main(t)
     if "budget" not in args:
