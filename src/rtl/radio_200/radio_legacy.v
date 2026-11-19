@@ -357,15 +357,18 @@ endgenerate
 
    wire [31:0] debug_tx_control;
 
-   // Round half even to the 12-bit DAC word, do not truncate.  The old
-   // slice [23:12] threw the low 12 bits away, a -0.5 LSB12 bias
-   // (-72 dBFS) plus one-sided quantisation noise.  One add removes both.
-   wire [23:0] tx_i_rnd = tx_fe_i + 24'd2047 + {23'd0, tx_fe_i[12]};
-   wire [23:0] tx_q_rnd = tx_fe_q + 24'd2047 + {23'd0, tx_fe_q[12]};
+   // Last number operation of the transmit path: round half even and
+   // saturate into the 12-bit DAC word (see dsp/dac_slice.v for why both are
+   // needed - the plain slice was a -0.5 LSB bias, and rounding without the
+   // clip turned the top 2047 codes into a full-scale sign flip).
+   wire [11:0] tx_i_code, tx_q_code;
+
+   dac_slice dac_slice_i (.in(tx_fe_i), .out(tx_i_code));
+   dac_slice dac_slice_q (.in(tx_fe_q), .out(tx_q_code));
 
    always @(posedge radio_clk) begin
-      tx[31:16] <= (run_tx) ? {tx_i_rnd[23:12], 4'b0000} : tx_idle[31:16];
-      tx[15:0]  <= (run_tx) ? {tx_q_rnd[23:12], 4'b0000} : tx_idle[15:0];
+      tx[31:16] <= (run_tx) ? {tx_i_code, 4'b0000} : tx_idle[31:16];
+      tx[15:0]  <= (run_tx) ? {tx_q_code, 4'b0000} : tx_idle[15:0];
    end
 
    wire [63:0] tx_tdata_i; wire tx_tlast_i, tx_tvalid_i, tx_tready_i;

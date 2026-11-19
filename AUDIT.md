@@ -63,7 +63,8 @@ UHD driver internals, RF performance of the AD9361 itself.
 | TX halfband, fixed (hb47_poly) | same 4 tones | worst spur -88.6 / -86.9 / -81.9 / -86.9 dBc; image -95..-105 dBc |
 | TX halfband impulse response | 47 taps, isolated | centre 65536, +-1 41508, +-3 -13273 ...; H(0) 2.0000, H(fs/2) -92.8 dB |
 | TX halfband regression | 26th make-test group | taps on odd offsets, phase alignment, image gain and DC pinned |
-| TX pin quantiser | full chain, DC and tones | round-half-even at the 12-bit slice (was truncation: -0.5 LSB bias) |
+| TX pin quantiser | `tb_dac_slice`, all 2^24 codes | round-half-even + saturate; saturation added after rounding was found to wrap the top 2047 codes to 0x800 |
+| TX DC gain vs rate | `tb_tx_dc` table in .context/dsp-audit.md | 1.00000 at every power-of-two rate; -1.48 dB at total 6/12, -0.21 dB at 20 (CIC contract) |
 | RX static transfer | all 4096 ADC codes, LO at DC | gain 15.9993/16, worst error 1.141 LSB16 (dither), no bias, no rail hit, control-bit map measured |
 | full build | - | hello.bin, idcode 0x3651093 |
 

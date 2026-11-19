@@ -23,6 +23,7 @@ src/rtl/dsp/cic_int_shifter.v
 src/rtl/dsp/cic_strober.v
 src/rtl/dsp/clip_reg.v
 src/rtl/dsp/clip.v
+src/rtl/dsp/dac_slice.v
 src/rtl/dsp/ddc_chain.v
 src/rtl/dsp/dds_lut.v
 src/rtl/dsp/hb47_poly.v

@@ -151,6 +151,13 @@ RX_CODES_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_rx_codes.v
 
+DAC_SLICE_TEST_SRCS := $(ROOT)/src/rtl/dsp/dac_slice.v \
+  $(ROOT)/tests/tb_dac_slice.v
+
+TX_DC_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_tx_dc.v
+
 TX_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_tx_pins.v
@@ -552,6 +559,16 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_rx_codes.log tb_rx_codes.vvp
 	@grep -q 'RX-CODES: PASS' $(SIM_DIR)/tb_rx_codes.log || \
 	  { echo "ERROR: RX static transfer curve wrong; see $(SIM_DIR)/tb_rx_codes.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 \
+	  -s tb_dac_slice -o tb_dac_slice.vvp $(DAC_SLICE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_dac_slice.log tb_dac_slice.vvp
+	@grep -q 'DAC-SLICE: PASS' $(SIM_DIR)/tb_dac_slice.log || \
+	  { echo "ERROR: DAC pin quantiser wrong; see $(SIM_DIR)/tb_dac_slice.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_dc -o tb_tx_dc.vvp $(TX_DC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_tx_dc.log tb_tx_dc.vvp
+	@grep -q 'TX-DC: PASS' $(SIM_DIR)/tb_tx_dc.log || \
+	  { echo "ERROR: TX DC gain or CIC rate normalisation wrong; see $(SIM_DIR)/tb_tx_dc.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_tx_pins -o tb_tx_pins.vvp $(TX_PINS_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pins.log tb_tx_pins.vvp
