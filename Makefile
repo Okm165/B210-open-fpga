@@ -139,6 +139,10 @@ USB_RATE_TEST_SRCS := $(ELAB_SRCS) \
 ADC_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_adc_pins.v
+
+ADC_MIMO_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_adc_mimo.v
 E2E_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_e2e_rx.v
@@ -533,6 +537,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_adc_pins.log tb_adc_pins.vvp
 	@grep -q 'ADC-PINS: PASS' $(SIM_DIR)/tb_adc_pins.log || \
 	  { echo "ERROR: AD9361 pin-level I/Q capture broken; see $(SIM_DIR)/tb_adc_pins.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_adc_mimo -o tb_adc_mimo.vvp $(ADC_MIMO_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_adc_mimo.log tb_adc_mimo.vvp
+	@grep -q 'ADC-MIMO: PASS' $(SIM_DIR)/tb_adc_mimo.log || \
+	  { echo "ERROR: MIMO alternating capture broken; see $(SIM_DIR)/tb_adc_mimo.log"; exit 1; }
 	@for run in base fs fslo two noisy stall oversize overrun; do \
 	  case $$run in \
 	    base)  flags="";; \

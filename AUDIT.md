@@ -69,6 +69,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | RX static transfer | all 4096 ADC codes, LO at DC | gain 15.9993/16, worst error 1.141 LSB16 (dither), no bias, no rail hit, control-bit map measured |
 | Dead code | every module name in scripts/sources.txt scanned against every .v file | `source_flow_control_legacy`, `add_then_mac`, `round_reg` removed; 3 unused parameters removed; 78 sources |
 | TX bypass flatness | impulse response at the pin word, FFT vs analytic taps (0.03 dB agreement) | compensator was shaping the max-rate mode (+2.8 dB at 0.2 fs_out); now bypassed at CIC rate 1, measured 0.00 dB across the band |
+| MIMO capture | `tb_adc_mimo`, alternating framed bus, 10k DSP cycles | two independent consecutive half-rate channels, A advances by 2 per cycle, parity stable; AD9361 frame protocol still a hardware item |
 | TX passband + images | `tb_tx_passband`, coherent single-bin detector at signal and image bins, validated at bypass | bypass flat within 0.01 dB; cascade -0.05 dB at 0.2 of Nyquist, -0.5 dB at 0.44 (total 4), -0.13 dB (total 16); image rejection worst -81 dBc across the band |
 | full build | - | hello.bin, idcode 0x3651093 |
 
