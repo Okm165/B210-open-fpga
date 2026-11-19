@@ -63,6 +63,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | TX halfband, fixed (hb47_poly) | same 4 tones | worst spur -88.6 / -86.9 / -81.9 / -86.9 dBc; image -95..-105 dBc |
 | TX halfband impulse response | 47 taps, isolated | centre 65536, +-1 41508, +-3 -13273 ...; H(0) 2.0000, H(fs/2) -92.8 dB |
 | TX halfband regression | 26th make-test group | taps on odd offsets, phase alignment, image gain and DC pinned |
+| TX x2 polyphase phase | impulse symmetry + coherent image at total 2 (single halfband, the MIMO TX rate) | centre tap did not carry the filtered path's delay: image was -1.7 dBc, passband drooped -2.24 dB. One centre register fixes it: images <= -80 dBc, impulse response symmetric at x1/x2/x4/x8 |
 | TX pin quantiser | `tb_dac_slice`, all 2^24 codes | round-half-even + saturate; saturation added after rounding was found to wrap the top 2047 codes to 0x800 |
 | TX DC gain vs rate | `tb_tx_dc` table in .context/dsp-audit.md | 1.00000 at every power-of-two rate; -1.48 dB at total 6/12, -0.21 dB at 20 (CIC contract) |
 | TX scale contract | `tb_tx_dc` section 2, 6 scales x 7 inputs | out24 = in16 x scale >> 7, saturates at overdrive, monotonic, no wrap; full-scale deficit 0.00027 dB (cos(0)=32767/32768) |
@@ -79,7 +80,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | RX stall tolerance | e2e run with one 200 us stall vs no stall, 400 000 clocks | identically 242 136 words: zero loss; 350 us overruns and recovers; guard for 30 us equal-total added |
 | CDC integrity | `tb_axi_fifo_2clk_cdc` at 5 clock relationships (phase 0..3.3 ns, 10:1 ratio, radio faster than bus) | 512/512 words in order in both directions in every case |
 | MIMO capture | `tb_adc_mimo`, alternating framed bus, 10k DSP cycles | two independent consecutive half-rate channels, A advances by 2 per cycle, parity stable; AD9361 frame protocol still a hardware item |
-| TX passband + images | `tb_tx_passband`, coherent single-bin detector at signal and image bins, validated at bypass | bypass flat within 0.01 dB; cascade -0.05 dB at 0.2 of Nyquist, -0.5 dB at 0.44 (total 4), -0.13 dB (total 16); image rejection worst -81 dBc across the band |
+| TX passband + images | `tb_tx_passband`, coherent single-bin detector at signal and image bins, validated at bypass | bypass flat within 0.01 dB; total 2 and 4 flat within 0.01 dB over the host band, total 16 -0.13 dB; image rejection worst -80 dBc across the band |
 | full build | - | hello.bin, idcode 0x3651093 |
 
 ## Operator error budget

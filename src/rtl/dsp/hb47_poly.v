@@ -27,11 +27,12 @@
 // Pipelining: the multiply result and two 6-term partial sums are registered,
 // so the per-clock path is multiply, add, add - each comfortably inside the
 // 100 MHz bus clock.  The filtered path is then 2 clocks behind the sample
-// history.  That does not move the output: the sample history is stable for
-// the whole 4-clock input-strobe period, so every filtered value the output
-// register can present at a coincident stb_in/stb_out edge is still the
-// previous input sample's, which is exactly what the centre phase pairs with
-// (up to 3 pipeline stages keep this pairing; the guard is tb_hb47_poly).
+// history.  That DOES move the pairing unless the centre tap carries the
+// matching delay: the centre is therefore registered once (centre_q), the
+// value that keeps both phases on the same input sample at every strobe
+// period, down to the 2-clock period of total 2.  Removing that register
+// leaves the total-2 interpolation image uncancelled (-7.7 dBc at 0.125
+// fs_in) and droops total 4 by -0.53 dB; the guard is tb_tx_passband cfg 1.
 //
 // Two outputs are produced per input sample.  `phase` is derived from stb_in,
 // not stb_out, so no external phase can break it; stb_out only enables the
@@ -131,6 +132,18 @@ module hb47_poly #(
       (acc_r >  (1 <<< (WIDTH-1)) - 1) ?  (1 <<< (WIDTH-1)) - 1 :
       (acc_r < -(1 <<< (WIDTH-1)))     ? -(1 <<< (WIDTH-1))     : acc_r[WIDTH-1:0];
 
+  // The filtered path is two registers deep (prod_q, ps_a/ps_b).  The centre
+  // tap is registered once, which is the delay that aligns the two polyphase
+  // phases at every input-strobe period - including the 2-clock period of the
+  // total-2 configuration (a single halfband, the MIMO 2 x 30.72 transmit
+  // path).  Before this register the centre and the filtered half came from
+  // different input samples at total 2: the interpolation image was NOT
+  // cancelled (-1.7 dBc at 0.219 fs_in, and the passband drooped -2.24 dB),
+  // while total 4 drooped -0.53 dB.  With it, total 2 and 4 are flat to
+  // 0.01 dB and images are <= -80 dBc (tests/tb_tx_passband.v, cfgs 1-3).
+  reg signed [WIDTH-1:0] centre_q;
+  always @(posedge clk) centre_q <= xd[12];
+
   // phase 0 at the coincident stb_in/stb_out edge (filter output), phase 1 at
   // the following stb_out (centre sample).
   reg phase;
@@ -143,7 +156,7 @@ module hb47_poly #(
     if (bypass)
       data_out <= data_in;
     else if (stb_out)
-      data_out <= phase ? xd[12] : filtered;
+      data_out <= phase ? centre_q : filtered;
 endmodule
 
 `default_nettype wire

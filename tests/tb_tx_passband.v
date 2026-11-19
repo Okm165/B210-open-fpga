@@ -8,15 +8,25 @@
 // At bypass the answer is known a priori (a delay line: 0.00 dB) and the bench
 // checks it, which validates the estimator before it is trusted at other rates.
 //
-// Measured 2026-11-19 (host band edge = 0.5 fs_in):
-//   bypass (rate 1):        -0.01 dB at every bin
-//   two halfbands, CIC 1:   -0.02 -0.05 -0.10 -0.17 -0.27 -0.39 -0.53 dB at
-//                           0.03 .. 0.22 fs_in (values in the table below)
-//   two halfbands, CIC 4:   -0.01 .. -0.13 dB over the same span
+// Measured (host band edge = 0.5 fs_in):
+//   bypass, total 1:        -0.01 dB at every bin
+//   one halfband, total 2:  -0.01 dB or better, image <= -80 dBc
+//   two halfbands, total 4: -0.01 dB or better, image <= -81 dBc
+//   two halfbands, CIC 4:   -0.01 .. -0.13 dB, image <= -81 dBc
+//
+// cfg 1 (total 2, a single halfband - the MIMO 2 x 30.72 transmit path) is a
+// regression guard for a real defect found on 2026-11-19: hb47_poly's centre
+// tap was not delayed to match its pipelined filtered half, so at the 2-clock
+// input-strobe period the two polyphase phases came from different input
+// samples.  The image was NOT cancelled (-1.7 dBc at 0.219 fs_in) and the
+// passband drooped -2.24 dB; total 4 drooped -0.53 dB.  One register on the
+// centre tap fixes both (see hb47_poly.v).  Do not drop this config: without
+// it the bug is invisible to the rest of the suite.
 //
 // The earlier impulse-response/FFT attempt at interpolated rates disagreed
 // with this and was an extraction artefact; the coherent detector is the
-// measurement of record.
+// measurement of record (the time-domain impulse symmetry in tb_phase.v is
+// now used only as an independent check of linear phase, not of level).
 `timescale 1ns/1ps
 
 // Coherent single-bin detector: measures the TX chain's gain at one frequency
@@ -37,10 +47,11 @@ module tb_tx_passband;
     errors = 0;
     repeat(8) @(posedge clk); @(negedge clk); rst=0;
     wr(8'd0,32'd0); wr(8'd1,32'h0000_8000);
-    for (cfg=0; cfg<3; cfg=cfg+1) begin
+    for (cfg=0; cfg<4; cfg=cfg+1) begin
       case (cfg) 0: begin hb=2'b00; rate=1; end
-                 1: begin hb=2'b11; rate=1; end
-                 2: begin hb=2'b11; rate=4; end endcase
+                 1: begin hb=2'b01; rate=1; end
+                 2: begin hb=2'b11; rate=1; end
+                 3: begin hb=2'b11; rate=4; end endcase
       total = rate*(hb[0]+1)*(hb[1]+1);
       wr(8'd2,{hb,8'd0}|rate); run=1;
       for (nb=0; nb<7; nb=nb+1) begin

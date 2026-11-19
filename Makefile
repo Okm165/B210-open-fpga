@@ -232,6 +232,11 @@ IMD3_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_imd3.v
 
+# TX linear phase: the impulse response must be symmetric at every rate.
+PHASE_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_phase.v
+
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
@@ -808,6 +813,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
 	@grep -q 'IMD3: PASS' $(SIM_DIR)/tb_imd3.log || \
 	  { echo "ERROR: two-tone intermodulation above the floor; see $(SIM_DIR)/tb_imd3.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_phase -o tb_phase.vvp $(PHASE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_phase.log tb_phase.vvp
+	@grep -q 'PHASE: PASS' $(SIM_DIR)/tb_phase.log || \
+	  { echo "ERROR: TX chain is not linear phase; see $(SIM_DIR)/tb_phase.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
