@@ -445,6 +445,7 @@ def levels():
     here = os.path.dirname(os.path.abspath(__file__))
     base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
     amps = [3500, 7000, 12000, 16000]
+    amps_r = [7000, 14000, 21000, 28000]
     pts = []
     for a in amps:
         out = load(os.path.join(base, f"cap_lvl_{a}_rx.txt"))
@@ -470,9 +471,30 @@ def levels():
         print(f"  levels page skipped: {len(pts)} of {len(amps)} captures present")
         return
 
-    fig, ax = plt.subplots(1, 2, figsize=(12, 4.4))
-    fig.suptitle("converter utilisation: SNR against input level, 12-bit converters in the loop",
-                 fontsize=11)
+    # Reverse loop: the RX word drives the TX, so a strong receive signal can run
+    # the transmitter into its rail.  Peak of the 24-bit pin word against the
+    # input level, measured in the capture's own directory (revsweep/).
+    rpts = []
+    RAIL = 2 ** 23 - 1
+    for a in amps_r:
+        pins = load(os.path.join(base, "revsweep", f"cap_revlvl_{a}_pins.txt"))
+        if pins is None:
+            continue
+        peak = max(np.abs(pins.real).max(), np.abs(pins.imag).max()) / RAIL
+        # Compression, not exact-rail equality: the 24-bit saturator clamps a few
+        # LSB below the rail, so "== RAIL" would read 0 % while the word is at it.
+        clip = 100.0 * np.mean((np.abs(pins.real) >= 0.999 * RAIL) |
+                               (np.abs(pins.imag) >= 0.999 * RAIL))
+        w = pins / 256.0
+        err, fit = tone_fit(w)
+        sig = np.sqrt(np.mean(np.abs(fit) ** 2))
+        res = np.sqrt(np.mean(np.abs(err) ** 2))
+        rpts.append((a, 20 * np.log10(max(peak, 1e-9)), clip,
+                     20 * np.log10(max(res, 1e-9) / max(sig, 1e-9))))
+
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
+    fig.suptitle("converter utilisation: 12-bit converters in the forward loop, "
+                 "transmitter headroom in the reverse loop", fontsize=11)
     lv = [p[1] for p in pts]
     ax[0].plot(lv, [p[3] for p in pts], "o-", color="#1f4e79", label="SNR (signal / residual)")
     ax[0].plot(lv, [-p[2] for p in pts], "s--", color="#c00000", label="residual, dBFS")
@@ -493,6 +515,17 @@ def levels():
     ax[1].legend(fontsize=7)
     ax[1].grid(alpha=0.25, lw=0.4)
     ax[1].tick_params(labelsize=7)
+    if len(rpts) == len(amps_r):
+        ax[2].plot([r[0] for r in rpts], [r[1] for r in rpts], "o-",
+                   color="#1f4e79", label="pin-word peak")
+        ax[2].axhline(0, color="#c00000", lw=0.8, ls="--", label="24-bit rail")
+        ax[2].set_xlabel("antenna tone-set amplitude")
+        ax[2].set_ylabel("pin-word peak, dBFS")
+        ax[2].set_title("reverse loop: the TX rail is reached at 4x the demo level",
+                        fontsize=9)
+        ax[2].grid(alpha=0.25, lw=0.4)
+        ax[2].legend(fontsize=7, loc="lower right")
+        ax[2].tick_params(labelsize=7)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     out = os.path.join(base, "loop_level_sweep.png")
     fig.savefig(out, dpi=110)
@@ -502,6 +535,11 @@ def levels():
         print(f"  tone-set amplitude {a:6d}: signal {sig:6.1f} dBFS, residual {res:6.1f} dBFS, "
               f"SNR {snr:5.1f} dB, DAC peak {peak:4d}/2048, {ncodes:4d} codes, "
               f"DAC clip {clip:5.2f} %, ADC clip {aclip:5.2f} %")
+    if len(rpts) == len(amps_r):
+        print("\n=== reverse-path headroom (RX word -> TX, no converters) ===")
+        for a, peak, clip, resid in rpts:
+            print(f"  antenna amplitude {a:6d}: pin peak {peak:+6.2f} dBFS, within "
+                  f"0.01 dB of the rail {clip:5.2f} % of samples, residual {resid:6.1f} dBc")
     print(f"  wrote {os.path.relpath(out)}")
 
 

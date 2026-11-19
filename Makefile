@@ -914,6 +914,19 @@ plots-levels:
 	  cp -f cap_conv_dac.txt     cap_lvl_$${a}_dac.txt; \
 	  cp -f cap_conv_adc.txt     cap_lvl_$${a}_adc.txt; \
 	done
+	@# Reverse-path headroom: in loopback the RX word drives the TX, so a strong
+	@# receive signal can clip the transmitter.  The capture runs in its own
+	@# directory so it cannot overwrite the standard cap_rev_* set that the
+	@# reverse pages read.
+	@mkdir -p $(ROOT)/build/plots/revsweep; \
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/revsweep/src; \
+	for a in 7000 14000 21000 28000; do \
+	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DREVERSE -DAMPDEF=$$a.0 \
+	    -I $(ROOT)/src/rtl/control -s tb_capture -o tb_rlvl_$$a.vvp $(CAPTURE_TEST_SRCS) || exit 1; \
+	  cd $(ROOT)/build/plots/revsweep && $(VVP) -n $(SIM_DIR)/tb_rlvl_$$a.vvp > /dev/null || exit 1; \
+	  cp -f cap_rev_tx_pins.txt cap_revlvl_$${a}_pins.txt; \
+	  cp -f cap_rev_rx_host.txt cap_revlvl_$${a}_host.txt; \
+	done
 	cd $(ROOT) && python3 scripts/plot-loop.py levels
 
 # The non-spectral pages: settings writes on a live transmitter, channel
