@@ -86,16 +86,20 @@ module tb_tx_pairing;
       end
    endtask
 
-   task send_packet(input integer nsamp, input odd, input eob, input [11:0] seq);
+   task send_packet(input integer nsamp, input eob, input [11:0] seq);
       integer w, nwords;
       reg [31:0] hi, lo;
       begin
+         // Header layout (matches new_rx_framer):
+         //   [63:61] type, [60] eob, [59:48] seqnum, [47:34] len[13:0],
+         //   [33:32] zero, [31:0] sid.
+         // The deframer's `odd` is bit 34, i.e. len[0] - the parity of the
+         // sample count.  Driving a truthful length therefore sets it.
          hdr = 64'd0;
-         hdr[63]    = 1'b0;          // no trailer
-         hdr[61]    = 1'b0;          // no timestamp word
+         hdr[63:61] = 3'b000;        // no trailer, no time
          hdr[60]    = eob;
          hdr[59:48] = seq;
-         hdr[34]    = odd;
+         hdr[47:34] = nsamp[13:0];
          hdr[31:0]  = 32'hC0FF_EE00;
          send(hdr, 1'b0);
 
@@ -157,7 +161,7 @@ module tb_tx_pairing;
 
       // ---- case 1: one even packet, 8 samples, eob ---------------------
       do_reset;
-      send_packet(8, 1'b0, 1'b1, 12'd0);
+      send_packet(8, 1'b1, 12'd0);
       repeat (60) @(posedge clk);
       $display("TX-PAIR: even packet 8 samples -> %0d consumed", nseen);
       if (nseen != 8) begin
@@ -167,7 +171,7 @@ module tb_tx_pairing;
 
       // ---- case 2: one odd packet, 7 samples, eob ----------------------
       do_reset;
-      send_packet(7, 1'b1, 1'b1, 12'd0);
+      send_packet(7, 1'b1, 12'd0);
       repeat (60) @(posedge clk);
       $display("TX-PAIR: odd packet 7 samples -> %0d consumed", nseen);
       if (nseen != 7) begin
@@ -177,8 +181,8 @@ module tb_tx_pairing;
 
       // ---- case 3: burst of even 6 then odd 5, eob on the last ---------
       do_reset;
-      send_packet(6, 1'b0, 1'b0, 12'd0);
-      send_packet(5, 1'b1, 1'b1, 12'd1);
+      send_packet(6, 1'b0, 12'd0);
+      send_packet(5, 1'b1, 12'd1);
       repeat (120) @(posedge clk);
       $display("TX-PAIR: burst 6+5 samples -> %0d consumed", nseen);
       if (nseen != 11) begin
