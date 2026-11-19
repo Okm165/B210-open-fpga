@@ -384,6 +384,11 @@ def budget():
         rms = np.sqrt(np.mean(np.abs(err) ** 2))
         rows.append((label, rms, 20 * np.log10(rms / ref),
                      20 * np.log10(rms / 32768)))
+    if len(rows) != 2:
+        print(f"  budget page skipped: {len(rows)} of 2 captures present")
+        plt.close(fig)
+        return
+
     ax[0].set_xlabel("MHz")
     ax[0].set_ylabel("residual, dBc of the tones")
     ax[0].set_title("residual spectrum, same signal, same fit", fontsize=9)
@@ -446,6 +451,13 @@ def levels():
         pts.append((a, 20 * np.log10(sig / 32768), 20 * np.log10(res / 32768),
                     20 * np.log10(sig / res), clip, aclip,
                     int(np.abs(codes).max()), len(np.unique(codes))))
+
+    if len(pts) != len(amps):
+        # No captures for this page in this run (they come from
+        # `make plots-levels`).  Writing an empty figure here would replace a
+        # real measurement with a blank page that still looks like evidence.
+        print(f"  levels page skipped: {len(pts)} of {len(amps)} captures present")
+        return
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 4.4))
     fig.suptitle("converter utilisation: SNR against input level, 12-bit converters in the loop",
