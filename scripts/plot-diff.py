@@ -43,9 +43,14 @@ BASE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 def load(path):
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return None
-    d = np.loadtxt(path, dtype=np.int64)
+    try:
+        d = np.loadtxt(path, dtype=np.int64)
+    except ValueError:
+        raise SystemExit(f"capture {path!r} contains non-numeric values (x/z): the "
+                         f"RTL was not fully initialised in that run")
     if d.ndim == 1:
         d = d.reshape(1, -1)
+    return d[:, 0].astype(float) + 1j * d[:, 1].astype(float)
     return d[:, 0].astype(float) + 1j * d[:, 1].astype(float)
 
 

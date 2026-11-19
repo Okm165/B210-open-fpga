@@ -36,7 +36,11 @@ def ld(suf):
     p = os.path.join(BASE, suf)
     if not os.path.exists(p) or os.path.getsize(p) == 0:
         return None
-    d = np.loadtxt(p, dtype=np.int64)
+    try:
+        d = np.loadtxt(p, dtype=np.int64)
+    except ValueError:
+        raise SystemExit(f"capture {p!r} contains non-numeric values (x/z): the "
+                         f"RTL was not fully initialised in that run")
     return d[:, 0].astype(float) + 1j * d[:, 1].astype(float)
 
 
