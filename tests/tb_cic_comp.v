@@ -18,8 +18,10 @@ module tb_cic_comp;
    wire        stb_out;
    wire signed [17:0] dout;
 
+   reg bypass = 0;
+
    cic_comp #(.WIDTH(18)) dut
-     (.clk(clk), .rst(rst), .stb_in(stb), .data_in(din),
+     (.clk(clk), .rst(rst), .bypass(bypass), .stb_in(stb), .data_in(din),
       .stb_out(stb_out), .data_out(dout));
 
    // design taps, q17, in y[n] = sum_k c_k x[n-k] order (tap 0 first)
@@ -102,6 +104,17 @@ module tb_cic_comp;
          errors = errors + 1;
       end else
         $display("INFO: DC response %0d (expect 32000)", dout);
+
+      // ---- 3. Bypass: exact unity gain, centre tap of the delay line ----
+      // At CIC rate 1 there is no droop, so the filter must not shape the
+      // signal (measured before this check existed: +2.8 dB at 0.2 fs_out).
+      bypass = 1;
+      repeat (12) do_sample(18'sd20000);
+      if (dout !== 18'sd20000) begin
+         $display("FAIL: bypass output %0d, expected the input 20000", dout);
+         errors = errors + 1;
+      end else
+        $display("INFO: bypass is a pure delay, unity gain");
 
       if (errors == 0)
         $display("PASS: tb_cic_comp impulse+DC verified");

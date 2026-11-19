@@ -23,6 +23,7 @@ module cic_comp #(
   ) (
     input                    clk,
     input                    rst,
+    input                    bypass,
     input                    stb_in,
     input signed [WIDTH-1:0] data_in,
     output                    stb_out,
@@ -112,8 +113,16 @@ module cic_comp #(
 
    // q17 scaling with guard bits, clipped back to WIDTH
    wire signed [SBITS-1:0] scaled = acc[ABITS-1:17];
+   wire signed [WIDTH-1:0] comp_out;
    clip_reg #(.bits_in(SBITS), .bits_out(WIDTH), .STROBED(1)) out_clip
      (.clk(clk), .reset(rst), .in(scaled), .strobe_in(stb_d3),
-      .out(data_out), .strobe_out(stb_out));
+      .out(comp_out), .strobe_out(stb_out));
+
+   // Bypass is not an edge case, it is the maximum-rate mode: at CIC rate 1
+   // the CIC is the identity and has no droop, so this inverse-sinc filter
+   // would ADD a shape instead of removing one (measured: +2.8 dB at 0.2 of
+   // the output rate, -9.5 dB at 0.3).  Selecting the centre tap of the delay
+   // line keeps exact unity gain and a pure delay.
+   assign data_out = bypass ? d[7] : comp_out;
 
 endmodule // cic_comp

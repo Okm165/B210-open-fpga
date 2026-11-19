@@ -164,12 +164,15 @@ module duc_chain
    // Inverse-sinc CIC droop compensation (fixed, rate-independent: see
    // cic_comp.v).  Applied at the CIC output (full clk rate), exactly as in
    // the RX chain.  strobe_out is open: the CIC emits one sample per clk.
+   // The compensator is only meaningful when the CIC actually interpolates:
+   // at rate 1 it is the identity, and the inverse-sinc filter would impose
+   // its own shape on the maximum-rate (bypass) mode.
    cic_comp #(.WIDTH(18)) cic_comp_i
-     (.clk(clk), .rst(rst), .stb_in(1'b1), .data_in(i_cic_out),
-      .stb_out(), .data_out(i_interp));
+     (.clk(clk), .rst(rst), .bypass(interp_rate == 8'd1), .stb_in(1'b1),
+      .data_in(i_cic_out), .stb_out(), .data_out(i_interp));
    cic_comp #(.WIDTH(18)) cic_comp_q
-     (.clk(clk), .rst(rst), .stb_in(1'b1), .data_in(q_cic_out),
-      .stb_out(), .data_out(q_interp));
+     (.clk(clk), .rst(rst), .bypass(interp_rate == 8'd1), .stb_in(1'b1),
+      .data_in(q_cic_out), .stb_out(), .data_out(q_interp));
 
    // ---------------------------------------------------------------------
    // Up-conversion mixer.
