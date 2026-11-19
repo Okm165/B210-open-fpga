@@ -949,8 +949,17 @@ plots-extra:
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_capm_a.vvp > /dev/null && cp -f cap_match_rx_host.txt cap_ALIGN_ch0.txt && cp -f cap_match_rx_host1.txt cap_ALIGN_ch1.txt
 	cd $(ROOT) && python3 scripts/plot-loop.py retune match clkmux
 	@echo "plots: $(ROOT)/build/plots/loop_retune.png loop_match.png loop_clkmux.png"
+	@# Band-edge evidence: the same 14 tones moved 3x up the band (highest at
+	@# 0.44 fs_host), in its own directory so it cannot disturb the standard
+	@# captures.
+	@mkdir -p $(ROOT)/build/plots/band
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/band/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DBINSCALE=3 \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_band.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/band && $(VVP) -n $(SIM_DIR)/tb_band.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
+	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:

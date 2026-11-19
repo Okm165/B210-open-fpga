@@ -41,6 +41,7 @@ module tb_capture;
    // bin pairs: disjoint between the two channels, |k| <= 150 (0.146 fs)
    integer kidx0 [0:NT-1];
    integer kidx1 [0:NT-1];
+   integer bi;
    initial begin
 `ifdef MATCH
       kidx0[0]=8;   kidx0[1]=24;  kidx0[2]=47;  kidx0[3]=83;
@@ -52,6 +53,15 @@ module tb_capture;
       kidx0[4]=115; kidx0[5]=138; kidx0[6]=150;
       kidx1[0]=13;  kidx1[1]=31;  kidx1[2]=59;  kidx1[3]=97;
       kidx1[4]=124; kidx1[5]=143; kidx1[6]=149;
+`endif
+      // -DBINSCALE=N moves the same two tone sets up the band (same spacing,
+      // same disjointness) so the loop can be graded where the old bins never
+      // reached.  N=3 puts the highest tone at 0.44 fs_host.
+`ifdef BINSCALE
+      for (bi = 0; bi < NT; bi = bi + 1) begin
+         kidx0[bi] = kidx0[bi] * `BINSCALE;
+         kidx1[bi] = kidx1[bi] * `BINSCALE;
+      end
 `endif
    end
 
