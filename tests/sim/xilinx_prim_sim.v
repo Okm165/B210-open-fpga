@@ -20,6 +20,11 @@ module BUFG (input I, output O);
    assign O = I;
 endmodule
 
+// Glitchless clock mux, per UG472: only the SELECTED clock's edges may drive
+// the output.  On a switchover the old clock's edges stop being applied (its
+// final high pulse is truncated, which is real mux physics) and the output
+// resumes on the new clock's next rising edge.  A plain combinational mux
+// would glue two half-cycles together; the silicon never does.
 module BUFGCTRL #(
    parameter INIT_OUT = 0,
    parameter PRESELECT_I0 = "FALSE",
@@ -29,9 +34,19 @@ module BUFGCTRL #(
    input  S0, S1,
    input  CE0, CE1,
    input  IGNORE0, IGNORE1,
-   output O
+   output reg O
 );
-   assign O = (S1 === 1'b1) ? I1 : I0;
+   wire sel1 = (S1 === 1'b1) && (S0 !== 1'b1);
+   wire sel0 = (S0 === 1'b1) && (S1 !== 1'b1);
+
+   initial O = 1'b0;
+   always @(posedge I0) if (sel0) O <= 1'b1;
+   always @(negedge I0) if (sel0) O <= 1'b0;
+   always @(posedge I1) if (sel1) O <= 1'b1;
+   always @(negedge I1) if (sel1) O <= 1'b0;
+   // both selects asserted or both deasserted: output low (undefined select)
+   always @(S0 or S1)
+     if (!((S0 === 1'b1) ^ (S1 === 1'b1))) O <= 1'b0;
 endmodule
 
 module IBUFDS #(

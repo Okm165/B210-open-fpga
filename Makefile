@@ -227,6 +227,10 @@ LOOP2_TEST_SRCS := $(ELAB_SRCS) \
 AIR_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_airloop.v
+# MIMO clock-mux switch: glitch behaviour of BUFGCTRL across the switchover.
+CLKMUX_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_clkmux.v
 
 # Stage-by-stage capture for `make plots` (not a pass/fail bench).
 CAPTURE_TEST_SRCS := $(ELAB_SRCS) \
@@ -822,6 +826,13 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_airloop_rev.log tb_airloop_rev.vvp
 	@grep -q 'AIR-REV: PASS' $(SIM_DIR)/tb_airloop_rev.log || \
 	  { echo "ERROR: air-path RX->TX loop failed; see $(SIM_DIR)/tb_airloop_rev.log"; exit 1; }
+	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
+	  -s tb_clkmux -o tb_clkmux.vvp $(CLKMUX_TEST_SRCS)
+	@cd $(SIM_DIR) && $(VVP) -n tb_clkmux.vvp | tee tb_clkmux.log | grep -E 'CLKMUX'
+	@grep -q 'CLKMUX: PASS - no pulse' $(SIM_DIR)/tb_clkmux.log || \
+	  { echo "ERROR: MIMO clock mux produced runt pulses; see $(SIM_DIR)/tb_clkmux.log"; exit 1; }
+	@grep -q 'CLKMUX: PASS - reverse switch also clean' $(SIM_DIR)/tb_clkmux.log || \
+	  { echo "ERROR: MIMO clock mux reverse switch dirty; see $(SIM_DIR)/tb_clkmux.log"; exit 1; }
 
 # Render the whole-radio loop: three configurations, every intermediate stage
 # dumped by tb_capture, then drawn and measured by scripts/plot-loop.py.
