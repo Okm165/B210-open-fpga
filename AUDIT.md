@@ -172,23 +172,21 @@ fails if the reference chain is pointed at the wrong register address.
 | full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
 | full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
 | two channels (MIMO capture) | 245.76 | 2 x 30.72 MSPS sc16; the AD9361 bus is 61.44 MSPS total, so this is the converter limit, not the link |
-| shipped bitstream | - | usrp_b210_fpga.bin sha256 `2eabd2ea92bfb4f86b65a10acb867c00de361395ea02391159c62bed648854d0`, idcode 0x3651093, seed 3, RTL last changed at 8eb2502 (halfband rounding, DAC slice round+saturation, comp bypass at rate 1, dead-code removal); image recorded at 8e19a4f, `make image-check` verifies it against this tree; post-route bus_clk 106.45 MHz / radio_clk 94.77 MHz, both PASS the 5 % policy without the exception flag |
+| shipped bitstream | - | usrp_b210_fpga.bin sha256 `2eabd2ea92bfb4f86b65a10acb867c00de361395ea02391159c62bed648854d0`, idcode 0x3651093, seed 3, RTL last changed at 8eb2502 (halfband rounding, DAC slice round+saturation, comp bypass at rate 1, dead-code removal); image recorded at 8e19a4f, `make image-check` verifies it against this tree; post-route bus_clk 105.26 MHz (x1.053) / radio_clk 98.58 MHz (x1.604), 5 % policy met without the exception flag |
 | packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
 | USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
 | USB stall, sustained | - | 25 % duty absorbed; the interface ceiling is 400 MB/s against 246 MB/s of payload |
 | USB stall, over-long | - | 350 us overflows; bounded loss, link returns to 0.616 words/clk by itself |
-| bus_clk / radio_clk | 100 / 61.44 MHz | 106.45 (x1.0645) / 94.77 MHz (x1.5425), post-route, seed 3 |
+| bus_clk / radio_clk | 100 / 61.44 MHz | 105.26 (x1.053) / 98.58 MHz (x1.604), post-route, seed 3 |
 
-Timing note (reconciled 2026-11-19 against build/fpga/reports/pnr-timing.txt):
-the shipping policy is 5 % margin on every clock.  Seed 3 clears it on every
-clock without the exception flag: bus_clk 106.45 MHz (+6.45 % over 100 MHz),
-radio_clk 94.77 MHz (+54 % over 61.44 MHz), rx_clk 1176.47 MHz.  An earlier
-revision of this note quoted 104.49 / 89.16 MHz and a 4.5 % bus_clk shortfall
-with `FPGA_ALLOW_TIMING_FAIL=1`; that was a pre-`d67f1f3` route and is no
-longer true.  The residual critical path remains the pre-existing
-`gpif2_error_checker` comparator chain (seed sensitivity, not DSP logic), and
-pipelining it is still the first hardware-tuning item - it is now a margin
-item, not a gate.
+Timing note (rebuilt after the x2 polyphase fix): the shipping policy is 5 %
+margin on every clock.  Seed 3 clears it on every clock without the exception
+flag: bus_clk 105.26 MHz (x1.053), radio_clk 98.58 MHz (x1.604), rx_clk
+1136.36 MHz.  The centre-tap register did not cost timing; radio_clk improved
+from 94.77 to 98.58 MHz.  bus_clk is the tight one at 1.053 - still inside the
+1.05 gate.  The residual critical path is the pre-existing
+`gpif2_error_checker` comparator chain (seed sensitivity, not DSP logic);
+pipelining it is the first margin item, not a gate.
 
 ## Invariants that guard the claims
 

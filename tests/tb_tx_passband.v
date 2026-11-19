@@ -12,6 +12,13 @@
 //   bypass, total 1:        -0.01 dB at every bin
 //   one halfband, total 2:  -0.01 dB or better, image <= -80 dBc (cfg 1 =
 //                           hb2, cfg 4 = hb1; both instances measured)
+//   CIC-only x2 (cfg 5):    reachable from the settings bus (interp_rate is
+//                           independent of the hb enables).  It carries the
+//                           CIC's sinc droop: -0.09 dB at 0.09 fs_in growing
+//                           to -1.17 dB at 0.22 fs_in, images -104 down to
+//                           -46 dBc.  Characterised, not fixed: the CIC's
+//                           droop is its documented level contract; the
+//                           halfband x2 (cfg 1/4) is the config to use.
 //   two halfbands, total 4: -0.01 dB or better, image <= -81 dBc
 //   two halfbands, CIC 4:   -0.01 .. -0.13 dB, image <= -81 dBc
 //
@@ -48,12 +55,13 @@ module tb_tx_passband;
     errors = 0;
     repeat(8) @(posedge clk); @(negedge clk); rst=0;
     wr(8'd0,32'd0); wr(8'd1,32'h0000_8000);
-    for (cfg=0; cfg<5; cfg=cfg+1) begin
+    for (cfg=0; cfg<6; cfg=cfg+1) begin
       case (cfg) 0: begin hb=2'b00; rate=1; end
                  1: begin hb=2'b01; rate=1; end
                  2: begin hb=2'b11; rate=1; end
                  3: begin hb=2'b11; rate=4; end
-                 4: begin hb=2'b10; rate=1; end endcase
+                 4: begin hb=2'b10; rate=1; end
+                 5: begin hb=2'b00; rate=2; end endcase
       total = rate*(hb[0]+1)*(hb[1]+1);
       wr(8'd2,{hb,8'd0}|rate); run=1;
       for (nb=0; nb<7; nb=nb+1) begin
