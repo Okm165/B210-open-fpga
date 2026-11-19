@@ -47,11 +47,12 @@ module tb_tx_passband;
     errors = 0;
     repeat(8) @(posedge clk); @(negedge clk); rst=0;
     wr(8'd0,32'd0); wr(8'd1,32'h0000_8000);
-    for (cfg=0; cfg<4; cfg=cfg+1) begin
+    for (cfg=0; cfg<5; cfg=cfg+1) begin
       case (cfg) 0: begin hb=2'b00; rate=1; end
                  1: begin hb=2'b01; rate=1; end
                  2: begin hb=2'b11; rate=1; end
-                 3: begin hb=2'b11; rate=4; end endcase
+                 3: begin hb=2'b11; rate=4; end
+                 4: begin hb=2'b10; rate=1; end endcase
       total = rate*(hb[0]+1)*(hb[1]+1);
       wr(8'd2,{hb,8'd0}|rate); run=1;
       for (nb=0; nb<7; nb=nb+1) begin
