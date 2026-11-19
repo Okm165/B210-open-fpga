@@ -140,6 +140,8 @@ module tb_phase;
       cfg_id=8; run_config(2'b11, 2, 8);
       // both halfbands, CIC rate 1: total 4
       cfg_id=4; run_config(2'b11, 1, 4);
+      // CIC rate 4: total 16, the heaviest CIC configuration
+      cfg_id=16; run_config(2'b11, 4, 16);
 
       if (errors == 0)
          $display("PHASE: PASS - the TX impulse response is symmetric at every rate: linear phase, constant group delay");
