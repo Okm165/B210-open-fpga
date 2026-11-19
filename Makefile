@@ -258,7 +258,7 @@ HELLO_DIR   := $(BUILD_DIR)/hello
 CHELLO      := $(CR)/build/hello
 
 .PHONY: help doctor verify test test-data elab sim tools tools-base tools-yosys tools-nextpnr tools-prjxray \
-        shell build synth pnr bitstream record-image image-check hello analyze timing clean image-clean
+        shell build synth pnr bitstream record-image image-check release-check hello analyze timing clean image-clean
 
 help:
 	@printf '%s\n' \
@@ -277,6 +277,7 @@ help:
 	  '  make doctor     Check host tools and the toolchain image' \
 	  '  make verify     Check the committed source state' \
 	  '  make image-check  Prove the shipped .bin is from this tree' \
+	  '  make release-check verify + image-check + test in one go' \
 	  '  make record-image Stamp the image hash + source digest after a build' \
 	  '  make shell      Interactive shell in the toolchain image' \
 	  '  make clean      Remove only this repository build/ directory' \
@@ -535,6 +536,9 @@ image-check:
 	  echo "image ok: $$got_img"; \
 	  echo "  source $$got_src"; \
 	  echo "  rtl    $$(awk '$$1=="rtl-commit"{print $$2}' scripts/bitstream-provenance.txt)"
+
+release-check: verify image-check test
+	@echo "RELEASE OK: clean tree, image matches source, all benches pass"
 
 test:
 	@set -e   # .ONESHELL is on: without this the recipe only reports its LAST command
