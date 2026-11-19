@@ -172,7 +172,7 @@ fails if the reference chain is pointed at the wrong register address.
 | full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
 | full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
 | two channels (MIMO capture) | 245.76 | 2 x 30.72 MSPS sc16; the AD9361 bus is 61.44 MSPS total, so this is the converter limit, not the link |
-| shipped bitstream | - | usrp_b210_fpga.bin sha256 `2eabd2ea92bfb4f86b65a10acb867c00de361395ea02391159c62bed648854d0`, idcode 0x3651093, seed 3, RTL last changed at 8eb2502 (halfband rounding, DAC slice round+saturation, comp bypass at rate 1, dead-code removal); image recorded at 8e19a4f, `make image-check` verifies it against this tree; post-route bus_clk 105.26 MHz (x1.053) / radio_clk 98.58 MHz (x1.604), 5 % policy met without the exception flag |
+| shipped bitstream | - | usrp_b210_fpga.bin sha256 `bcf0a6fc17be573e23d1d44a8e5867d4ce122f93340e0ea4500814484ec8d5bb`, idcode 0x3651093, seed 3, RTL last changed at 6706c10 (the x2 halfband centre-tap phase fix; earlier 8eb2502 rounding/saturation/comp-bypass); `scripts/bitstream-provenance.txt` records image + source digest `8ad1cbb` + rtl-commit, and `make image-check` verifies all three against this tree; post-route bus_clk 105.26 MHz (x1.053) / radio_clk 98.58 MHz (x1.604), 5 % policy met; util LUT 51 814 (12 %) / FF 15 610 (3 %) / DSP 158 (18 %) / RAMB36 72 (16 %) |
 | packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
 | USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
 | USB stall, sustained | - | 25 % duty absorbed; the interface ceiling is 400 MB/s against 246 MB/s of payload |
