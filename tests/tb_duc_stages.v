@@ -134,20 +134,21 @@ module tb_duc_stages;
          end
          // hb1's OUTPUT rate is strobe_hb2 (clk/4); strobe_hb1 is its input
          // rate and undersamples the stage exactly as the old hb2 tap did.
+         // Full-width taps: a truncating slice biases the mean of a signed
+         // signal by ~-0.5 LSB and once produced a false "-70 dBc DC" reading.
          if (dut.strobe_hb2)
             $fwrite(f_hb1, "%0d %0d\n",
-                    $signed(dut.hb1_i[17:3]), $signed(dut.hb1_q[17:3]));
+                    $signed(dut.hb1_i), $signed(dut.hb1_q));
          // hb2's OUTPUT rate is strobe_cic (clk/2); strobe_hb2 is clk/4 and
          // undersamples the stage, aliasing its interpolation images into any
          // spectral analysis of this dump.  Measured: the same capture read
          // with the wrong tap showed a -17.6 dB image that does not exist.
          if (dut.strobe_cic)
             $fwrite(f_hb2, "%0d %0d\n",
-                    $signed(dut.hb2_i[17:3]), $signed(dut.hb2_q[17:3]));
+                    $signed(dut.hb2_i), $signed(dut.hb2_q));
          $fwrite(f_cic, "%0d %0d\n",
-                 $signed(dut.i_interp[17:3]), $signed(dut.q_interp[17:3]));
-         $fwrite(f_out, "%0d %0d\n",
-                 $signed(tx_i[WIDTH-1:WIDTH-16]), $signed(tx_q[WIDTH-1:WIDTH-16]));
+                 $signed(dut.i_interp), $signed(dut.q_interp));
+         $fwrite(f_out, "%0d %0d\n", $signed(tx_i), $signed(tx_q));
       end
 
       $fclose(f_in); $fclose(f_hb1); $fclose(f_hb2); $fclose(f_cic); $fclose(f_out);
