@@ -70,6 +70,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | Dead code | every module name in scripts/sources.txt scanned against every .v file | `source_flow_control_legacy`, `add_then_mac`, `round_reg` removed; 3 unused parameters removed; 78 sources |
 | TX bypass flatness | impulse response at the pin word, FFT vs analytic taps (0.03 dB agreement) | compensator was shaping the max-rate mode (+2.8 dB at 0.2 fs_out); now bypassed at CIC rate 1, measured 0.00 dB across the band |
 | FX3 async boundary | `tb_gpif_cdc`, fifo 100 MHz / gpif 101 MHz, 3 ns phase, backpressure | 320/320 words, tlast every packet on the low half, 0 errors |
+| RX overload | `tb_rx_saturate`: full-scale I=Q with a rotating LO | peak +32767, trough -32768, 30-sample rail plateau: clips, never wraps |
 | TX underrun | `tb_tx_underrun`: starved from reset with stale data on the bus | run low for 200 idle cycles (0 clocks high): pin mux stays on tx_idle, no stale sample can reach the DAC |
 | RX stall tolerance | e2e run with one 200 us stall vs no stall, 400 000 clocks | identically 242 136 words: zero loss; 350 us overruns and recovers; guard for 30 us equal-total added |
 | CDC integrity | `tb_axi_fifo_2clk_cdc` at 5 clock relationships (phase 0..3.3 ns, 10:1 ratio, radio faster than bus) | 512/512 words in order in both directions in every case |
