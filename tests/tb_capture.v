@@ -84,9 +84,15 @@ module tb_capture;
             acc = 2.0*PI*kidx0[k]*n/L + ph;
             s0i[n] = s0i[n] + (AMP/NT)*$cos(acc);
             s0q[n] = s0q[n] + (AMP/NT)*$sin(acc);
+`ifndef SINGLE
+            // A single-sided stimulus (one complex tone per bin) cannot mask
+            // an interpolation image or a mixer quadrature image: with the
+            // default +/-k pair the image of +k lands exactly on -k, which is
+            // why the loop pages could not see either of them.
             acc = 2.0*PI*(-kidx0[k])*n/L + ph + PI/3.0;
             s0i[n] = s0i[n] + (AMP/NT)*$cos(acc);
             s0q[n] = s0q[n] + (AMP/NT)*$sin(acc);
+`endif
 `ifdef MATCH
             ph = 2.0*PI*(((k*37 + 11) % 181)/181.0);
 `else
@@ -95,6 +101,7 @@ module tb_capture;
             acc = 2.0*PI*kidx1[k]*n/L + ph;
             s1i[n] = s1i[n] + (AMP/NT)*$cos(acc);
             s1q[n] = s1q[n] + (AMP/NT)*$sin(acc);
+`ifndef SINGLE
 `ifdef MATCH
             acc = 2.0*PI*(-kidx1[k])*n/L + ph + PI/3.0;
 `else
@@ -102,6 +109,7 @@ module tb_capture;
 `endif
             s1i[n] = s1i[n] + (AMP/NT)*$cos(acc);
             s1q[n] = s1q[n] + (AMP/NT)*$sin(acc);
+`endif
          end
       end
    end

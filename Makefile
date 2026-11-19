@@ -966,6 +966,16 @@ plots-extra:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -DBINSCALE=3 \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx2.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/bandx2 && $(VVP) -n $(SIM_DIR)/tb_bandx2.vvp > /dev/null
+	@mkdir -p $(ROOT)/build/plots/bandx2s
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx2s/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -DBINSCALE=3 -DSINGLE \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx2s.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/bandx2s && $(VVP) -n $(SIM_DIR)/tb_bandx2s.vvp > /dev/null
+	@mkdir -p $(ROOT)/build/plots/bandx2s5
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/bandx2s5/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DX2 -DBINSCALE=3 -DSINGLE -DAMPDEF=1400.0 \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_bandx2s5.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/bandx2s5 && $(VVP) -n $(SIM_DIR)/tb_bandx2s5.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
 	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband

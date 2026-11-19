@@ -659,14 +659,16 @@ def band():
         a.set_ylabel("residual, dBc of the tones")
         a.set_title(f"band-edge residual: worst {20*np.log10(E[sel].max()/ref):.0f} dBc, "
                     "no line above the dither", fontsize=9)
-        # The loop grades the end against the air node and the stimulus carries
-        # +k and -k per tone, so a transmit-interpolation image of +k lands
-        # exactly on the -k tone: this residual CANNOT see it.  The passband
-        # bench and loop_inband.png are the measurement of record for it.
+        # The loop grades the end against the air node, which is downstream of
+        # the transmit interpolator: the interpolator's response and its image
+        # are in BOTH terms of the difference and cancel.  They are present in
+        # the raw end data (-28 dBc at the band edge, a separate line), and
+        # loop_inband.png measures them; they are simply not a *loop* error.
         fig.text(0.5, 0.005,
-                 "residuals are graded against the air node: transmit-interpolator "
-                 "images land on the mirror tone of this ±k stimulus and are not "
-                 "visible here (see loop_inband.png)", ha="center", fontsize=7)
+                 "this residual compares the end with the air node, so the transmit "
+                 "interpolator's taper and image cancel in it by construction; the "
+                 "image is a separate -28 dBc line in the end data (loop_inband.png)",
+                 ha="center", fontsize=7)
         a.grid(alpha=0.25, lw=0.4)
         a.tick_params(labelsize=7)
     fig.tight_layout(rect=[0, 0, 1, 0.94])
@@ -966,7 +968,7 @@ def inband():
         return [20 * np.log10(abs(1.0 - 0.125 * np.exp(-2j * np.pi * 3 * r["ab"] / n)))
                 for r in rows]
 
-    fig, ax = plt.subplots(2, 2, figsize=(12.5, 8.4))
+    fig, ax = plt.subplots(3, 2, figsize=(12.5, 12.0))
     fig.suptitle("inside the band: what each pipeline does to the signal, input referred "
                  "(channel divided out)", fontsize=11.5)
     grid = np.linspace(0.0, 0.5, 501)
@@ -1049,7 +1051,79 @@ def inband():
     a.legend(fontsize=6.5)
     a.tick_params(labelsize=7)
 
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    # The image is not a footnote: it is in the loop's own end data as a
+    # separate line.  Show it as it appears - the 14 wanted tones fitted and
+    # removed - and then grade it against the analytic prediction
+    # (halfband response x channel at the image frequency).
+    a = ax[2][0]
+    x2end = load(os.path.join(base, "bandx2", "cap_fwd_x2_rx_host.txt"))
+    if x2end is not None:
+        n = len(x2end)
+        t = np.arange(n)
+        A = []
+        for k in K0 + K1:
+            A += [np.exp(2j * np.pi * 6 * k * t / 4096),
+                  np.exp(-2j * np.pi * 6 * k * t / 4096)]
+        sol, *_ = np.linalg.lstsq(np.stack(A, 1), x2end, rcond=None)
+        res = x2end - np.stack(A, 1) @ sol
+        E = np.abs(np.fft.fft(res)) / n
+        ref = np.sqrt(np.mean(np.abs(np.stack(A, 1) @ sol) ** 2))
+        # the x2 end word runs at the DAC rate (2x the host rate)
+        f = np.fft.fftfreq(n, 1 / (FS * 2))
+        sel = f >= 0
+        a.plot(f[sel] / 1e6, 20 * np.log10(np.maximum(E[sel] / ref, 1e-12)),
+               lw=0.6, color="#7030a0")
+        a.axvspan(0, FS / 2 / 1e6, color="#1f4e79", alpha=0.07)
+        a.text(1.0, -24, "host band 0..0.5 fs", fontsize=6.5, color="#1f4e79")
+        for k in K0 + K1:
+            fq = (2048 - 6 * k) * FS * 2 / n   # positive-frequency image
+            a.axvline(fq / 1e6, color="#c00000", lw=0.5, ls=":")
+        a.set_xlim(0, FS / 1e6)
+        a.set_ylim(-140, -20)
+        a.set_xlabel("MHz at the DAC rate (30.72 MS/s; the host band is the shaded half)")
+        a.set_ylabel("residual, dBc of the tone-set rms")
+        a.set_title("x2 end, 14 tones removed: the images (dotted) sit just "
+                    "outside the host band, -28 dBc", fontsize=9)
+        a.grid(alpha=0.25, lw=0.4)
+        a.tick_params(labelsize=7)
+
+    a = ax[2][1]
+    n = len(load(os.path.join(base, "bandx2", "cap_fwd_x2_air.txt")))
+    for ch, ks in ((0, K0), (1, K1)):
+        suf = "" if ch == 0 else "1"
+        end = load(os.path.join(base, "bandx2", f"cap_fwd_x2_rx_host{suf}.txt"))
+        air = load(os.path.join(base, "bandx2", f"cap_fwd_x2_air{suf}.txt"))
+        if end is None or air is None:
+            continue
+        xs, ms, ps = [], [], []
+        for k in ks:
+            b = 6 * k
+            bi = (b + 2048) % len(end)
+            meas = 20 * np.log10(max(amp(end, bi), 1e-12) / amp(end, b))
+            cand = [b, b + 512, b - 512]
+            ab = max(cand, key=lambda q: amp(air, q))
+            abi = (ab + 2048) % n
+            pred = _hb_model(c, 3 * k / 1024)[1] + \
+                20 * np.log10(abs(1 - 0.125 * np.exp(-2j * np.pi * 3 * abi / n))) - \
+                20 * np.log10(abs(1 - 0.125 * np.exp(-2j * np.pi * 3 * ab / n)))
+            xs.append(3 * k / 1024 * FS / 1e6)
+            ms.append(meas)
+            ps.append(pred)
+        col = "#1f4e79" if ch == 0 else "#c00000"
+        a.plot(xs, ms, "o", ms=4, mfc="none", color=col, label=f"ch{ch} measured")
+        a.plot(xs, ps, "x", ms=4, color=col, alpha=0.7, label=f"ch{ch} model")
+    a.axhline(-65, color="#c00000", lw=0.6, ls="--")
+    a.set_ylim(-120, -20)
+    a.set_xlim(0, 7.7)
+    a.set_xlabel("MHz at the host rate")
+    a.set_ylabel("image at the end, dBc")
+    a.set_title("the adjacent image at the end: measured (dots) = "
+                "halfband x channel (crosses)", fontsize=9)
+    a.grid(alpha=0.25, lw=0.4)
+    a.legend(fontsize=6.5, ncol=2)
+    a.tick_params(labelsize=7)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     outp = os.path.join(base, "loop_inband.png")
     fig.savefig(outp, dpi=110)
     plt.close(fig)
@@ -1067,10 +1141,39 @@ def inband():
           f"at 0.4375 fs: {_hb_model(c, 0.4375)[0]:+.2f} dB, "
           f"{_hb_model(c, 0.4375)[1]:.0f} dBc")
     print(f"  whole loop vs channel x halfband x 1/256: max error {max(dev):.3f} dB")
+    # One-sided control: a +/-k pair hides a mixer's own quadrature image (the
+    # mirror of +k is the -k tone).  With one complex tone per bin the mirror
+    # is empty.  At two drive levels: an image scales with the tone, the
+    # quantiser floor does not, so the pair separates them.
+    s1 = load(os.path.join(base, "bandx2s", "cap_fwd_x2_rx_host.txt"))
+    s5 = load(os.path.join(base, "bandx2s5", "cap_fwd_x2_rx_host.txt"))
+    if s1 is not None and s5 is not None:
+        m = len(s1)
+        b, mir = 900, (m - 900) % m
+        hi, lo = amp(s1, b), amp(s5, b)
+        mh, ml = amp(s1, mir), amp(s5, mir)
+        print(f"  one-sided control, mirror bin {mir}: {20*np.log10(mh/hi):.1f} dBc at "
+              f"drive {hi:.0f}, {20*np.log10(ml/lo):.1f} dBc at 1/5 drive")
+        print(f"    absolute mirror {mh:.3f} vs {ml:.3f} LSB (tone {hi:.0f} vs {lo:.0f}): "
+              f"{'invariant -> quantiser floor, not an image' if abs(mh-ml) < 0.2*max(mh,ml) else 'scales -> a real image'}")
+    pins = load(os.path.join(base, "bandx2s", "cap_fwd_x2_tx_pins.txt"))
+    if pins is not None:
+        pm = len(pins)
+        print(f"  TX pin word mirror: "
+              f"{20*np.log10(max(amp(pins, (pm - 1412) % pm), 1e-12)/amp(pins, 1412)):.0f} dBc "
+              f"(no mixer image; the only image is the interpolator's)")
+    x2end = load(os.path.join(base, "bandx2", "cap_fwd_x2_rx_host.txt"))
+    if x2end is not None:
+        for k in K0:
+            b = 6 * k
+            bi = (b + 2048) % len(x2end)
+            print(f"  image at the end, ch0 {3*k/1024*FS/1e6:5.2f} MHz: "
+                  f"{20*np.log10(amp(x2end, bi)/amp(x2end, b)):6.1f} dBc")
     print(f"  wrote {os.path.relpath(outp)}")
-    print("  note: images of the transmit interpolator are invisible to this page")
-    print("        (a +k image lands on the -k tone); loop_inband and tb_tx_passband")
-    print("        measure them: -68 dBc at 0.375 fs_host, -32 dBc at 0.4375.")
+    print("  note: this grades against the air node, so the transmit interpolator's")
+    print("        taper and image cancel in the residual by construction.  They are")
+    print("        present in the end data as separate lines (-28 dBc at 0.4375 fs);")
+    print("        loop_inband.png and tb_tx_passband are their measurement of record.")
 
 
 def retune():
