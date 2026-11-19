@@ -152,6 +152,7 @@ fails if the reference chain is pointed at the wrong register address.
 | packet gate | 245.76 | 252 MB/s at demand |
 | full path, 66-sample packets (stress) | 245.76 | 260.4 MB/s, 0 words lost |
 | full path, 2046-sample packets (UHD default) | 245.76 | 246.2 MB/s = 100.2 % of payload |
+| two channels at 61.44 MSPS, sc16 | 491.52 | does NOT fit the 400 MB/s link - 2x30.72 sc16 or 2x61.44 packed 12-bit does (368.64 MB/s) |
 | shipped bitstream | - | b200.bin sha256 f3e80f9b..., idcode 0x3651093, seed 3 |
 | packet length | any request up to 4092 | clamped to 2048 samples (half the sample FIFO) |
 | USB stall, single | - | 200 us absorbed with zero loss and full catch-up |
