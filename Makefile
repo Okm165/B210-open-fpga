@@ -844,6 +844,28 @@ test-data:
 	@grep -q 'RETUNE: PASS' $(SIM_DIR)/tb_tx_retune.log || \
 	  { echo "ERROR: a transmitter settings write disturbs the stream; see $(SIM_DIR)/tb_tx_retune.log"; exit 1; }
 
+
+
+
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
+	@grep -q 'IMD3: PASS' $(SIM_DIR)/tb_imd3.log || \
+	  { echo "ERROR: two-tone intermodulation above the floor; see $(SIM_DIR)/tb_imd3.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_phase -o tb_phase.vvp $(PHASE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_phase.log tb_phase.vvp
+	@grep -q 'PHASE: PASS' $(SIM_DIR)/tb_phase.log || \
+	  { echo "ERROR: TX chain is not linear phase; see $(SIM_DIR)/tb_phase.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_packet_gate.log || \
+	  { echo "ERROR: packet-gate test failed; see $(SIM_DIR)/tb_axi_packet_gate.log"; exit 1; }
+	@python3 $(ROOT)/tests/test_bit2bin.py
+	@python3 $(ROOT)/tests/test_constraints.py
+	@$(MAKE) --no-print-directory -C $(ROOT) elab
+
 # Render the whole-radio loop: three configurations, every intermediate stage
 # dumped by tb_capture, then drawn and measured by scripts/plot-loop.py.
 plots:
@@ -881,7 +903,8 @@ plots-levels:
 	cd $(ROOT) && python3 scripts/plot-loop.py levels
 
 # The non-spectral pages: settings writes on a live transmitter, channel
-# matching (naive vs aligned start), and the MIMO clock switchover.
+# matching (naive vs aligned start), the MIMO clock switchover, and the
+# end-of-loop diff (both channels, both directions).
 plots-extra:
 	@mkdir -p $(ROOT)/build/plots
 	@ln -sfn $(ROOT)/src $(ROOT)/build/plots/src
@@ -900,27 +923,6 @@ plots-extra:
 	cd $(ROOT) && python3 scripts/plot-loop.py retune match clkmux
 	@echo "plots: $(ROOT)/build/plots/loop_retune.png loop_match.png loop_clkmux.png"
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
-
-
-
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
-	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
-	@grep -q 'IMD3: PASS' $(SIM_DIR)/tb_imd3.log || \
-	  { echo "ERROR: two-tone intermodulation above the floor; see $(SIM_DIR)/tb_imd3.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
-	  -s tb_phase -o tb_phase.vvp $(PHASE_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_phase.log tb_phase.vvp
-	@grep -q 'PHASE: PASS' $(SIM_DIR)/tb_phase.log || \
-	  { echo "ERROR: TX chain is not linear phase; see $(SIM_DIR)/tb_phase.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
-	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
-	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_packet_gate.log || \
-	  { echo "ERROR: packet-gate test failed; see $(SIM_DIR)/tb_axi_packet_gate.log"; exit 1; }
-	@python3 $(ROOT)/tests/test_bit2bin.py
-	@python3 $(ROOT)/tests/test_constraints.py
-	@$(MAKE) --no-print-directory -C $(ROOT) elab
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:
