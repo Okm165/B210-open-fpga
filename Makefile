@@ -560,7 +560,7 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_adc_mimo.log tb_adc_mimo.vvp
 	@grep -q 'ADC-MIMO: PASS' $(SIM_DIR)/tb_adc_mimo.log || \
 	  { echo "ERROR: MIMO alternating capture broken; see $(SIM_DIR)/tb_adc_mimo.log"; exit 1; }
-	@for run in base fs fslo two noisy stall oversize overrun; do \
+	@for run in base fs fslo two noisy stall stall30 oversize overrun; do \
 	  case $$run in \
 	    base)  flags="";; \
 	    fs)    flags="-DAMP=2047";; \
@@ -568,11 +568,18 @@ test:
 	    two)   flags="-DTWOTONE";; \
 	    noisy) flags="-DNOISY";; \
 	    stall) flags="-DSTALL -DSTALL_CLKS=10000 -DSTALL_PERIOD=40000";; \
+	    # 30 us single stall, and the run is long enough to repay it: the
+	    # backlog is 1843 words and the spare link bandwidth is ~0.023
+	    # words/clk, so 80k clocks are needed and 120k are given.  This is a
+	    # zero-loss guard, not a capacity probe (see the overrun case).
+	    stall30) flags="-DSTALL -DSTALL_CLKS=3000 -DSTALL_PERIOD=100000000 -DE2E_RUNCLK=120000 -DE2E_NOLOSS";; \
 	    # UHD may request up to 4092 samples per packet; the framer clamps
 	    # that to half its sample FIFO (2048) instead of collapsing the stream.
 	    oversize) flags="-DE2E_MAXLEN=4092 -DE2E_EXPECT=2048 -DE2E_RUNCLK=400000";; \
-	    # 350 us stall: deeper than the ~200 us the FIFOs absorb, so it overflows;
-	    # the framer must drop bounded samples and come back to full rate.
+	    # 350 us stall: past the ~400 us of total buffering (12 288 words)
+	    # minus what a 2048-sample packet is holding, so it must overflow; the
+	    # framer drops and comes back to full rate.  The 200 us case in
+	    # evidence-dsp-steps.md is the measured zero-loss guarantee.
 	    overrun) flags="-DSTALL -DSTALL_CLKS=35000 -DSTALL_PERIOD=400000 -DE2E_MAXLEN=2048 -DE2E_EXPECT=2048 -DE2E_RUNCLK=400000 -DE2E_RECOVERY";; \
 	  esac; \
 	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \

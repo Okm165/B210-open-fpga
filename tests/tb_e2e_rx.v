@@ -297,7 +297,11 @@ module tb_e2e_rx;
       $display("E2E: %0d packets, %0d incomplete; peak |I|=%0d |Q|=%0d (expect %0d, rail 32767), rail hits %0d",
                packets, short_packets, max_i, max_q, 16*AMP, rail_hits);
 `endif
-      $display("E2E: framer full events (dropped samples) = %0d", full_events);
+      // NOTE: this counts overflow EPISODES (rising edges of `full`), not
+      // samples.  A long stall is one episode however many samples it costs,
+      // and a drop can also happen without `full` ever toggling.  Never read
+      // this as a sample count; use the word count against the ideal rate.
+      $display("E2E: framer-full episodes (NOT a sample count) = %0d", full_events);
 `ifdef E2E_RECOVERY
       $display("E2E: last 100000 clocks carried %0d words (%.3f words/clk)",
                tail_words, tail_words/100000.0);
@@ -309,6 +313,17 @@ module tb_e2e_rx;
          $display("E2E: FAIL - throughput below requirement");
          fails = fails + 1;
       end
+`endif
+`ifdef E2E_NOLOSS
+      // A single stall shorter than the receive buffer must cost nothing at
+      // all: the same number of words leaves the box as with no stall.
+      if (words*1.0/RUNCLK < 0.649) begin
+         $display("E2E: FAIL - a %0d-clock stall lost samples (%0d words)",
+                  `STALL_CLKS, words);
+         fails = fails + 1;
+      end else
+         $display("E2E: zero loss across a %0d-clock (%.0f us) stall",
+                  `STALL_CLKS, `STALL_CLKS/100.0);
 `endif
 `ifdef E2E_RECOVERY
       // The overflow itself is expected here; the link must return to rate.
