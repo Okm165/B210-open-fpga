@@ -10,7 +10,8 @@
 //
 // Measured (host band edge = 0.5 fs_in):
 //   bypass, total 1:        -0.01 dB at every bin
-//   one halfband, total 2:  -0.01 dB or better, image <= -80 dBc
+//   one halfband, total 2:  -0.01 dB or better, image <= -80 dBc (cfg 1 =
+//                           hb2, cfg 4 = hb1; both instances measured)
 //   two halfbands, total 4: -0.01 dB or better, image <= -81 dBc
 //   two halfbands, CIC 4:   -0.01 .. -0.13 dB, image <= -81 dBc
 //
