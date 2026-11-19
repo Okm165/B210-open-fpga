@@ -77,6 +77,23 @@ module tb_capture;
       end
    end
 
+   // ---- converter model -------------------------------------------------
+   // The AD9361 is a 12-bit part.  On the transmit side the FPGA hands it a
+   // 12-bit word (dac_slice rounds the 24-bit datapath word to 12 bits); on
+   // the receive side it returns 12 bits, which the datapath sees as a 24-bit
+   // word with the low 12 bits zero.  With -DCONV the loop runs through those
+   // two quantisers, which is what hardware does and simulation otherwise
+   // flatters.
+   function signed [23:0] q12(input signed [23:0] x);
+      reg signed [23:0] a, m;
+      begin
+         a = (x < 0) ? -x : x;
+         m = (a + 24'sd2048) >>> 12;
+         if (m > 24'sd2047) m = 24'sd2047;
+         q12 = (x < 0) ? -(m <<< 12) : (m <<< 12);
+      end
+   endfunction
+
    reg clk = 0; always #5 clk = ~clk;
    reg rst = 1;
 
@@ -126,30 +143,46 @@ module tb_capture;
    wire signed [23:0] ant1_i = $signed(tx1_i), ant1_q = $signed(tx1_q);
 `endif
 
+`ifdef CONV
+   wire signed [23:0] dac0_i = q12(ant0_i), dac0_q = q12(ant0_q);
+   wire signed [23:0] dac1_i = q12(ant1_i), dac1_q = q12(ant1_q);
+`else
+   wire signed [23:0] dac0_i = ant0_i, dac0_q = ant0_q;
+   wire signed [23:0] dac1_i = ant1_i, dac1_q = ant1_q;
+`endif
+
    always @(posedge clk) begin
       for (di = D-1; di > 0; di = di - 1) begin
          d0i[di] <= d0i[di-1]; d0q[di] <= d0q[di-1];
          d1i[di] <= d1i[di-1]; d1q[di] <= d1q[di-1];
       end
-      d0i[0] <= ant0_i; d0q[0] <= ant0_q;
-      d1i[0] <= ant1_i; d1q[0] <= ant1_q;
+      d0i[0] <= dac0_i; d0q[0] <= dac0_q;
+      d1i[0] <= dac1_i; d1q[0] <= dac1_q;
    end
 
-   wire signed [23:0] air0_i = ant0_i - (d0i[D-1] / beta_den) + (ant1_i / alpha_den);
-   wire signed [23:0] air0_q = ant0_q - (d0q[D-1] / beta_den) + (ant1_q / alpha_den);
-   wire signed [23:0] air1_i = ant1_i - (d1i[D-1] / beta_den) + (ant0_i / alpha_den);
-   wire signed [23:0] air1_q = ant1_q - (d1q[D-1] / beta_den) + (ant0_q / alpha_den);
+   wire signed [23:0] air0_i = dac0_i - (d0i[D-1] / beta_den) + (dac1_i / alpha_den);
+   wire signed [23:0] air0_q = dac0_q - (d0q[D-1] / beta_den) + (dac1_q / alpha_den);
+   wire signed [23:0] air1_i = dac1_i - (d1i[D-1] / beta_den) + (dac0_i / alpha_den);
+   wire signed [23:0] air1_q = dac1_q - (d1q[D-1] / beta_den) + (dac0_q / alpha_den);
+
+`ifdef CONV
+   wire signed [23:0] adc0_i = q12(air0_i), adc0_q = q12(air0_q);
+   wire signed [23:0] adc1_i = q12(air1_i), adc1_q = q12(air1_q);
+`else
+   wire signed [23:0] adc0_i = air0_i, adc0_q = air0_q;
+   wire signed [23:0] adc1_i = air1_i, adc1_q = air1_q;
+`endif
 
    ddc_chain #(.BASE(0), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) rx0 (
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(r0_stb), .set_addr(r0_addr), .set_data(r0_data),
-      .rx_fe_i(air0_i), .rx_fe_q(air0_q),
+      .rx_fe_i(adc0_i), .rx_fe_q(adc0_q),
       .sample(rx0_sample), .run(1'b1), .strobe(rx0_strobe), .debug());
 
    ddc_chain #(.BASE(0), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) rx1 (
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(r1_stb), .set_addr(r1_addr), .set_data(r1_data),
-      .rx_fe_i(air1_i), .rx_fe_q(air1_q),
+      .rx_fe_i(adc1_i), .rx_fe_q(adc1_q),
       .sample(rx1_sample), .run(1'b1), .strobe(rx1_strobe), .debug());
 
 `ifdef REVERSE
@@ -222,7 +255,15 @@ module tb_capture;
       fd_rxmix  = $fopen("cap_rev_rx_mix.txt", "w");
       fd_rxhost = $fopen("cap_rev_rx_host.txt","w");
 `else
-   `ifdef X2
+   `ifdef CONV
+      fd_host   = $fopen("cap_conv_host.txt",   "w");
+      fd_hb     = $fopen("cap_conv_tx_hb.txt",  "w");
+      fd_mix    = $fopen("cap_conv_tx_mix.txt", "w");
+      fd_pins   = $fopen("cap_conv_tx_pins.txt","w");
+      fd_air    = $fopen("cap_conv_air.txt",    "w");
+      fd_rxmix  = $fopen("cap_conv_rx_mix.txt", "w");
+      fd_rxhost = $fopen("cap_conv_rx_host.txt","w");
+   `elsif X2
       fd_host   = $fopen("cap_fwd_x2_host.txt",   "w");
       fd_hb     = $fopen("cap_fwd_x2_tx_hb.txt",  "w");
       fd_mix    = $fopen("cap_fwd_x2_tx_mix.txt", "w");
@@ -245,19 +286,35 @@ module tb_capture;
    always @(posedge clk) begin
       if (dump_en) begin
 `ifdef REVERSE
-         $fwrite(fd_air,    "%0d %0d\n", $signed(air0_i),  $signed(air0_q));
-         $fwrite(fd_rxmix,  "%0d %0d\n", $signed(rx0.pipe_i), $signed(rx0.pipe_q));
-         $fwrite(fd_rxhost, "%0d %0d\n", $signed(rx0_sample[31:16]), $signed(rx0_sample[15:0]));
-         $fwrite(fd_hb,     "%0d %0d\n", $signed(tx0.i_interp), $signed(tx0.q_interp));
-         $fwrite(fd_mix,    "%0d %0d\n", $signed(tx0.da_r), $signed(tx0.db_r));
-         $fwrite(fd_pins,   "%0d %0d\n", $signed(tx0_i), $signed(tx0_q));
+`ifdef CONV
+         $fwrite(fd_air,    "%0d %0d\n", $signed(adc0_i),  $signed(adc0_q));
 `else
          $fwrite(fd_air,    "%0d %0d\n", $signed(air0_i),  $signed(air0_q));
+`endif
          $fwrite(fd_rxmix,  "%0d %0d\n", $signed(rx0.pipe_i), $signed(rx0.pipe_q));
          $fwrite(fd_rxhost, "%0d %0d\n", $signed(rx0_sample[31:16]), $signed(rx0_sample[15:0]));
          $fwrite(fd_hb,     "%0d %0d\n", $signed(tx0.i_interp), $signed(tx0.q_interp));
          $fwrite(fd_mix,    "%0d %0d\n", $signed(tx0.da_r), $signed(tx0.db_r));
+`ifdef CONV
+         $fwrite(fd_pins,   "%0d %0d\n", $signed(dac0_i), $signed(dac0_q));
+`else
          $fwrite(fd_pins,   "%0d %0d\n", $signed(tx0_i), $signed(tx0_q));
+`endif
+`else
+`ifdef CONV
+         $fwrite(fd_air,    "%0d %0d\n", $signed(adc0_i),  $signed(adc0_q));
+`else
+         $fwrite(fd_air,    "%0d %0d\n", $signed(air0_i),  $signed(air0_q));
+`endif
+         $fwrite(fd_rxmix,  "%0d %0d\n", $signed(rx0.pipe_i), $signed(rx0.pipe_q));
+         $fwrite(fd_rxhost, "%0d %0d\n", $signed(rx0_sample[31:16]), $signed(rx0_sample[15:0]));
+         $fwrite(fd_hb,     "%0d %0d\n", $signed(tx0.i_interp), $signed(tx0.q_interp));
+         $fwrite(fd_mix,    "%0d %0d\n", $signed(tx0.da_r), $signed(tx0.db_r));
+`ifdef CONV
+         $fwrite(fd_pins,   "%0d %0d\n", $signed(dac0_i), $signed(dac0_q));
+`else
+         $fwrite(fd_pins,   "%0d %0d\n", $signed(tx0_i), $signed(tx0_q));
+`endif
          if (tx0.strobe_hb1)
            $fwrite(fd_host, "%0d %0d\n", $signed(tx0_sample[31:16]), $signed(tx0_sample[15:0]));
 `endif
@@ -266,18 +323,31 @@ module tb_capture;
 
    // channel 1 is dumped through a second set of handles for the isolation
    // measurement: rx1 host and tx1 pins only, so the file count stays small.
+   integer fd_dac, fd_adc;
+
    integer fd_pins1, fd_rxhost1;
    initial begin
 `ifdef REVERSE
       fd_pins1   = $fopen("cap_rev_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_rev_rx_host1.txt","w");
+      fd_dac     = $fopen("cap_rev_dac.txt", "w");
+      fd_adc     = $fopen("cap_rev_adc.txt", "w");
 `else
-   `ifdef X2
+   `ifdef CONV
+      fd_pins1   = $fopen("cap_conv_tx_pins1.txt", "w");
+      fd_rxhost1 = $fopen("cap_conv_rx_host1.txt","w");
+      fd_dac     = $fopen("cap_conv_dac.txt", "w");
+      fd_adc     = $fopen("cap_conv_adc.txt", "w");
+   `elsif X2
       fd_pins1   = $fopen("cap_fwd_x2_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_fwd_x2_rx_host1.txt","w");
+      fd_dac     = $fopen("cap_fwd_x2_dac.txt", "w");
+      fd_adc     = $fopen("cap_fwd_x2_adc.txt", "w");
    `else
       fd_pins1   = $fopen("cap_fwd_x1_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_fwd_x1_rx_host1.txt","w");
+      fd_dac     = $fopen("cap_fwd_x1_dac.txt", "w");
+      fd_adc     = $fopen("cap_fwd_x1_adc.txt", "w");
    `endif
 `endif
    end
@@ -285,6 +355,8 @@ module tb_capture;
       if (dump_en) begin
          $fwrite(fd_pins1,   "%0d %0d\n", $signed(tx1_i), $signed(tx1_q));
          $fwrite(fd_rxhost1, "%0d %0d\n", $signed(rx1_sample[31:16]), $signed(rx1_sample[15:0]));
+         $fwrite(fd_dac,     "%0d %0d\n", dac0_i, dac0_q);
+         $fwrite(fd_adc,     "%0d %0d\n", adc0_i, adc0_q);
       end
    end
 
@@ -314,6 +386,7 @@ module tb_capture;
       $fclose(fd_host); $fclose(fd_hb); $fclose(fd_mix); $fclose(fd_pins);
       $fclose(fd_air); $fclose(fd_rxmix); $fclose(fd_rxhost);
       $fclose(fd_pins1); $fclose(fd_rxhost1);
+      $fclose(fd_dac); $fclose(fd_adc);
       $display("CAPTURE: done (%0d clocks dumped)", CLKS);
       $finish;
    end

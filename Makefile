@@ -834,10 +834,13 @@ plots:
 	  -s tb_capture -o tb_cap_x2.vvp $(CAPTURE_TEST_SRCS)
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DREVERSE -I $(ROOT)/src/rtl/control \
 	  -s tb_capture -o tb_cap_rev.vvp $(CAPTURE_TEST_SRCS)
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DCONV -I $(ROOT)/src/rtl/control \
+	  -s tb_capture -o tb_cap_conv.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_x1.vvp  | grep CAPTURE
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_x2.vvp  | grep CAPTURE
 	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_rev.vvp | grep CAPTURE
-	cd $(ROOT) && $(PYTHON) scripts/plot-loop.py fwd_x1 fwd_x2 rev
+	cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_cap_conv.vvp | grep CAPTURE
+	cd $(ROOT) && python3 scripts/plot-loop.py fwd_x1 fwd_x2 rev conv
 	@echo "plots: $(ROOT)/build/plots/loop_*.png"
 
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \

@@ -347,6 +347,83 @@ def main(tag):
     print(f"  wrote {os.path.relpath(out_a)} and {os.path.relpath(out_b)}")
 
 
+def tone_fit(x, order=2):
+    """Residual of x against the 28 transmitted tones, and the fitted signal."""
+    n = len(x)
+    t = np.arange(n)
+    A = []
+    for kk in K0 + K1:
+        A += [np.exp(1j * 2 * np.pi * kk * t / L), np.exp(-1j * 2 * np.pi * kk * t / L)]
+    A = np.stack(A, axis=1)
+    sol, *_ = np.linalg.lstsq(A, x, rcond=None)
+    fit = A @ sol
+    return x - fit, fit
+
+
+def budget():
+    """The loss budget: digital-only loop versus the loop with 12-bit converters."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    tags = [("fwd_x1", "digital only (exact 24-bit interface)"),
+            ("conv", "with 12-bit DAC and ADC")]
+    fig, ax = plt.subplots(1, 3, figsize=(14, 4.4))
+    fig.suptitle("where the loop's error comes from: the datapath is not the limit, "
+                 "the 12-bit converters are", fontsize=11)
+    rows = []
+    for tag, label in tags:
+        out = load(os.path.join(base, f"cap_{tag}_rx_host.txt"))
+        if out is None:
+            continue
+        err, fit = tone_fit(out)
+        n = len(out)
+        E = np.fft.fftshift(np.fft.fft(err)) / n
+        f = np.fft.fftshift(np.fft.fftfreq(n, 1 / 61.44e6))
+        ref = np.sqrt(np.mean(np.abs(fit) ** 2))
+        ax[0].plot(f / 1e6, 20 * np.log10(np.maximum(np.abs(E) / ref, 1e-12)),
+                   lw=0.6, label=label)
+        rms = np.sqrt(np.mean(np.abs(err) ** 2))
+        rows.append((label, rms, 20 * np.log10(rms / ref),
+                     20 * np.log10(rms / 32768)))
+    ax[0].set_xlabel("MHz")
+    ax[0].set_ylabel("residual, dBc of the tones")
+    ax[0].set_title("residual spectrum, same signal, same fit", fontsize=9)
+    ax[0].legend(fontsize=7)
+    ax[0].grid(alpha=0.25, lw=0.4)
+    ax[0].set_ylim(-140, -40)
+    ax[0].tick_params(labelsize=7)
+
+    for j, (suf, name) in enumerate((("dac", "DAC word the chip sees"),
+                                     ("adc", "ADC word the chip returns"))):
+        w = load(os.path.join(base, f"cap_conv_{suf}.txt"))
+        codes = np.round(w.real / 4096.0)
+        a = ax[1 + j]
+        a.hist(np.clip(codes, -2048, 2047), bins=120, color="#1f4e79")
+        a.set_title(f"{name}: {len(np.unique(codes))} codes, peak "
+                    f"{int(np.abs(codes).max())}/2048, rms "
+                    f"{20*np.log10(max(np.std(codes)/2048,1e-12)):.1f} dBFS", fontsize=8.5)
+        a.set_xlabel("12-bit code")
+        a.set_ylabel("samples")
+        a.grid(alpha=0.25, lw=0.4)
+        a.tick_params(labelsize=7)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    out = os.path.join(base, "loop_loss_budget.png")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print("\n=== loss budget ===")
+    for label, rms, dbc, dbfs in rows:
+        print(f"  {label:38s} {rms:7.2f} LSB16 rms = {dbc:6.1f} dBc = {dbfs:6.1f} dBFS")
+    if len(rows) == 2:
+        print(f"  converter cost: {rows[1][2] - rows[0][2]:+.1f} dB")
+    print(f"  wrote {os.path.relpath(out)}")
+
+
 if __name__ == "__main__":
-    for t in (sys.argv[1:] or ["fwd_x1", "fwd_x2", "rev"]):
-        main(t)
+    args = sys.argv[1:] or ["fwd_x1", "fwd_x2", "rev", "conv"]
+    for t in args:
+        if t == "budget":
+            budget()
+        else:
+            main(t)
+    if "budget" not in args:
+        budget()
