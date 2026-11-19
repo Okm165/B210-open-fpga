@@ -931,6 +931,7 @@ plots-extra:
 	cd $(ROOT) && python3 scripts/plot-loop.py retune match clkmux
 	@echo "plots: $(ROOT)/build/plots/loop_retune.png loop_match.png loop_clkmux.png"
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
+	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:
