@@ -6,8 +6,7 @@
 
 module round_sd #(
   parameter WIDTH_IN   = 18,
-  parameter WIDTH_OUT  = 16,
-  parameter DISABLE_SD = 0
+  parameter WIDTH_OUT  = 16
 ) (
   input                      clk,
   input                      reset,
@@ -85,8 +84,7 @@ module round_sd #(
     .clk        (clk),
     .rst        (reset),
     .in1        (in),
-    .in2        ((DISABLE_SD == 0) ? (err_ext_01 + dither_ext)
-                                        : {WIDTH_IN{1'b0}}),
+    .in2        (err_ext_01 + dither_ext),
     .strobe_in  (strobe_in),
     .sum        (sum),
     .strobe_out (strobe_pre)

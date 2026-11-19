@@ -96,8 +96,7 @@ module duc_chain
    // untested legacy.
 	 // First stage of halfband interpolation filters. These run at a max CPO of 2 when CIC is bypassed and HB2 enabled.
 	 hb47_poly
-	   #(.WIDTH(18),
-	     .DEVICE(DEVICE))
+	   #(.WIDTH(18))
 	     hb1_i0
 	       (
 		.clk(clk),
@@ -110,8 +109,7 @@ module duc_chain
 		);
 
 	 hb47_poly
-	   #(.WIDTH(18),
-	     .DEVICE(DEVICE))
+	   #(.WIDTH(18))
 	     hb1_q0
 	       (
 		.clk(clk),
@@ -125,8 +123,7 @@ module duc_chain
 
 	 // Second stage of halfband interpolation filters. These run at a max CPO of 1 when CIC is bypassed.
 	 hb47_poly
-	   #(.WIDTH(18),
-	     .DEVICE(DEVICE))
+	   #(.WIDTH(18))
 	     hb2_i0
 	       (
 		.clk(clk),
@@ -139,8 +136,7 @@ module duc_chain
 		);
 
 	 hb47_poly
-	   #(.WIDTH(18),
-	     .DEVICE(DEVICE))
+	   #(.WIDTH(18))
 	     hb2_q0
 	       (
 		.clk(clk),

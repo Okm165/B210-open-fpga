@@ -66,6 +66,7 @@ UHD driver internals, RF performance of the AD9361 itself.
 | TX pin quantiser | `tb_dac_slice`, all 2^24 codes | round-half-even + saturate; saturation added after rounding was found to wrap the top 2047 codes to 0x800 |
 | TX DC gain vs rate | `tb_tx_dc` table in .context/dsp-audit.md | 1.00000 at every power-of-two rate; -1.48 dB at total 6/12, -0.21 dB at 20 (CIC contract) |
 | RX static transfer | all 4096 ADC codes, LO at DC | gain 15.9993/16, worst error 1.141 LSB16 (dither), no bias, no rail hit, control-bit map measured |
+| Dead code | every module name in scripts/sources.txt scanned against every .v file | `source_flow_control_legacy`, `add_then_mac`, `round_reg` removed; 3 unused parameters removed; 78 sources |
 | full build | - | hello.bin, idcode 0x3651093 |
 
 ## Operator error budget

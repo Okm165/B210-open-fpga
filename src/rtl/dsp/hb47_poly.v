@@ -40,8 +40,7 @@
 `default_nettype none
 
 module hb47_poly #(
-  parameter WIDTH  = 18,
-  parameter DEVICE = "7SERIES"
+  parameter WIDTH  = 18
 ) (
   input  wire               clk,
   input  wire               rst,

@@ -26,7 +26,7 @@ module tb_hb47_poly;
    reg signed [17:0] din = 0;
    wire signed [17:0] dout;
 
-   hb47_poly #(.WIDTH(18), .DEVICE("7SERIES")) dut
+   hb47_poly #(.WIDTH(18)) dut
      (.clk(clk), .rst(rst), .bypass(1'b0), .stb_in(stb_in),
       .data_in(din), .stb_out(stb_out), .data_out(dout));
 

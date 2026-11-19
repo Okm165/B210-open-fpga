@@ -16,7 +16,6 @@ src/rtl/control/synchronizer.v
 src/rtl/control/user_settings.v
 src/rtl/dsp/add2_and_clip_reg.v
 src/rtl/dsp/add2_and_clip.v
-src/rtl/dsp/add_then_mac.v
 src/rtl/dsp/cic_comp.v
 src/rtl/dsp/cic_interp.v
 src/rtl/dsp/cic_int_shifter.v
@@ -28,7 +27,6 @@ src/rtl/dsp/ddc_chain.v
 src/rtl/dsp/dds_lut.v
 src/rtl/dsp/hb47_poly.v
 src/rtl/dsp/duc_chain.v
-src/rtl/dsp/round_reg.v
 src/rtl/dsp/round_sd.v
 src/rtl/dsp/round.v
 src/rtl/dsp/sign_extend.v
@@ -48,7 +46,6 @@ src/rtl/gpif2/fifo64_to_gpif2.v
 src/rtl/gpif2/gpif2_error_checker.v
 src/rtl/gpif2/gpif2_slave_fifo32.v
 src/rtl/gpif2/gpif2_to_fifo64.v
-src/rtl/packet_proc_200/source_flow_control_legacy.v
 src/rtl/radio_200/radio_legacy.v
 src/rtl/timing/pps_generator.v
 src/rtl/timing/time_compare.v

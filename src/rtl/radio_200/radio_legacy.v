@@ -14,7 +14,6 @@ module radio_legacy
     parameter RADIO_FIFO_SIZE = 13,
     parameter SAMPLE_FIFO_SIZE = 11,
     parameter FP_GPIO = 0,
-    parameter SOURCE_FLOW_CONTROL = 0,
     parameter USER_SETTINGS = 0,
     parameter DEVICE = "SPARTAN6"
   )
@@ -293,55 +292,21 @@ endgenerate
    ///////////////////////////////////////////////////////////////////////////////////////
    // Source flow control
 
-generate
-   if (SOURCE_FLOW_CONTROL == 1) begin
+   // The receive stream is passed through unchanged.  There is no source
+   // flow control block: the FPGA cannot backpressure the ADC, so the packet
+   // gate and the sample FIFO are the only flow control in the design, and
+   // both radios ran with SOURCE_FLOW_CONTROL=0 anyway.
+   assign ctrl_tdata_proc  = ctrl_tdata_r;
+   assign ctrl_tlast_proc  = ctrl_tlast_r;
+   assign ctrl_tvalid_proc = ctrl_tvalid_r;
+   assign ctrl_tready_r    = ctrl_tready_proc;
 
-      localparam SID_PREFIX_CTRL = 2'd0;
-      localparam SID_PREFIX_FC   = 2'd1;
+   assign rx_postfc_tdata_r   = rx_prefc_tdata_r;
+   assign rx_postfc_tlast_r   = rx_prefc_tlast_r;
+   assign rx_postfc_tvalid_r  = rx_prefc_tvalid_r;
+   assign rx_prefc_tready_r   = rx_postfc_tready_r;
 
-      wire [63:0]    ctrl_tdata_fc;
-      wire           ctrl_tready_fc, ctrl_tvalid_fc;
-      wire           ctrl_tlast_fc;
-
-      wire [63:0]    ctrl_hdr;
-      wire [1:0]     ctrl_dest;
-
-      assign ctrl_dest = (ctrl_hdr[1:0] == SID_PREFIX_FC) ? 2'd1 : 2'd0;
-
-      axi_demux4 #(.ACTIVE_CHAN(4'b0011), .WIDTH(64), .BUFFER(1)) demux_proc_fc
-        (.clk(radio_clk), .reset(radio_rst), .clear(1'b0),
-         .header(ctrl_hdr), .dest(ctrl_dest),
-         .i_tdata(ctrl_tdata_r), .i_tlast(ctrl_tlast_r), .i_tvalid(ctrl_tvalid_r), .i_tready(ctrl_tready_r),                  //Input
-         .o0_tdata(ctrl_tdata_proc), .o0_tlast(ctrl_tlast_proc), .o0_tvalid(ctrl_tvalid_proc), .o0_tready(ctrl_tready_proc),  //Settings/Readback
-         .o1_tdata(ctrl_tdata_fc), .o1_tlast(ctrl_tlast_fc), .o1_tvalid(ctrl_tvalid_fc), .o1_tready(ctrl_tready_fc),          //Flow control
-         .o2_tdata(), .o2_tlast(), .o2_tvalid(), .o2_tready(1'b0),                                                            //Unused
-         .o3_tdata(), .o3_tlast(), .o3_tvalid(), .o3_tready(1'b0));                                                           //Unused
-
-      source_flow_control_legacy #(.BASE(SR_RX_CTRL+6)) rx_sfc
-        (.clk(radio_clk), .reset(radio_rst), .clear(1'b0),
-         .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
-         .fc_tdata(ctrl_tdata_fc), .fc_tlast(ctrl_tlast_fc), .fc_tvalid(ctrl_tvalid_fc), .fc_tready(ctrl_tready_fc),                      //Flow control In
-         .in_tdata(rx_prefc_tdata_r), .in_tlast(rx_prefc_tlast_r), .in_tvalid(rx_prefc_tvalid_r), .in_tready(rx_prefc_tready_r),          //RX Input
-         .out_tdata(rx_postfc_tdata_r), .out_tlast(rx_postfc_tlast_r), .out_tvalid(rx_postfc_tvalid_r), .out_tready(rx_postfc_tready_r),  //RX Output
-         .busy(rx_flow_ctrl_busy));
-
-   end else begin    //for SOURCE_FLOW_CONTROL == 1
-
-      assign ctrl_tdata_proc  = ctrl_tdata_r;
-      assign ctrl_tlast_proc  = ctrl_tlast_r;
-      assign ctrl_tvalid_proc = ctrl_tvalid_r;
-      assign ctrl_tready_r    = ctrl_tready_proc;
-
-      assign rx_postfc_tdata_r   = rx_prefc_tdata_r;
-      assign rx_postfc_tlast_r   = rx_prefc_tlast_r;
-      assign rx_postfc_tvalid_r  = rx_prefc_tvalid_r;
-      assign rx_prefc_tready_r   = rx_postfc_tready_r;
-
-      assign rx_flow_ctrl_busy   = 1'b0;
-
-   end
-
-endgenerate
+   assign rx_flow_ctrl_busy   = 1'b0;
 
    // /////////////////////////////////////////////////////////////////////////////////
    //  TX Chain

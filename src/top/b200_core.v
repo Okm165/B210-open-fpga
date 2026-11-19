@@ -304,7 +304,6 @@ module b200_core
       .RADIO_FIFO_SIZE(RADIO_FIFO_SIZE),
       .SAMPLE_FIFO_SIZE(SAMPLE_FIFO_SIZE),
       .FP_GPIO(1),
-      .SOURCE_FLOW_CONTROL(0),
       .USER_SETTINGS(0),
       .DEVICE("7SERIES")
    ) radio_0 (
@@ -334,7 +333,6 @@ module b200_core
       .RADIO_FIFO_SIZE(RADIO_FIFO_SIZE),
       .SAMPLE_FIFO_SIZE(SAMPLE_FIFO_SIZE),
       .FP_GPIO(0),
-      .SOURCE_FLOW_CONTROL(0),
       .USER_SETTINGS(0),
       .DEVICE("7SERIES")
    ) radio_1 (
