@@ -198,6 +198,11 @@ GPIF_CDC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_gpif_cdc.v
 
+# TX underrun: starving the host must never present a stale sample.
+TX_UNDERRUN_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_tx_underrun.v
+
 DUC_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_duc_chain.v
@@ -687,6 +692,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_gpif_cdc.log tb_gpif_cdc.vvp
 	@grep -q 'GPIF-CDC: PASS' $(SIM_DIR)/tb_gpif_cdc.log || \
 	  { echo "ERROR: FX3 async boundary corrupts packets; see $(SIM_DIR)/tb_gpif_cdc.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_tx_underrun -o tb_tx_underrun.vvp $(TX_UNDERRUN_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_tx_underrun.log tb_tx_underrun.vvp
+	@grep -q 'TX-UNDERRUN: PASS' $(SIM_DIR)/tb_tx_underrun.log || \
+	  { echo "ERROR: TX underrun can present stale samples; see $(SIM_DIR)/tb_tx_underrun.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_axi_packet_gate -o tb_axi_packet_gate.vvp $(GATE_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_packet_gate.log tb_axi_packet_gate.vvp
