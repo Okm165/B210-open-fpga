@@ -217,15 +217,16 @@ TX_PAIRING_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/tb_tx_pairing.v
 
 # TX -> RX digital loopback: one gain, one phase convention, no conjugate.
-ROUNDTRIP_TEST_SRCS := $(ELAB_SRCS) \
-  $(ROOT)/tests/sim/xilinx_prim_sim.v \
-  $(ROOT)/tests/tb_roundtrip.v
-
 # Two-channel bidirectional loopback: both datapaths, both directions, both
 # channels at once.
 LOOP2_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_loopback2.v
+
+# Whole-radio loop with an explicit air model (delay, multipath, noise, coupling).
+AIR_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_airloop.v
 
 # Two-tone third-order intermodulation through the complete TX->RX path.
 IMD3_TEST_SRCS := $(ELAB_SRCS) \
@@ -794,11 +795,6 @@ test-data:
 	@grep -q 'TX-PAIR: PASS' $(SIM_DIR)/tb_tx_pairing.log || \
 	  { echo "ERROR: TX sample pairing broken; see $(SIM_DIR)/tb_tx_pairing.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
-	  -s tb_roundtrip -o tb_roundtrip.vvp $(ROUNDTRIP_TEST_SRCS)
-	cd $(SIM_DIR) && $(VVP) -l tb_roundtrip.log tb_roundtrip.vvp
-	@grep -q 'ROUNDTRIP: PASS' $(SIM_DIR)/tb_roundtrip.log || \
-	  { echo "ERROR: TX->RX loopback not transparent; see $(SIM_DIR)/tb_roundtrip.log"; exit 1; }
-	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_loopback2 -o tb_loopback2.vvp $(LOOP2_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_loopback2.log tb_loopback2.vvp
 	@grep -q 'LOOP2-FWD: PASS' $(SIM_DIR)/tb_loopback2.log || \
@@ -808,6 +804,11 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_loopback2_rev.log tb_loopback2_rev.vvp
 	@grep -q 'LOOP2-REV: PASS' $(SIM_DIR)/tb_loopback2_rev.log || \
 	  { echo "ERROR: two-channel RX->TX loopback failed; see $(SIM_DIR)/tb_loopback2_rev.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_airloop -o tb_airloop.vvp $(AIR_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_airloop.log tb_airloop.vvp
+	@grep -q 'AIR: PASS' $(SIM_DIR)/tb_airloop.log || \
+	  { echo "ERROR: air-path loop failed; see $(SIM_DIR)/tb_airloop.log"; exit 1; }
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_imd3 -o tb_imd3.vvp $(IMD3_TEST_SRCS)
 	cd $(SIM_DIR) && $(VVP) -l tb_imd3.log tb_imd3.vvp
