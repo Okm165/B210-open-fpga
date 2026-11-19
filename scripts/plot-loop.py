@@ -376,9 +376,11 @@ def budget():
     for tag, label in tags:
         # cap_convbase_* is the standard-amplitude capture kept by `make plots`;
         # cap_conv_* may hold the level sweep's last amplitude.
-        cand = [os.path.join(base, f"cap_convbase_rx_host.txt"),
-                os.path.join(base, f"cap_{tag}_rx_host.txt")]
-        out = next((x for x in map(load, cand) if x is not None), None)
+        cands = [f"cap_{tag}_rx_host.txt"]
+        if tag == "conv":
+            cands.insert(0, "cap_convbase_rx_host.txt")
+        out = next((x for x in map(load, [os.path.join(base, c) for c in cands])
+                    if x is not None), None)
         if out is None:
             continue
         err, fit = tone_fit(out)
