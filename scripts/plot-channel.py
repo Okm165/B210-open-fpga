@@ -79,14 +79,24 @@ def fit_gain(x, y, maxlag=64):
     return best
 
 
+def tone_fit(x):
+    n = len(x)
+    t = np.arange(n)
+    A = []
+    for kk in K0 + K1:
+        A += [np.exp(2j * np.pi * kk * t / L), np.exp(-2j * np.pi * kk * t / L)]
+    A = np.stack(A, axis=1)
+    sol, *_ = np.linalg.lstsq(A, x, rcond=None)
+    return A @ sol, x - A @ sol
+
+
 def tone(x, k, sign, t):
     return np.mean(x * np.exp(-2j * np.pi * sign * k * t / L))
 
 
 def main():
-    fig, axs = plt.subplots(2, 2, figsize=(13.5, 8.8))
-    fig.suptitle("mid-air change is the channel, bit for bit; each radio hop is one pure gain",
-                 fontsize=12)
+    fig, axs = plt.subplots(3, 2, figsize=(13.5, 12.8))
+    fig.suptitle("mid-air change is the channel, bit for bit; each radio hop is one pure gain; the one line is a bench-precision artifact", fontsize=11)
 
     # ---- 1. bit-exact channel ---------------------------------------------
     p0, p1 = ld_raw("cap_fwd_x1_tx_pins.txt"), ld_raw("cap_fwd_x1_tx_pins1.txt")
@@ -222,6 +232,57 @@ def main():
     dax.legend(fontsize=6.5)
     dax.grid(alpha=0.25, lw=0.4)
     dax.tick_params(labelsize=7)
+
+    # ---- 5. the only coherent line: RX input truncation bias -------------
+    e5 = axs[2][0]
+    rows5 = []
+    for tag, lab in (("fwd_x1", "digital loop"), ("conv", "12-bit converters")):
+        aa = ld(f"cap_{tag}_air.txt")
+        xt = np.floor(aa.real / 128.0) * 128.0 + 1j * np.floor(aa.imag / 128.0) * 128.0
+        extra = np.mean(xt) - np.mean(aa)
+        sig = np.sqrt(np.mean(np.abs(aa) ** 2))
+        yy = ld(f"cap_{tag}_rx_host.txt")
+        fit5, err5 = tone_fit(yy)
+        E5 = np.abs(np.fft.fft(err5)) / len(err5)
+        f5 = np.fft.fftfreq(len(err5), 1 / 61.44e6)
+        i5 = int(np.argmin(np.abs(f5 + 61.44e6 / 8)))
+        spur = db(E5[i5]) - db(np.sqrt(np.mean(np.abs(fit5) ** 2)))
+        rows5.append((lab, db(extra) - db(sig), spur))
+        print(f"  {lab}: extra DC from [24:7] = {abs(extra):.2f} LSB24 "
+              f"({db(extra) - db(sig):.1f} dBc); measured line at the LO {spur:.1f} dBc")
+    e5.barh(np.arange(len(rows5)) * 1.0 + 0.2, [r[1] for r in rows5], height=0.38,
+            color="#7f7f7f", label="extra DC from the RX input truncation")
+    e5.barh(np.arange(len(rows5)) * 1.0 - 0.2, [r[2] for r in rows5], height=0.38,
+            color="#c00000", label="line measured at the LO")
+    e5.set_yticks(np.arange(len(rows5)))
+    e5.set_yticklabels([r[0] for r in rows5], fontsize=8)
+    e5.set_xlim(-100, -60)
+    e5.set_xlabel("dBc of the signal")
+    e5.set_title("the one coherent line = the RX input's truncation bias;\n"
+                 "left-justified 12-bit data has no low bits to bias", fontsize=9)
+    e5.grid(alpha=0.25, lw=0.4, axis="x")
+    e5.legend(fontsize=6.5, loc="lower right")
+
+    # ---- 6. and it is absent for left-justified 12-bit data ---------------
+    e6 = axs[2][1]
+    for tag, lab in (("fwd_x1", "digital loop (full precision channel)"),
+                     ("conv", "with 12-bit DAC and ADC")):
+        yy = ld(f"cap_{tag}_rx_host.txt")
+        fit6, err6 = tone_fit(yy)
+        E6 = np.abs(np.fft.fft(err6)) / len(err6)
+        f6 = np.fft.fftfreq(len(err6), 1 / 61.44e6)
+        sig6 = db(np.sqrt(np.mean(np.abs(fit6) ** 2)))
+        e6.plot(f6 / 1e6, db(E6) - sig6, lw=0.7, label=lab)
+    e6.axvline(-61.44 / 8, color="k", ls=":", lw=0.8)
+    e6.text(-7.55, -52, "LO", fontsize=7, rotation=90, va="top")
+    e6.set_ylim(-115, -45)
+    e6.set_xlabel("MHz")
+    e6.set_ylabel("residual, dBc")
+    e6.set_title("a real 12-bit ADC returns left-justified data (low bits zero),\n"
+                 "so the bias - and this line - is structurally absent", fontsize=9)
+    e6.legend(fontsize=6.5)
+    e6.grid(alpha=0.25, lw=0.4)
+    e6.tick_params(labelsize=7)
 
     fig.tight_layout(rect=[0, 0, 1, 0.94])
     out_p = os.path.join(BASE, "loop_channel_model.png")
