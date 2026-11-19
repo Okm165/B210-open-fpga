@@ -906,11 +906,12 @@ plots:
 plots-levels:
 	@mkdir -p $(ROOT)/build/plots
 	@ln -sfn $(ROOT)/src $(ROOT)/build/plots/src
-	@for a in 3500 7000 12000 16000; do \
+	@for a in 3500 7000 12000 16000 24000 28000 32000; do \
 	  cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DCONV -DAMPDEF=$$a.0 \
 	    -I $(ROOT)/src/rtl/control -s tb_capture -o tb_lvl_$$a.vvp $(CAPTURE_TEST_SRCS) || exit 1; \
 	  cd $(ROOT)/build/plots && $(VVP) -n $(SIM_DIR)/tb_lvl_$$a.vvp > /dev/null || exit 1; \
 	  cp -f cap_conv_rx_host.txt cap_lvl_$${a}_rx.txt; \
+	  cp -f cap_conv_host.txt    cap_lvl_$${a}_host.txt; \
 	  cp -f cap_conv_dac.txt     cap_lvl_$${a}_dac.txt; \
 	  cp -f cap_conv_adc.txt     cap_lvl_$${a}_adc.txt; \
 	done

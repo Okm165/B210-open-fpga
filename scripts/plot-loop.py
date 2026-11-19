@@ -471,20 +471,23 @@ def budget():
 def levels():
     """SNR against input level with the real converters in the loop.
 
-    Four captures of the same 28-tone signal at -25, -19, -13 and -7 dBFS rms.
-    The residual is measured against the transmitted tones, the clipping
-    fraction against the 12-bit code range, so the curve shows where the
-    converters are actually being used and where they run out.
+    Seven captures of the same 28-tone signal, from -25 dBFS rms to beyond the
+    transmitter rail.  The residual is measured against the transmitted tones
+    and the clipping fraction against the 12-bit code range, so the curve shows
+    where the converters are actually being used, where they run out, and what
+    the rail costs - the headroom question asked from the deployment side.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
-    amps = [3500, 7000, 12000, 16000]
+    amps = [3500, 7000, 12000, 16000, 24000, 28000, 32000]
+    HOST = 32767.0
     amps_r = [7000, 14000, 21000, 28000]
     pts = []
     for a in amps:
         out = load(os.path.join(base, f"cap_lvl_{a}_rx.txt"))
         dac = load(os.path.join(base, f"cap_lvl_{a}_dac.txt"))
         adc = load(os.path.join(base, f"cap_lvl_{a}_adc.txt"))
+        hst = load(os.path.join(base, f"cap_lvl_{a}_host.txt"))
         if out is None or dac is None:
             continue
         err, fit = tone_fit(out)
@@ -494,9 +497,16 @@ def levels():
         clip = 100.0 * np.mean(np.abs(codes) >= 2048)
         acodes = np.round(adc.real / 4096.0) if adc is not None else np.zeros(1)
         aclip = 100.0 * np.mean(np.abs(acodes) >= 2048)
-        pts.append((a, 20 * np.log10(sig / 32768), 20 * np.log10(res / 32768),
-                    20 * np.log10(sig / res), clip, aclip,
-                    int(np.abs(codes).max()), len(np.unique(codes))))
+        # The 16-bit host word is the first thing in the chain that can run out:
+        # it is where the bench's stimulus lives, and the chain below it maps
+        # host full scale to the DAC rail one-to-one.
+        hclip = (100.0 * np.mean((np.abs(hst.real) >= HOST - 1) |
+                                 (np.abs(hst.imag) >= HOST - 1))) if hst is not None else 0.0
+        pts.append(dict(a=a, sig=20 * np.log10(sig / 32768),
+                        res=20 * np.log10(res / 32768),
+                        snr=20 * np.log10(sig / res), dclip=clip, aclip=aclip,
+                        peak=int(np.abs(codes).max()), ncodes=len(np.unique(codes)),
+                        hclip=hclip))
 
     if len(pts) != len(amps):
         # No captures for this page in this run (they come from
@@ -529,23 +539,38 @@ def levels():
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
     fig.suptitle("converter utilisation: 12-bit converters in the forward loop, "
                  "transmitter headroom in the reverse loop", fontsize=11)
-    lv = [p[1] for p in pts]
-    ax[0].plot(lv, [p[3] for p in pts], "o-", color="#1f4e79", label="SNR (signal / residual)")
-    ax[0].plot(lv, [-p[2] for p in pts], "s--", color="#c00000", label="residual, dBFS")
+    lv = [p["sig"] for p in pts]
+    ax[0].plot(lv, [p["snr"] for p in pts], "o-", color="#1f4e79",
+               label="SNR (signal / residual)")
+    ax[0].plot(lv, [-p["res"] for p in pts], "s--", color="#c00000",
+               label="residual, dBFS")
     ax[0].set_xlabel("signal rms, dBFS")
     ax[0].set_ylabel("dB")
-    ax[0].set_title("residual is flat (converter quantisation): SNR rises 1:1 with level",
-                    fontsize=9)
+    knee = next((p for p in pts if p["hclip"] > 0.001 or p["dclip"] > 0.001), None)
+    last = [p for p in pts if p["hclip"] <= 0.001 and p["dclip"] <= 0.001][-1]
+    ax[0].set_title(f"residual flat to {last['sig']:.1f} dBFS rms, then the "
+                    f"host word clips", fontsize=9)
     ax[0].grid(alpha=0.25, lw=0.4)
     ax[0].legend(fontsize=7)
     ax[0].tick_params(labelsize=7)
-    ax[1].plot(lv, [p[4] for p in pts], "o-", color="#1f4e79", label="DAC word")
-    ax[1].plot(lv, [p[5] for p in pts], "s--", color="#c00000", label="ADC word")
+    ax[1].plot(lv, [p["dclip"] for p in pts], "o-", color="#1f4e79", label="12-bit DAC word")
+    ax[1].plot(lv, [p["hclip"] for p in pts], "^-", color="#7030a0",
+               label="16-bit host word")
+    ax[1].plot(lv, [p["aclip"] for p in pts], "s--", color="#c00000", label="12-bit ADC word")
     ax[1].set_xlabel("signal rms, dBFS")
     ax[1].set_ylabel("% of samples at the rail")
-    ax[1].set_title("clipping fraction of the 12-bit words (zero over the whole range)",
-                    fontsize=9)
-    ax[1].set_ylim(-0.5, 0.5)
+    if knee is None:
+        ax[1].set_title("clipping fraction of each word (none in this range)", fontsize=9)
+        ax[1].set_ylim(-0.5, 0.5)
+    else:
+        top = max(max(p["hclip"], p["dclip"], p["aclip"]) for p in pts)
+        ax[1].set_title(f"each word's saturation: the 16-bit host word runs out first "
+                        f"({knee['sig']:.1f} dBFS)", fontsize=9)
+        ax[1].set_ylim(-0.05 * top - 0.02, 1.15 * top)
+        ax[1].text(0.02, 0.88, f"last clean point {last['sig']:.1f} dBFS rms: "
+                               f"DAC {last['peak']}/2048 ({100*last['peak']/2048:.0f} %), "
+                               f"host {last['hclip']:.2f} % at full scale",
+                   transform=ax[1].transAxes, fontsize=6.3, va="top")
     ax[1].legend(fontsize=7)
     ax[1].grid(alpha=0.25, lw=0.4)
     ax[1].tick_params(labelsize=7)
@@ -565,10 +590,19 @@ def levels():
     fig.savefig(out, dpi=110)
     plt.close(fig)
     print("\n=== level sweep (12-bit converters in the loop) ===")
-    for a, sig, res, snr, clip, aclip, peak, ncodes in pts:
-        print(f"  tone-set amplitude {a:6d}: signal {sig:6.1f} dBFS, residual {res:6.1f} dBFS, "
-              f"SNR {snr:5.1f} dB, DAC peak {peak:4d}/2048, {ncodes:4d} codes, "
-              f"DAC clip {clip:5.2f} %, ADC clip {aclip:5.2f} %")
+    for p in pts:
+        print(f"  tone-set amplitude {p['a']:6d}: signal {p['sig']:6.1f} dBFS, "
+              f"residual {p['res']:6.1f} dBFS, SNR {p['snr']:5.1f} dB, "
+              f"DAC peak {p['peak']:4d}/2048, {p['ncodes']:4d} codes, "
+              f"clip: host {p['hclip']:5.2f} %, DAC {p['dclip']:5.2f} %, "
+              f"ADC {p['aclip']:5.2f} %")
+    if knee is not None:
+        print(f"  headroom: clean to {last['sig']:.1f} dBFS rms (DAC {last['peak']}/2048 = "
+              f"{100*last['peak']/2048:.0f} % of its codes); the first word to saturate is "
+              f"the 16-bit host word at {knee['sig']:.1f} dBFS rms, "
+              f"where SNR falls from {last['snr']:.1f} to {knee['snr']:.1f} dB")
+        print("  the chain maps host full scale to the DAC rail one-to-one: 32767 x4 = "
+              "131068 of 131071, x64 = 8388352 of 8388608, >>12 = 2048 of 2048 codes")
     if len(rpts) == len(amps_r):
         print("\n=== reverse-path headroom (RX word -> TX, no converters) ===")
         for a, peak, clip, resid in rpts:
