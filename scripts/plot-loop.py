@@ -767,6 +767,59 @@ def proof():
         a.grid(alpha=0.25, lw=0.4)
         a.tick_params(labelsize=7)
 
+    # Every stage carries the same tone pattern once each stage's own gain is
+    # divided out; only the declared scale and the IF shift differ.  This is the
+    # view that makes "the charts change halfway" legible.
+    stage_sets = {
+        "fwd_x1": ["host", "tx_hb", "tx_mix", "tx_pins", "air", "rx_mix", "rx_host"],
+    }
+    fig2, ax2 = plt.subplots(1, 1, figsize=(9, 4.2))
+    fig2.suptitle("same tone pattern at every stage, each stage normalised by its own gain",
+                  fontsize=10.5)
+    t = np.arange(2048)
+    rev_spread = []
+    for st in ("air", "rx_mix", "rx_host", "tx_hb", "tx_mix", "tx_pins"):
+        x = load(os.path.join(base, f"cap_rev_{st}.txt"))
+        if x is None:
+            continue
+        lv = []
+        for k in K0:
+            cand = [abs(np.mean(x * np.exp(-2j * np.pi * b * t / 1024)))
+                    for b in (k, k + IF, k - IF)]
+            lv.append(20 * np.log10(max(max(cand), 1e-12)))
+        lv = np.array(lv) - np.mean(lv)
+        rev_spread.append(lv.max() - lv.min())
+    for st in stage_sets["fwd_x1"]:
+        x = load(os.path.join(base, f"cap_fwd_x1_{st}.txt"))
+        if x is None:
+            continue
+        lv = []
+        for k in K0:
+            cand = [abs(np.mean(x * np.exp(-2j * np.pi * b * t / 1024)))
+                    for b in (k, k + IF, k - IF)]
+            lv.append(20 * np.log10(max(max(cand), 1e-12)))
+        lv = np.array(lv) - np.mean(lv)
+        ax2.plot(K0, lv, "o-", ms=3, lw=1.0,
+                 label=f"{st}: spread {lv.max()-lv.min():.2f} dB")
+    ax2.axhline(0, color="k", lw=0.5)
+    ax2.set_xlabel("tone bin")
+    ax2.set_ylabel("level vs that stage's mean, dB")
+    ax2.set_ylim(-1.4, 1.4)
+    ax2.set_title("forward: flat through the transmitter, the comb appears only "
+                  "after the antenna node", fontsize=9)
+    ax2.grid(alpha=0.25, lw=0.4)
+    ax2.legend(fontsize=6.5, ncol=2)
+    ax2.tick_params(labelsize=7)
+    fig2.tight_layout(rect=[0, 0, 1, 0.9])
+    outp2 = os.path.join(base, "loop_stage_shape.png")
+    fig2.savefig(outp2, dpi=110)
+    plt.close(fig2)
+    print(f"  wrote {os.path.relpath(outp2)}")
+    if rev_spread:
+        print(f"  reverse: all six stages carry the same shape "
+              f"(spread {min(rev_spread):.2f}-{max(rev_spread):.2f} dB), "
+              f"because the channel is upstream of the input")
+
     lines = []
     for tag, name in (("fwd_x1", "forward"), ("rev", "reverse")):
         for r in rows[tag]:
