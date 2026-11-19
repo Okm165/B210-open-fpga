@@ -118,12 +118,19 @@ module hb47_poly #(
 
   wire signed [17+WIDTH+2:0] acc = ps_a + ps_b;
 
-  // round half even from Q17, then saturate to WIDTH
-  wire signed [17+WIDTH+2:0] acc_r = acc + (acc[16] & (acc[17] | |acc[15:0]));
-  wire signed [17+WIDTH+2:0] acc_s = acc_r >>> 17;
+  // Round half even from Q17, then saturate to WIDTH.
+  //
+  // Shift FIRST, add the rounding bit AFTER.  Adding the sticky term before
+  // the shift adds one Q17 LSB, i.e. 1/131072 of an output LSB - a no-op that
+  // leaves truncation-toward-minus-infinity.  Measured consequence: a
+  // -0.5 LSB DC bias, -82 dBc relative to the tone, which the TX NCO turned
+  // into a -82 dBc feedthrough at the DAC (the RX path uses round_sd and
+  // measured -88.7 dBc, so this was also the main RX/TX quality asymmetry).
+  wire signed [17+WIDTH+2:0] acc_s = acc >>> 17;
+  wire signed [17+WIDTH+2:0] acc_r = acc_s + (acc[16] & (acc[17] | |acc[15:0]));
   wire signed [WIDTH-1:0]    filtered =
-      (acc_s >  (1 <<< (WIDTH-1)) - 1) ?  (1 <<< (WIDTH-1)) - 1 :
-      (acc_s < -(1 <<< (WIDTH-1)))     ? -(1 <<< (WIDTH-1))     : acc_s[WIDTH-1:0];
+      (acc_r >  (1 <<< (WIDTH-1)) - 1) ?  (1 <<< (WIDTH-1)) - 1 :
+      (acc_r < -(1 <<< (WIDTH-1)))     ? -(1 <<< (WIDTH-1))     : acc_r[WIDTH-1:0];
 
   // phase 0 at the coincident stb_in/stb_out edge (filter output), phase 1 at
   // the following stb_out (centre sample).
