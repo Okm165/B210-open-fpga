@@ -3,7 +3,7 @@
 This is the operator page.  Every number below is measured in simulation by a
 bench or a plot page named beside it; nothing here is estimated from a model
 unless it says so.  The gate that guarantees all of it still holds is
-`make release-check` (121 benches, image identity, clean tree).
+`make release-check` (122 benches, image identity, clean tree).
 
 ## 1. What the design does
 
@@ -125,6 +125,19 @@ runt; ATR-disable forces IDLE; DDR = 0 releases the pins.  On the bench,
 TX_ENABLE therefore trails `run_tx` by 81 ns, i.e. the PA is off for the
 first and last ~5 samples of a burst.
 
+## 5a2. The codec's SPI master
+
+`simple_spi_core` configures the AD9361 and the ADF4001; before this round it
+had only a "a control packet reaches address 10" check.  `tests/tb_spi.v`
+drives a mode-0 slave model (MSB presented on CS, data changed on the falling
+edge) and pins the contract: 24-bit MSB-first framing with exactly 24 SCLK
+pulses and only the selected slave asserting; **data MSB-aligned in [31:8],
+readback right-aligned in [23:0]**; SCLK = bus/(2*(divider+1)), so UHD's
+1 MSPS is divider 49 = 1.000 MHz at 100 MHz; `num_bits` honoured; ready held
+low for the transaction.  The fastest clock the core can make (divider 0) is
+50 MHz, inside the AD9361's 60 MHz limit.  UHD programs both SPI edges to
+FALL for this codec, so the bench does too.
+
 ## 5b. The one self-test the hardware can run alone
 
 `radio_legacy` has `rx_fe = loopback ? tx : rx`, a mux that feeds the transmit
@@ -199,7 +212,7 @@ Recorded so they are not repeated (detail in `dsp-audit`):
 
 ## 7. Deploy
 
-    make release-check   # signoff: 121 benches, image identity, clean tree
+    make release-check   # signoff: 122 benches, image identity, clean tree
     make deploy          # build/deploy: image + provenance + checklist
 
 Image `build/fpga/bitstream/usrp_b210_fpga.bin`, sha256

@@ -228,6 +228,11 @@ AIR_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_airloop.v
 # MIMO clock-mux switch: glitch behaviour of BUFGCTRL across the switchover.
+SPI_TEST_SRCS := \
+  $(ROOT)/src/rtl/control/setting_reg.v \
+  $(ROOT)/src/rtl/control/simple_spi_core.v \
+  $(ROOT)/tests/tb_spi.v
+
 ATR_TEST_SRCS := \
   $(ROOT)/src/rtl/control/setting_reg.v \
   $(ROOT)/src/rtl/control/gpio_atr.v \
@@ -871,6 +876,11 @@ test-data2:
 	@cd $(SIM_DIR) && $(VVP) -n tb_atr.vvp | tee tb_atr.log | grep -E 'ATR'
 	@grep -q 'ATR: PASS' $(SIM_DIR)/tb_atr.log || \
 	  { echo "ERROR: frontend ATR/PA-enable path wrong; see $(SIM_DIR)/tb_atr.log"; exit 1; }
+	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
+	  -s tb_spi -o tb_spi.vvp $(SPI_TEST_SRCS)
+	@cd $(SIM_DIR) && $(VVP) -n tb_spi.vvp | tee tb_spi.log | grep -E 'SPI'
+	@grep -q 'SPI: PASS' $(SIM_DIR)/tb_spi.log || \
+	  { echo "ERROR: SPI master cannot configure the codec; see $(SIM_DIR)/tb_spi.log"; exit 1; }
 	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_tx_retune -o tb_tx_retune.vvp $(RETUNE_TEST_SRCS)
 	@cd $(SIM_DIR) && $(VVP) -n tb_tx_retune.vvp | tee tb_tx_retune.log | grep -E 'RETUNE:'

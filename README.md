@@ -113,7 +113,7 @@ hash varies; the raw `.bin` is reproducible.
 
 `make release-check` is the signoff gate: it refuses a dirty tree, checks the
 image against its recorded sha256 and against a digest of the RTL/source
-list/XDC/defines, and runs every bench.  Current state: **121 benches pass**.
+list/XDC/defines, and runs every bench.  Current state: **122 benches pass**.
 
 - Yosys synthesis completes; place and route reports 0 errors; every clock
   passes with at least 5 % margin; the raw image carries IDCODE `0x3651093`.
