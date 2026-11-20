@@ -134,6 +134,12 @@ Recorded so they are not repeated (detail in `dsp-audit`):
 * Grade a hop against the node that actually entered it, never against the
   clean generator; the air node carries the transmit interpolator's shape, so
   loop residuals cancel it by construction.
+* A page must be drawn from the capture its own target produced.  `make plots`
+  runs the converter capture and draws it; `make plots-levels` then re-runs
+  that same capture at each sweep point and leaves the last one in the build
+  directory.  Running the plot script by hand after a sweep therefore redraws
+  the converter page from the last sweep point - which happened once in this
+  session and was caught by comparing against the archive.
 * A testbench *model* of an RTL block is an assumption.  The transmit
   converter was modelled for several rounds; comparing it with the synthesised
   slice found 32 of 2048 samples differing by one code, all at exact half-LSB
