@@ -27,31 +27,23 @@ uhd_usrp_probe                   # expect 2 radios, master_clock_rate 61.44e6
 
 FAIL here -> scope GPIF_CTL* flags; the RF layers are unreachable.
 
-## Layer 0.5 - the FX3 "state 5" wedge (seen on the real board, 2026-11-20)
+## Layer 0.5 - loading OUR image on the Kintex board (measured 2026-11-20)
 
-First live contact with the actual board: `uhd_image_loader` reports the load
-fine, then the first control packet times out and UHD reports
-`RuntimeError: fx3 is in state 5`.  It reproduces with **UHD's own stock
-image too**, so it is below the RTL - the FPGA never answers a control
-packet after configuration, on either image.
+UHD's loader always offers its stock b210 image, which is a **Spartan-6
+bitstream** - it can never configure a Kintex-7, so UHD reports
+"fx3 is in state 5" (state 5 = UNCONFIGURED: no DONE) and wipes any image
+already loaded.  Therefore:
 
-Recovery attempts made: usbreset (no effect), firmware reload
-(`uhd_find_devices` reloads the FX3 firmware), re-run of the loader.  The
-state survives all of them.  The known fix is a **full power cycle: unplug
-USB *and* the 6 V supply, wait 5 s, replug USB only**.
-
-After the power cycle, the order matters:
-
-1. stock image first (`/usr/share/uhd/images/usrp_b210_fpga.bin`) and
-   `uhd_usrp_probe`.  If stock probes, the board and FX3 are healthy ->
-   proceed to step 2 with our image.
-2. our image (`usrp_b210_fpga.bin`) and `uhd_usrp_probe`.  If stock probes
-   and ours wedges the same way, the control path (gpif2_slave_fifo32,
-   radio_ctrl_core, or the clock the settings bus runs on) is the suspect -
-   that is an RTL/board-interface hunt, and `scripts/rx_probe.py` will be
-   the first instrument once control answers.
-3. once control answers: `python3 scripts/rx_probe.py` - RX only, both
-   channels, graphs and PASS/FAIL, no TX involved.
+1. load with the direct vendor protocol: `python3 scripts/hw_load.py
+   build/deploy/usrp_b210_fpga.bin` - it streams the bitstream over FX3
+   vendor requests and the FX3 ends in RUNNING (= DONE asserted).
+2. register the hash (the script does) and probe with the fpga= hint so
+   UHD does NOT reload:
+   `uhd_usrp_probe --args="type=b200,serial=<sn>,fpga=<bitstream>"`
+3. measured so far: FPGA configures (DONE) but the first control packet
+   gets no ACK.  Since stock can never run on this board, the fault is
+   either the board's 40 MHz (the MMCM's only input) or the port's control
+   path; scope `codec_main_clk_p` (40 MHz) and `IFCLK` (100 MHz) to split.
 
 ## Layer 1 — RX, no RF input
 
