@@ -74,6 +74,11 @@ make elab        # elaborate the complete design against the primitive models
 make hello       # compile the hello world through the whole toolchain
 make doctor      # check host tools and the toolchain image
 make verify      # check the committed source state
+make release-check # verify + image identity + every bench (the signoff gate)
+make plots       # the loop pages: whole-radio spectra, ends, losses
+make plots-levels # converter utilisation and transmitter headroom
+make plots-extra # band edge, rates, MIMO match, dense probe, retune
+make deploy      # assemble build/deploy: image + provenance + checklist
 make shell       # interactive shell in the toolchain image
 make clean       # remove only this repository's build/ directory
 make image-clean # remove all toolchain images
@@ -106,12 +111,17 @@ hash varies; the raw `.bin` is reproducible.
 
 ## Validation
 
+`make release-check` is the signoff gate: it refuses a dirty tree, checks the
+image against its recorded sha256 and against a digest of the RTL/source
+list/XDC/defines, and runs every bench.  Current state: **105 benches pass**.
+
 - Yosys synthesis completes; place and route reports 0 errors; every clock
-  constraint passes.
-- The raw image carries device IDCODE `0x3651093` (XC7K325T).
-- Host tests: 256/256 Gray-code round trips, 25/25 halfband taps, and the
-  bit2bin round trip.
-- A fresh checkout reproduces the netlist and raw `.bin` byte-for-byte.
+  passes with at least 5 % margin; the raw image carries IDCODE `0x3651093`.
+- A fresh checkout reproduces the raw `.bin` byte-for-byte
+  (`bcf0a6fc17be573e23d1d44a8e5867d4ce122f93340e0ea4500814484ec8d5bb`).
+- The whole-radio loop is measured in simulation, in both directions, both
+  channels, at every shipping rate: `plots/` pages are byte-reproducible and
+  the numbers behind them are in `docs/FINAL-REPORT.md`.
 
 Detailed reports are written under `build/fpga/reports/`.
 
