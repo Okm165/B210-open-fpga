@@ -1043,7 +1043,15 @@ plots-extra:
 	cd $(ROOT)/build/plots/bandx2s5 && $(VVP) -n $(SIM_DIR)/tb_bandx2s5.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-diff.py
 	@set -e; cd $(ROOT); python3 scripts/plot-channel.py
-	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match rates dense
+	@# The hardware's own digital loopback (loopback=1 -> rx_fe = tx): the only
+	@# whole-datapath self-test that needs no instruments.  It carries the 12-bit
+	@# DAC code and no converter or air, so it is graded against the host word.
+	@mkdir -p $(ROOT)/build/plots/digloop
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/digloop/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DLOOPBACK \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_digloop.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/digloop && $(VVP) -n $(SIM_DIR)/tb_digloop.vvp > /dev/null
+	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match rates dense digloop
 
 # Elaborate the complete design in the host simulator.  This is the cheapest
 # guard that the repository still describes hardware a simulator can accept:

@@ -91,6 +91,31 @@ increment; the data path itself has no skew.  Channel isolation at the loop
 end equals the modelled -30.1 dB coupling with **no added crosstalk on either
 channel**.  `plots/loop_inband_match.png`, `plots/loop_ends_diff.png`.
 
+## 5b. The one self-test the hardware can run alone
+
+`radio_legacy` has `rx_fe = loopback ? tx : rx`, a mux that feeds the transmit
+register back into the receive chain with no converters and no air.  It is the
+first thing a bench session can run, and it is *not* the chain-level wire of
+`tb_loopback2`: it sits after `dac_slice` and after the 12-bit `tx[31:16]`
+placement, so what comes back is the DAC code, not the 24-bit datastream.
+
+Measured in the loop bench's new `-DLOOPBACK` mode, both channels, 14 tones
+(`plots/loop_digloop.png`):
+
+| | ch0 | ch1 |
+|---|---|---|
+| gain | 0.999906 (-0.0008 dB) | 0.999882 (-0.0010 dB) |
+| phase | constant | constant |
+| residual | **-55.10 dBc**, 4.65 LSB16 | **-55.13 dBc**, 4.63 LSB16 |
+| one 12-bit code round trip | 4.62 LSB16 | 4.62 LSB16 |
+
+So the loopback is exactly as good as one 12-bit code round trip and no
+better: the error distribution is bounded by +/-half a code with no in-band
+structure.  Two things for the bench: the phase is the TX/RX NCO phase
+relationship and is arbitrary on hardware (grade magnitude and flatness, not
+phase), and a loopback capture that shows better than -55 dBc at this drive
+is not possible - that is the slice, not the radio.
+
 ## 6. Measurement traps that were found the hard way
 
 Recorded so they are not repeated (detail in `dsp-audit`):

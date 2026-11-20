@@ -1922,6 +1922,113 @@ def clkmux():
     print(f"  wrote {os.path.relpath(out)}")
 
 
+def digloop():
+    """The hardware's own digital loopback: rx_fe = loopback ? tx : rx.
+
+    This is the only whole-datapath self-test that needs no instruments and no
+    antenna, so it is the first thing a bench session can run.  It is *not* the
+    chain-level wire of tb_loopback2: in radio_legacy the loopback mux sits
+    after the transmit register, so the word that comes back is the 12-bit DAC
+    code (tx[31:16] = {dac_slice(code),4'b0000}), read back as
+    {rx_fe[31:16],8'd0}.  Unity magnitude, constant phase, and a floor set by
+    the 12-bit slice - nothing else.  Graded against the host word it was made
+    from, never against a model of the air, which this path does not have.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(here, "..", "build", "plots"))
+    d = os.path.join(base, "digloop")
+    fs = 61.44e6
+    K0 = [8, 24, 47, 83, 115, 138, 150]
+    K1 = [13, 31, 59, 97, 124, 143, 149]
+
+    def fit(h, r):
+        """Gain, phase and delay of the loopback word, on the valid overlap only.
+
+        The capture starts on an arbitrary clock, so the first `lag` samples of
+        the reference do not exist; including them would charge the loop for
+        the bench's own window (and did, at -19 dBc, before this was fixed)."""
+        best = None
+        for lag in range(0, 64):
+            rr, hh = r[lag:], h[:len(h) - lag]
+            g = np.vdot(hh, hh)
+            if g == 0:
+                continue
+            a = np.vdot(hh, rr) / g
+            e = np.mean(np.abs(rr - a * hh) ** 2)
+            if best is None or e < best[0]:
+                best = (e, lag, a)
+        return best
+
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.4))
+    xmax = fs / 2e6
+    print("\n=== hardware digital loopback (rx_fe = tx, converters and air bypassed) ===")
+    print("  reference: the host word the loopback word was made from, after one")
+    print("  12-bit DAC code round trip; the floor is that slice, not the datastream")
+    for ch, ks, col in ((0, K0, "#1f4e79"), (1, K1, "#b3541e")):
+        suf = "" if ch == 0 else "1"
+        h = load(os.path.join(d, f"cap_fwd_x1_host{suf}.txt"))
+        r = load(os.path.join(d, f"cap_fwd_x1_rx_host{suf}.txt"))
+        if h is None or r is None:
+            sys.exit(f"missing loopback captures in {d}")
+        e, lag, a = fit(h, r)
+        ref = h[:len(h) - lag]
+        res = r[lag:] - a * ref
+        sig = np.mean(np.abs(a * ref) ** 2)
+        dbc = 10 * np.log10(np.mean(np.abs(res) ** 2) / sig)
+        lsb = np.sqrt(np.mean(np.abs(res) ** 2) / 2)
+        print(f"  ch{ch}: gain {abs(a):.6f} ({20*np.log10(abs(a)):+.4f} dB), "
+              f"phase {np.degrees(np.angle(a)):+.3f} deg (constant), lag {lag}")
+        print(f"        residual {dbc:.2f} dBc, {lsb:.2f} LSB16 rms "
+              f"(12-bit slice limit: {4096/np.sqrt(12)/256:.2f} LSB16)")
+
+        # residual spectrum, on the capture's own bin grid
+        n = np.arange(len(res))
+        R = np.fft.fft(res) / len(res)
+        f = np.fft.fftfreq(len(res), 1 / fs) / 1e6
+        keep = f >= 0
+        level = 20 * np.log10(np.maximum(np.abs(R[keep]) / np.sqrt(sig), 1e-14))
+        ax[0].plot(f[keep], level, color=col, lw=0.7, label=f"ch{ch}: {dbc:.1f} dBc")
+
+        # The floor is the quantiser: the residual of every sample, in DAC code
+        # steps, against the uniform +/-0.5 code box that one 12-bit round trip
+        # must produce.  Anything systematic would step outside the box.
+        ax[1].hist(res.real, bins=60, histtype="step", color=col,
+                   lw=1.0, density=True,
+                   label=f"ch{ch}: {lsb:.2f} LSB16 rms")
+        ax[1].hist(res.imag, bins=60, histtype="step", color=col,
+                   lw=1.0, ls="--", density=True)
+
+    ax[0].axhline(-55, color="#c00000", lw=0.9, ls="--",
+                  label="one 12-bit code round trip (-55 dBc at this drive)")
+    ax[0].set_xlim(0, xmax)
+    ax[0].set_ylim(-100, -30)
+    ax[0].set_xlabel("MHz")
+    ax[0].set_ylabel("residual, dBc")
+    ax[0].set_title("error after the 12-bit DAC code round trip: no in-band structure",
+                    fontsize=9)
+    ax[0].legend(fontsize=7)
+    ax[0].grid(alpha=0.25, lw=0.4)
+    ax[1].axvline(8, color="#c00000", lw=0.9, ls="--")
+    ax[1].axvline(-8, color="#c00000", lw=0.9, ls="--",
+                  label="one 12-bit code, +/-0.5")
+    ax[1].set_xlabel("sample error, LSB16")
+    ax[1].set_ylabel("density")
+    ax[1].set_xlim(-14, 14)
+    ax[1].set_title("error distribution: bounded by half a 12-bit code, as quantisation must be",
+                    fontsize=9)
+    ax[1].legend(fontsize=7)
+    ax[1].grid(alpha=0.25, lw=0.4)
+    fig.suptitle("hardware digital loopback (loopback=1): TX register -> RX input, "
+                 "converters and air bypassed", fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    out = os.path.join(base, "loop_digloop.png")
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print("  note: the constant phase is the TX/RX NCO phase relationship, arbitrary")
+    print("        on hardware; grade magnitude and flatness, not phase.")
+    print(f"  wrote {os.path.relpath(out)}")
+
+
 if __name__ == "__main__":
     args = sys.argv[1:] or ["fwd_x1", "fwd_x2", "rev", "conv"]
     for t in args:
@@ -1949,6 +2056,8 @@ if __name__ == "__main__":
             rates()
         elif t == "dense":
             dense()
+        elif t == "digloop":
+            digloop()
         else:
             main(t)
     if "budget" not in args:

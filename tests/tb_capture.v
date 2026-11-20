@@ -289,10 +289,21 @@ module tb_capture;
    wire signed [25:0] sum1_i = dac1_i - (d1i[D-1] / beta_den) + (dac0_i / alpha_den);
    wire signed [25:0] sum1_q = dac1_q - (d1q[D-1] / beta_den) + (dac0_q / alpha_den);
 
+`ifdef LOOPBACK
+   // radio_legacy: `rx_fe = loopback ? tx : rx`.  The TX register always holds
+   // {dac_slice(code), 4'b0000}, so the loopback path carries the 12-bit slice
+   // even without -DCONV; there is no channel, no delay and no ADC at all.
+   wire signed [23:0] air0_i = {ds0_i, 12'b0}, air0_q = {ds0_q, 12'b0};
+   wire signed [23:0] air1_i = {ds1_i, 12'b0}, air1_q = {ds1_q, 12'b0};
+`else
    wire signed [23:0] air0_i = sat24(sum0_i), air0_q = sat24(sum0_q);
    wire signed [23:0] air1_i = sat24(sum1_i), air1_q = sat24(sum1_q);
+`endif
 
-`ifdef CONV
+`ifdef LOOPBACK
+   wire signed [23:0] adc0_i = air0_i, adc0_q = air0_q;
+   wire signed [23:0] adc1_i = air1_i, adc1_q = air1_q;
+`elsif CONV
    wire signed [23:0] adc0_i = q12(air0_i), adc0_q = q12(air0_q);
    wire signed [23:0] adc1_i = q12(air1_i), adc1_q = q12(air1_q);
 `else
