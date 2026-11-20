@@ -215,7 +215,9 @@ module tb_capture;
 
    // ---- air model: delay 3, two-path multipath -18 dB, -30 dB coupling ----
    localparam integer D = 3;
-`ifdef MATCH
+`ifdef IDEAL
+   integer beta_den = 1000000, alpha_den = 1000000;  // a flat cable: no echo, no coupling
+`elsif MATCH
    integer beta_den = 8, alpha_den = 1000000;   // no coupling: channels independent
 `else
    integer beta_den = 8, alpha_den = 32;

@@ -1051,6 +1051,13 @@ plots-extra:
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DLOOPBACK \
 	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_digloop.vvp $(CAPTURE_TEST_SRCS)
 	cd $(ROOT)/build/plots/digloop && $(VVP) -n $(SIM_DIR)/tb_digloop.vvp > /dev/null
+	@# The bench's practical version of the same test: an attenuated SMA cable
+	@# TX->RX, so both 12-bit converters are in the loop and the channel is flat.
+	@mkdir -p $(ROOT)/build/plots/cable
+	ln -sfn $(ROOT)/src $(ROOT)/build/plots/cable/src
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -DCONV -DIDEAL \
+	  -I $(ROOT)/src/rtl/control -s tb_capture -o tb_cable.vvp $(CAPTURE_TEST_SRCS)
+	cd $(ROOT)/build/plots/cable && $(VVP) -n $(SIM_DIR)/tb_cable.vvp > /dev/null
 	@set -e; cd $(ROOT); python3 scripts/plot-loop.py band proof inband inband_conv inband_match rates dense digloop
 
 # Elaborate the complete design in the host simulator.  This is the cheapest

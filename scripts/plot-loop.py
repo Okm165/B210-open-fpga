@@ -1959,28 +1959,43 @@ def digloop():
                 best = (e, lag, a)
         return best
 
+    def measure(sub, prefix="cap_fwd_x1_"):
+        """Both channels of one loopback flavour: gain, lag, residual, rms."""
+        out = []
+        for ch in (0, 1):
+            suf = "" if ch == 0 else "1"
+            h = load(os.path.join(base, sub, f"{prefix}host{suf}.txt"))
+            r = load(os.path.join(base, sub, f"{prefix}rx_host{suf}.txt"))
+            if h is None or r is None:
+                return None
+            e, lag, a = fit(h, r)
+            ref = h[:len(h) - lag]
+            res = r[lag:] - a * ref
+            sig = np.mean(np.abs(a * ref) ** 2)
+            out.append((abs(a), np.degrees(np.angle(a)), lag,
+                        10 * np.log10(np.mean(np.abs(res) ** 2) / sig),
+                        np.sqrt(np.mean(np.abs(res) ** 2) / 2), ref, r[lag:], res))
+        return out
+
     fig, ax = plt.subplots(1, 2, figsize=(13, 4.4))
     xmax = fs / 2e6
     print("\n=== hardware digital loopback (rx_fe = tx, converters and air bypassed) ===")
     print("  reference: the host word the loopback word was made from, after one")
     print("  12-bit DAC code round trip; the floor is that slice, not the datastream")
-    for ch, ks, col in ((0, K0, "#1f4e79"), (1, K1, "#b3541e")):
-        suf = "" if ch == 0 else "1"
-        h = load(os.path.join(d, f"cap_fwd_x1_host{suf}.txt"))
-        r = load(os.path.join(d, f"cap_fwd_x1_rx_host{suf}.txt"))
-        if h is None or r is None:
-            sys.exit(f"missing loopback captures in {d}")
-        e, lag, a = fit(h, r)
-        ref = h[:len(h) - lag]
-        res = r[lag:] - a * ref
-        sig = np.mean(np.abs(a * ref) ** 2)
-        dbc = 10 * np.log10(np.mean(np.abs(res) ** 2) / sig)
-        lsb = np.sqrt(np.mean(np.abs(res) ** 2) / 2)
-        print(f"  ch{ch}: gain {abs(a):.6f} ({20*np.log10(abs(a)):+.4f} dB), "
-              f"phase {np.degrees(np.angle(a)):+.3f} deg (constant), lag {lag}")
+    mux = measure("digloop")
+    if mux is None:
+        sys.exit(f"missing loopback captures in {d}")
+    for ch, (_g, _p, lag, dbc, lsb, ref, _r, res) in enumerate(mux):
+        a = _g * np.exp(1j * np.radians(_p))
+        sig = np.mean(np.abs(ref) ** 2)
+        print(f"  ch{ch}: gain {_g:.6f} ({20*np.log10(_g):+.4f} dB), "
+              f"phase {_p:+.3f} deg (constant), lag {lag}")
         print(f"        residual {dbc:.2f} dBc, {lsb:.2f} LSB16 rms "
               f"(12-bit slice limit: {4096/np.sqrt(12)/256:.2f} LSB16)")
 
+    for ch, ks, col in ((0, K0, "#1f4e79"), (1, K1, "#b3541e")):
+        _g, _p, lag, dbc, lsb, ref, _r, res = mux[ch]
+        sig = np.mean(np.abs(ref) ** 2)
         # residual spectrum, on the capture's own bin grid
         n = np.arange(len(res))
         R = np.fft.fft(res) / len(res)
@@ -2026,6 +2041,22 @@ def digloop():
     plt.close(fig)
     print("  note: the constant phase is the TX/RX NCO phase relationship, arbitrary")
     print("        on hardware; grade magnitude and flatness, not phase.")
+    print("  host reachability: UHD's B200 register map starts at SR_SPI=8 and the")
+    print("        driver has no user-register poke, so this mux is not writable from")
+    print("        stock UHD; the bench equivalent is an attenuated TX->RX cable.")
+    cab = measure("cable", "cap_conv_")
+    if cab is not None:
+        print("  cable-equivalent (both 12-bit converters, ideal flat channel):")
+        for ch, (_g, _p, lag, dbc, lsb, *_r) in enumerate(cab):
+            print(f"        ch{ch}: gain {20*np.log10(_g):+.4f} dB, residual {dbc:.2f} dBc, "
+                  f"{lsb:.2f} LSB16")
+        same = all(abs(cab[c][3] - mux[c][3]) < 0.05 and abs(20*np.log10(cab[c][0]) - 20*np.log10(mux[c][0])) < 0.01
+                   for c in (0, 1))
+        print("        -> " + ("identical to the mux: the ADC's 12-bit quantiser is"
+                              " idempotent on a word already on its grid, so the second"
+                              " converter adds nothing in simulation.  The real ADC's"
+                              " analogue noise floor is what hardware will add."
+                              if same else "DIFFERS from the mux - investigate."))
     print(f"  wrote {os.path.relpath(out)}")
 
 

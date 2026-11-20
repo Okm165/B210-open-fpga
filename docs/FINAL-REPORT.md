@@ -116,6 +116,17 @@ relationship and is arbitrary on hardware (grade magnitude and flatness, not
 phase), and a loopback capture that shows better than -55 dBc at this drive
 is not possible - that is the slice, not the radio.
 
+That mux, however, **cannot be switched on from stock UHD**: UHD's B200
+register map starts at `SR_SPI = 8`, its driver writes only `SR_TEST = 21` (a
+control-bus pattern test) and runs the AD9361's codec self-test, and the B200
+exposes no user-register write.  Address 6 needs a custom host tool or a
+driver patch.  The reachable self-test is therefore an attenuated TX->RX SMA
+cable, which adds both converters and the analogue path.  Its simulated
+expectation (`plots/loop_digloop.png` prints it) is *identical* to the mux -
+-55.10 / -55.13 dBc - because after `dac_slice` the word already sits on the
+12-bit grid, so an ideal ADC's quantiser is idempotent.  Anything worse on
+hardware is the analogue chain, not the FPGA.
+
 ## 6. Measurement traps that were found the hard way
 
 Recorded so they are not repeated (detail in `dsp-audit`):
