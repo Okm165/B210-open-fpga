@@ -169,6 +169,12 @@ set_property IOSTANDARD LVCMOS18 [get_ports GPIF_CTL7]
 set_property LOC AC3 [get_ports GPIF_CTL8]
 set_property IOSTANDARD LVCMOS18 [get_ports GPIF_CTL8]
 set_property LOC AB1 [get_ports GPIF_CTL9]
+# Measured on this custom board (2026-11-20): with CTL9 as the only reset
+# source the MMCM does not lock (diag v3/v4), while it locks when the reset
+# is tied low (diag v2) - the pin reads high.  A pulldown keeps the reset
+# functional if the FX3 actively drives it, and stops a floating pin from
+# holding the design in reset permanently.
+set_property PULLTYPE PULLDOWN [get_ports GPIF_CTL9]
 set_property IOSTANDARD LVCMOS18 [get_ports GPIF_CTL9]
 set_property LOC AC4 [get_ports GPIF_CTL11]
 set_property IOSTANDARD LVCMOS18 [get_ports GPIF_CTL11]
