@@ -98,6 +98,12 @@ Recorded so they are not repeated (detail in `dsp-audit`):
 * Grade a hop against the node that actually entered it, never against the
   clean generator; the air node carries the transmit interpolator's shape, so
   loop residuals cancel it by construction.
+* A testbench *model* of an RTL block is an assumption.  The transmit
+  converter was modelled for several rounds; comparing it with the synthesised
+  slice found 32 of 2048 samples differing by one code, all at exact half-LSB
+  ties (the model rounds away from zero, the RTL to even).  The loop now
+  instantiates `dac_slice`, so the pin word is `dac_slice << 12` exactly.  The
+  ADC stays a model by necessity - the AD9361 is out of tree.
 * A **periodic** stimulus or dither has a periodic quantisation error, which
   lands on DFT bins instead of spreading: a single-bin spur audit on it stops
   at about -55 dBc.  The discriminator is the **drive level** - a product of

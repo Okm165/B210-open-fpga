@@ -167,6 +167,9 @@ module tb_capture;
    // word with the low 12 bits zero.  With -DCONV the loop runs through those
    // two quantisers, which is what hardware does and simulation otherwise
    // flatters.
+   // ADC model (the AD9361 is out of tree).  The transmit side uses the real
+   // dac_slice module instead - the two differ only at half-LSB ties, where
+   // this rounds away from zero and the RTL rounds to even.
    function signed [23:0] q12(input signed [23:0] x);
       reg signed [23:0] a, m;
       begin
@@ -231,15 +234,24 @@ module tb_capture;
    wire signed [23:0] ant1_i = $signed(tx1_i), ant1_q = $signed(tx1_q);
 `endif
 
+   // The transmit slice is the *synthesised module*, not a testbench model, so
+   // every converter number below is the hardware's.  (The ADC side has to be
+   // a model: the AD9361 is not in this tree.)
+   wire [11:0] ds0_i, ds0_q, ds1_i, ds1_q;
+   dac_slice ds0_i0 (.in(tx0_i), .out(ds0_i));
+   dac_slice ds0_q0 (.in(tx0_q), .out(ds0_q));
+   dac_slice ds1_i0 (.in(tx1_i), .out(ds1_i));
+   dac_slice ds1_q0 (.in(tx1_q), .out(ds1_q));
+
 `ifdef CONV
    // What the converter sees on each side.  dac0/1 is the channel model's input
    // (the TX output when transmitting, the antenna source when looping back);
    // pind0/1 is always the quantised *transmitter* output, i.e. the word the
-   // DAC actually receives.
+   // DAC actually receives - now taken from dac_slice itself.
    wire signed [23:0] dac0_i = q12(ant0_i), dac0_q = q12(ant0_q);
    wire signed [23:0] dac1_i = q12(ant1_i), dac1_q = q12(ant1_q);
-   wire signed [23:0] pind0_i = q12(tx0_i), pind0_q = q12(tx0_q);
-   wire signed [23:0] pind1_i = q12(tx1_i), pind1_q = q12(tx1_q);
+   wire signed [23:0] pind0_i = {ds0_i, 12'b0}, pind0_q = {ds0_q, 12'b0};
+   wire signed [23:0] pind1_i = {ds1_i, 12'b0}, pind1_q = {ds1_q, 12'b0};
 `else
    wire signed [23:0] dac0_i = ant0_i, dac0_q = ant0_q;
    wire signed [23:0] dac1_i = ant1_i, dac1_q = ant1_q;
@@ -486,6 +498,7 @@ module tb_capture;
    // interpolator, its pin word and its receive host word - so both channels
    // are graded identically at the ends, not one measured and one assumed.
    integer fd_dac, fd_adc;
+   integer fd_ds0, fd_ds1;
 
    integer fd_pins1, fd_rxhost1, fd_host1, fd_hb1, fd_air1;
    initial begin
@@ -515,6 +528,8 @@ module tb_capture;
       fd_dac     = $fopen("cap_dense_dac.txt", "w");
       fd_adc     = $fopen("cap_dense_adc.txt", "w");
    `elsif CONV
+      fd_ds0     = $fopen("cap_conv_dslice.txt",  "w");
+      fd_ds1     = $fopen("cap_conv_dslice1.txt", "w");
       fd_pins1   = $fopen("cap_conv_tx_pins1.txt", "w");
       fd_rxhost1 = $fopen("cap_conv_rx_host1.txt","w");
       fd_host1   = $fopen("cap_conv_host1.txt",   "w");
@@ -576,6 +591,10 @@ module tb_capture;
          $fwrite(fd_air1,    "%0d %0d\n", $signed(adc1_i), $signed(adc1_q));
 `else
          $fwrite(fd_air1,    "%0d %0d\n", $signed(air1_i), $signed(air1_q));
+`endif
+`ifdef CONV
+         $fwrite(fd_ds0,     "%0d %0d\n", ds0_i, ds0_q);
+         $fwrite(fd_ds1,     "%0d %0d\n", ds1_i, ds1_q);
 `endif
          $fwrite(fd_dac,     "%0d %0d\n", dac0_i, dac0_q);
          $fwrite(fd_adc,     "%0d %0d\n", adc0_i, adc0_q);
@@ -645,6 +664,9 @@ module tb_capture;
       $fclose(fd_pins1); $fclose(fd_rxhost1);
       $fclose(fd_host1); $fclose(fd_hb1); $fclose(fd_air1);
       $fclose(fd_dac); $fclose(fd_adc);
+`ifdef CONV
+      $fclose(fd_ds0); $fclose(fd_ds1);
+`endif
       $display("CAPTURE: done (%0d clocks dumped)", CLKS);
       $finish;
    end
