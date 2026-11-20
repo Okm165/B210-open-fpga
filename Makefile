@@ -578,6 +578,8 @@ deploy: image-check
 	cp -f $(ROOT)/scripts/bitstream-provenance.txt $(ROOT)/build/deploy/
 	if [ -f $(ROOT)/.context/bring-up-checklist.md ]; then \
 	  cp -f $(ROOT)/.context/bring-up-checklist.md $(ROOT)/build/deploy/; fi
+	if [ -f $(ROOT)/docs/BENCH-SESSION.md ]; then \
+	  cp -f $(ROOT)/docs/BENCH-SESSION.md $(ROOT)/build/deploy/; fi
 	{ echo "DEPLOY $(shell date -u +%Y-%m-%dT%H:%M:%SZ)"; \
 	  sha256sum $(ROOT)/build/deploy/usrp_b210_fpga.bin; \
 	  cat $(ROOT)/build/deploy/bitstream-provenance.txt; \
