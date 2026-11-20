@@ -51,10 +51,18 @@ PY
 
 ## Layer 2 — TX into a load, then the cable loop
 
-```
-uhd_tx_cfile --freq 1e9 --rate 61.44e6 --type sc16 --args master_clock_rate=61.44e6
-# waveform: 7-tone set, total rms <= -8 dBFS, peak <= 32767  (never more!)
-```
+Use the shipped waveforms in `build/deploy/waveforms/` (sc16, 2 channels
+interleaved, 20 ms, seamless loop, checksums in their README):
+
+| file | rms | peak | purpose |
+|---|---|---|---|
+| `wf_tone7_ref.cfile` | −18.7 dBFS | 61 % | **the reference drive** — its floor is the −55 dBc rule |
+| `wf_tone7_low.cfile` | −28.3 dBFS | 20 % | drive-scaling check of the quantisation products |
+| `wf_2tone.cfile` | −13.3 dBFS | 70 % | IMD probe (1 MHz + 1.06 MHz) |
+| `wf_idle.cfile` | −∞ | 0 | LO leakage / DC with the PA enabled |
+
+Stream with `--type sc16 --rate 61.44e6 --repeat`, or a 2-channel TX streamer
+reading the interleaved pairs.  Never exceed peak 32767.
 
 - Scope TX pins: level ~1 V into the load at the set amplitude; PA enable
   trails run by **81 ns**; no glitch on enable.
