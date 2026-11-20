@@ -118,7 +118,7 @@ list/XDC/defines, and runs every bench.  Current state: **122 benches pass**.
 - Yosys synthesis completes; place and route reports 0 errors; every clock
   passes with at least 5 % margin; the raw image carries IDCODE `0x3651093`.
 - A fresh checkout reproduces the raw `.bin` byte-for-byte
-  (`bcf0a6fc17be573e23d1d44a8e5867d4ce122f93340e0ea4500814484ec8d5bb`).
+  (`c1cc09ddf4ca668b66c8d086d9e7c508f4ca79d4740a0a5f5215042424865253`).
 - The whole-radio loop is measured in simulation, in both directions, both
   channels, at every shipping rate: `plots/` pages are byte-reproducible and
   the numbers behind them are in `docs/FINAL-REPORT.md`.

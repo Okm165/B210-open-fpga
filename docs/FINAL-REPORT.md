@@ -187,12 +187,15 @@ Recorded so they are not repeated (detail in `dsp-audit`):
   mux, the retune - was orphaned, so "105 PASS" did not include it, and its
   last line invoked *itself*, which made a direct run recurse forever.  The
   chain is fixed (test-data -> test-data2) and the gate now reports 120.
-* **Dead declarations are invisible in the bitstream but not in the reading.**
-  A mechanical pass found 24 unused `wire`/`reg` lines in inherited code
-  (frontend-mux leftovers in `duc_chain`, an abandoned CORDIC pair in
-  `ddc_chain`, CHDR header constants, float-converter remnants).  Synthesis
-  had pruned them, so the rebuild is byte-identical; the gain is that the
-  source now says exactly what the hardware does.
+* **Dead declarations are pruned by synthesis, but the bitstream is not
+  byte-reproducible across a source change.**  A mechanical pass found 24
+  unused `wire`/`reg` lines in inherited code; removing them left every
+  sequential count identical (FDRE, CARRY4, DSP, BRAM) yet changed the image,
+  because abc9 repartitions when its input changes and nextpnr then places
+  differently.  Byte-reproducibility is a property of *one* source tree (it
+  was shown twice on the previous image); it is not a way to prove that an
+  edit was harmless.  The gate (122 benches) plus identical sequential counts
+  is.
 * A page must be drawn from the capture its own target produced.  `make plots`
   runs the converter capture and draws it; `make plots-levels` then re-runs
   that same capture at each sweep point and leaves the last one in the build
@@ -222,7 +225,7 @@ Recorded so they are not repeated (detail in `dsp-audit`):
     make deploy          # build/deploy: image + provenance + checklist
 
 Image `build/fpga/bitstream/usrp_b210_fpga.bin`, sha256
-`bcf0a6fc17be573e23d1d44a8e5867d4ce122f93340e0ea4500814484ec8d5bb`,
+`c1cc09ddf4ca668b66c8d086d9e7c508f4ca79d4740a0a5f5215042424865253`,
 IDCODE 0x3651093, reproduced byte-for-byte from a clean build.  Bring-up
 procedure and pass criteria: `build/deploy/bring-up-checklist.md` (sections 0
 and 8 are the pre-flight and the measured level/rate rules).
