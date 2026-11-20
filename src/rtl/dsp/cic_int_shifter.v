@@ -13,15 +13,24 @@
 // NOTE   This only works for N=4, max interp rate of 128
 // NOTE   signal "rate" is EQUAL TO the actual rate (no more -1 BS)
 //
-// Normalisation is a SHIFT, which is exact only for power-of-two rates
-// (gain = R^(N-1)).  Measured DC gain, reset between rates:
+// Normalisation is a SHIFT, so this module alone leaves a gain of R^3/2^shift.
+// Measured DC gain, reset between rates:
 //   R=2,4,8,16  1.000
 //   R=3,6,12   0.843    R=5,10  0.976    R=7,14  0.669
 //   R=9 0.711   R=11 0.649   R=13 0.536   R=15 0.823
-// so the TX level contract is: exact at power-of-two CIC rates; other rates
-// carry a deterministic 0..-5.4 dB level error (calibration, not distortion).
-// A Q15 reciprocal table + one multiply would make it exact if that becomes
-// a product requirement.
+// That gain is NOT the TX level error: the shift is ceil_log2(R^3) at every
+// rate, and stock UHD (tx_dsp_core_3000) writes exactly the reciprocal,
+// 2^ceil_log2(R^3)/R^3, into the TX scale register (BASE+1).  Shifter x scale
+// = 1.000000 at every UHD-reachable rate, so the level is rate-independent
+// and no reciprocal hardware is needed here.  scripts/check_rates.py holds
+// both halves of that.
+//
+// The guard bits set the rate limit: 16 data + 21 guard = 37 bits, i.e.
+// R^3 <= 2^21, i.e. a CIC rate of at most 128.  UHD's TX rate menu respects
+// it by construction - above 128 it steps by 4 then 2, which strips exactly
+// the two halfbands in front of this block, so the CIC never sees more than
+// 128 (at interp 512).  A custom driver must keep the post-halfband rate
+// <= 128 or the accumulator wraps.
 
 module cic_int_shifter(rate,signal_in,signal_out);
    parameter bw = 16;

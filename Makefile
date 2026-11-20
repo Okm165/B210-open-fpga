@@ -859,6 +859,7 @@ test-data2:
 	@cd $(SIM_DIR) && $(VVP) -n tb_tx_retune.vvp | tee tb_tx_retune.log | grep -E 'RETUNE:'
 	@grep -q 'RETUNE: PASS' $(SIM_DIR)/tb_tx_retune.log || \
 	  { echo "ERROR: a transmitter settings write disturbs the stream; see $(SIM_DIR)/tb_tx_retune.log"; exit 1; }
+	@cd $(ROOT) && python3 scripts/check_rates.py
 
 
 

@@ -62,6 +62,28 @@ fraction, while the compensator is a fixed FIR at the DAC rate, i.e. of
 terms and the compensator has only +0.11 dB to give against -0.64 dB of droop.
 The tilt is exactly drive-independent, so it is a filter, not rounding.
 
+## 3b. TX level and the rate range, against the driver that will set it
+
+Two rate questions were settled by checking the RTL against UHD's own code
+(`tx_dsp_core_3000.cpp`), not against assumption:
+
+* **The level is rate-independent at every rate UHD can request.**  The CIC
+  shifter leaves `R^3/2^ceil_log2(R^3)` (0.843 at CIC rate 3, 0.669 at 7) -
+  which this repository's earlier notes called a "calibration error".  It is
+  not: UHD writes exactly the reciprocal (`2^ceil_log2(R^3)/R^3`) into the TX
+  scale register (SR_TX_DSP+4), so shifter x scale = 1.000000 at every rate.
+  The RTL's suggestion of a Q15 reciprocal table was hardware for a problem
+  the driver already solves; the comment now says so.
+* **The CIC rate never exceeds its 37-bit accumulator's limit of 128.**  UHD's
+  TX rate menu (512 down to 1) is stepped 4, then 2 above 128 - stripping
+  exactly the two halfbands in front of the CIC - so the slowest TX rate,
+  61.44 MHz/512 = 120 kSPS, has a CIC rate of exactly 128.  Odd interpolation
+  rates above 128 are not in UHD's menu; a custom driver writing one would
+  overflow the accumulator.
+
+Both properties are held by `scripts/check_rates.py`, run in the test gate
+(`RATES: PASS - 256 UHD TX rates, CIC rate <= 128, ... level off by 1.1e-16`).
+
 ## 4. Converters, headroom, and how hard to drive
 
 The chain maps host full scale onto the DAC rail **one-to-one**, measured:

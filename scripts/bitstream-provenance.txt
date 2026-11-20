@@ -10,5 +10,5 @@
 # digest deliberately does not, so bump the tag in the same change as a tool
 # upgrade and regenerate this file.
 image  bcf0a6fc17be573e23d1d44a8e5867d4ce122f93340e0ea4500814484ec8d5bb
-source 8ad1cbba4074f2a086c5590892bf36a5d0c787d331ec09114e44d097122e5d79
+source 69ba8968507c2004511c7aa93e7cbb3e7b7f51b36caddfedbfdb0f9714a482cd
 rtl-commit 6706c10
