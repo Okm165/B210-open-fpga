@@ -113,6 +113,18 @@ increment; the data path itself has no skew.  Channel isolation at the loop
 end equals the modelled -30.1 dB coupling with **no added crosstalk on either
 channel**.  `plots/loop_inband_match.png`, `plots/loop_ends_diff.png`.
 
+## 5a. The frontend-control path (the one with no DSP in it)
+
+TX_ENABLE, the band-select lines and the LEDs are driven by `gpio_atr` /
+`gpio_atr_io` off UHD's SR_ATR+0..5 registers.  It has no DSP, so it had no
+bench - which is exactly the kind of block that quietly ruins a first session.
+`tests/tb_atr.v` now holds the contract: after reset the lines are **driven**
+(DDR = all ones) and hold IDLE with TX_ENABLE low; idle/rx/tx/full-duplex
+select their own registers with **run_* to pin = 5 clocks (81 ns)** and no
+runt; ATR-disable forces IDLE; DDR = 0 releases the pins.  On the bench,
+TX_ENABLE therefore trails `run_tx` by 81 ns, i.e. the PA is off for the
+first and last ~5 samples of a burst.
+
 ## 5b. The one self-test the hardware can run alone
 
 `radio_legacy` has `rx_fe = loopback ? tx : rx`, a mux that feeds the transmit

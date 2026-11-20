@@ -228,6 +228,12 @@ AIR_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_airloop.v
 # MIMO clock-mux switch: glitch behaviour of BUFGCTRL across the switchover.
+ATR_TEST_SRCS := \
+  $(ROOT)/src/rtl/control/setting_reg.v \
+  $(ROOT)/src/rtl/control/gpio_atr.v \
+  $(ROOT)/src/rtl/control/gpio_atr_io.v \
+  $(ROOT)/tests/tb_atr.v
+
 CLKMUX_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_clkmux.v
@@ -860,6 +866,11 @@ test-data2:
 	  { echo "ERROR: MIMO clock mux produced runt pulses; see $(SIM_DIR)/tb_clkmux.log"; exit 1; }
 	@grep -q 'CLKMUX: PASS - reverse switch also clean' $(SIM_DIR)/tb_clkmux.log || \
 	  { echo "ERROR: MIMO clock mux reverse switch dirty; see $(SIM_DIR)/tb_clkmux.log"; exit 1; }
+	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
+	  -s tb_atr -o tb_atr.vvp $(ATR_TEST_SRCS)
+	@cd $(SIM_DIR) && $(VVP) -n tb_atr.vvp | tee tb_atr.log | grep -E 'ATR'
+	@grep -q 'ATR: PASS' $(SIM_DIR)/tb_atr.log || \
+	  { echo "ERROR: frontend ATR/PA-enable path wrong; see $(SIM_DIR)/tb_atr.log"; exit 1; }
 	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
 	  -s tb_tx_retune -o tb_tx_retune.vvp $(RETUNE_TEST_SRCS)
 	@cd $(SIM_DIR) && $(VVP) -n tb_tx_retune.vvp | tee tb_tx_retune.log | grep -E 'RETUNE:'
