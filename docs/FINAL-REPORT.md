@@ -3,7 +3,7 @@
 This is the operator page.  Every number below is measured in simulation by a
 bench or a plot page named beside it; nothing here is estimated from a model
 unless it says so.  The gate that guarantees all of it still holds is
-`make release-check` (105 benches, image identity, clean tree).
+`make release-check` (120 benches, image identity, clean tree).
 
 ## 1. What the design does
 
@@ -156,6 +156,12 @@ Recorded so they are not repeated (detail in `dsp-audit`):
 * Grade a hop against the node that actually entered it, never against the
   clean generator; the air node carries the transmit interpolator's shape, so
   loop residuals cancel it by construction.
+* **A gate target that is never called runs no benches.**  `test` chained to
+  `test-data` and stopped; `test-data2` - the two-channel loopback, the
+  whole-radio air loop, IMD3, TX linear phase, the packet gate, the clock
+  mux, the retune - was orphaned, so "105 PASS" did not include it, and its
+  last line invoked *itself*, which made a direct run recurse forever.  The
+  chain is fixed (test-data -> test-data2) and the gate now reports 120.
 * A page must be drawn from the capture its own target produced.  `make plots`
   runs the converter capture and draws it; `make plots-levels` then re-runs
   that same capture at each sweep point and leaves the last one in the build
@@ -181,7 +187,7 @@ Recorded so they are not repeated (detail in `dsp-audit`):
 
 ## 7. Deploy
 
-    make release-check   # signoff: 105 benches, image identity, clean tree
+    make release-check   # signoff: 120 benches, image identity, clean tree
     make deploy          # build/deploy: image + provenance + checklist
 
 Image `build/fpga/bitstream/usrp_b210_fpga.bin`, sha256
