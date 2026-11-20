@@ -244,12 +244,18 @@ module tb_capture;
    dac_slice ds1_q0 (.in(tx1_q), .out(ds1_q));
 
 `ifdef CONV
-   // What the converter sees on each side.  dac0/1 is the channel model's input
-   // (the TX output when transmitting, the antenna source when looping back);
+   // What the converter sees on each side.  When the antenna node is the FPGA's
+   // own transmitter (forward), the converter is the synthesised dac_slice; an
+   // external source's DAC (reverse) is outside this tree and stays a model.
    // pind0/1 is always the quantised *transmitter* output, i.e. the word the
-   // DAC actually receives - now taken from dac_slice itself.
+   // DAC actually receives.
+`ifdef REVERSE
    wire signed [23:0] dac0_i = q12(ant0_i), dac0_q = q12(ant0_q);
    wire signed [23:0] dac1_i = q12(ant1_i), dac1_q = q12(ant1_q);
+`else
+   wire signed [23:0] dac0_i = {ds0_i, 12'b0}, dac0_q = {ds0_q, 12'b0};
+   wire signed [23:0] dac1_i = {ds1_i, 12'b0}, dac1_q = {ds1_q, 12'b0};
+`endif
    wire signed [23:0] pind0_i = {ds0_i, 12'b0}, pind0_q = {ds0_q, 12'b0};
    wire signed [23:0] pind1_i = {ds1_i, 12'b0}, pind1_q = {ds1_q, 12'b0};
 `else
