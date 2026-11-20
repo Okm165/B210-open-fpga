@@ -122,15 +122,37 @@ reasoning from plausibility.
 
 ---
 
-## 5. Where the line is (2026-11-20)
+## 5. Measurement update (after the LED diagnostics)
+
+The LED diagnostics settled the clock question **by measurement**:
+
+* v1/v2 (raw 40 MHz, known-wired LED): green and blue LEDs **blink** ->
+  the 40 MHz reference reaches the FPGA pins.  The clock-absent hypothesis
+  is **refuted**.
+* RX1 LED steady -> the MMCM **locks** when its reset is tied low.
+* v3 now wires the MMCM reset to the real `GPIF_CTL9` pin from the FX3, so
+  the next reading separates "clocks fine" from "FX3 holds the design in
+  reset".  If RX1 is dark while the blue LED blinks, `GPIF_CTL9` is the
+  root cause.
+
+With the clock alive, the remaining suspects are, in order: (i) GPIF_CTL9
+held (v3 tests it), (ii) GPIF source-synchronous input timing - our own XDC
+records a 0-1 ns margin on the FX3->FPGA flag inputs and no way to
+constrain it in nextpnr, and the Kintex-port community reports exactly this
+failure mode (docs/RESEARCH-NOTES.md D2), (iii) a logic defect in the port -
+now the least likely, since tb_ctrl_fifo proves that logic correct when
+clocked and out of reset.
+
+## 6. Where the line is (2026-11-20)
 
 Proven: image builds and configures on the real Kintex; FX3 healthy through
 every reset; control-path RTL correct in simulation; full-rate data path
 characterised; 2-RX tooling ready (rx_explore.py / rx_probe.py).
 
-Open, and not answerable from a host: **does the 40 MHz reach pin AA17,
-and does the MMCM lock?** The LED diagnostic (diag_clock) answers both by
-eye; a scope answers them in seconds. Until then the two RX channels cannot
-stream, because the FPGA that must answer the control packet is unclocked.
+Open: why the configured, clocked FPGA does not answer the control packet.
+The candidates are now hardware-interface level (`GPIF_CTL9` reset state, or
+GPIF input sampling phase), and both are testable with the board as oracle:
+the LED diagnostics measure them, and a re-phased/requalified rebuild tests
+the fix.
 
-The next datapoint in this project is a reading on the board.
+The next datapoint in this project is the RX1 LED reading of diag v3.

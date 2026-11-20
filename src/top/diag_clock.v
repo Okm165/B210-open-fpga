@@ -20,6 +20,7 @@
 module diag_clock (
    input  wire codec_main_clk_p,
    input  wire codec_main_clk_n,
+   input  wire GPIF_CTL9,     // the real design's MMCM reset, from the FX3
    output wire LED_CLK_G,     // blinks iff the raw 40 MHz toggles
    output wire LED_RX1,       // on iff the MMCM locks
    output wire LED_STATUS     // constant on
@@ -34,7 +35,7 @@ module diag_clock (
    // If the clock is absent the counter never advances and the LED is dark.
    reg [24:0] blink_cnt = 25'd0;
    always @(posedge clk_in1) blink_cnt <= blink_cnt + 25'd1;
-   assign LED_CLK_G = blink_cnt[24];
+   assign LED_CLK_G = blink_cnt[24];   // F9 (may be unwired on clones)
 
    // ---- the real design's MMCM, verbatim parameters ----
    wire clkfbout, clkfbout_buf;
@@ -80,11 +81,18 @@ module diag_clock (
       .DI(16'h0), .DADDR(7'h0), .DWE(1'b0), .DEN(1'b0), .DCLK(1'b0), .DRDY(),
       .PSCLK(1'b0), .PSEN(1'b0), .PSINCDEC(1'b0), .PSDONE(),
       .LOCKED(locked),
-      .CLKFBSTOPPED(), .CLKINSTOPPED(), .PWRDWN(1'b0), .RST(1'b0)
+      .CLKFBSTOPPED(), .CLKINSTOPPED(), .PWRDWN(1'b0),
+      .RST(GPIF_CTL9)          // v3: the REAL reset, not tied low
    );
    BUFG bufg_fb (.I(clkfbout), .O(clkfbout_buf));
+   // v3 readout: RX1 shows the REAL locked; when it is dark while the blue
+   // LED blinks, GPIF_CTL9 is holding the MMCM in reset (root cause).
    assign LED_RX1 = locked;
 
-   assign LED_STATUS = 1'b1;
+   // v2: the KNOWN-WIRED led (the blue one, B11) now shows the raw 40 MHz:
+   //   blinking  -> 40 MHz reaches the FPGA  (clock hypothesis REFUTED)
+   //   constant  -> no toggling at AA17      (clock absent - root cause)
+   //   dark      -> FPGA not configured (should not happen; FX3 says DONE)
+   assign LED_STATUS = blink_cnt[24];
 
 endmodule
