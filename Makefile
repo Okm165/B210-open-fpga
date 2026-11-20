@@ -825,6 +825,12 @@ test-data:
 	cd $(SIM_DIR) && $(VVP) -l tb_tx_pairing.log tb_tx_pairing.vvp
 	@grep -q 'TX-PAIR: PASS' $(SIM_DIR)/tb_tx_pairing.log || \
 	  { echo "ERROR: TX sample pairing broken; see $(SIM_DIR)/tb_tx_pairing.log"; exit 1; }
+	cd $(ROOT) && $(MAKE) --no-print-directory test-data2
+
+# The last block of data-path benches (loopback2, airloop, IMD3, phase, the
+# packet gate).  It was orphaned: test-data stopped here, so the signoff gate
+# never ran it, and this target's old last line invoked *itself*, which made
+# a direct run recurse forever.  Now it is chained and terminates.
 test-data2:
 	@set -e
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
@@ -860,11 +866,6 @@ test-data2:
 	@grep -q 'RETUNE: PASS' $(SIM_DIR)/tb_tx_retune.log || \
 	  { echo "ERROR: a transmitter settings write disturbs the stream; see $(SIM_DIR)/tb_tx_retune.log"; exit 1; }
 	@cd $(ROOT) && python3 scripts/check_rates.py
-
-
-
-
-	cd $(ROOT) && $(MAKE) --no-print-directory test-data2
 
 # The second half of the data-path benches.  Split off test-data because
 # .ONESHELL passes each recipe to one shell as a single argument, and the
