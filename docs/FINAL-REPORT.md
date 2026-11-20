@@ -3,7 +3,7 @@
 This is the operator page.  Every number below is measured in simulation by a
 bench or a plot page named beside it; nothing here is estimated from a model
 unless it says so.  The gate that guarantees all of it still holds is
-`make release-check` (120 benches, image identity, clean tree).
+`make release-check` (121 benches, image identity, clean tree).
 
 ## 1. What the design does
 
@@ -199,7 +199,7 @@ Recorded so they are not repeated (detail in `dsp-audit`):
 
 ## 7. Deploy
 
-    make release-check   # signoff: 120 benches, image identity, clean tree
+    make release-check   # signoff: 121 benches, image identity, clean tree
     make deploy          # build/deploy: image + provenance + checklist
 
 Image `build/fpga/bitstream/usrp_b210_fpga.bin`, sha256
