@@ -136,6 +136,9 @@ RX_STREAM_TEST_SRCS := $(ELAB_SRCS) \
 USB_RATE_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_usb_rate.v
+CTRL_FIFO_TEST_SRCS := $(ELAB_SRCS) \
+  $(ROOT)/tests/sim/xilinx_prim_sim.v \
+  $(ROOT)/tests/tb_ctrl_fifo.v
 ADC_PINS_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/sim/xilinx_prim_sim.v \
   $(ROOT)/tests/tb_adc_pins.v
@@ -878,6 +881,11 @@ test-data2:
 	@cd $(SIM_DIR) && $(VVP) -n tb_atr.vvp | tee tb_atr.log | grep -E 'ATR'
 	@grep -q 'ATR: PASS' $(SIM_DIR)/tb_atr.log || \
 	  { echo "ERROR: frontend ATR/PA-enable path wrong; see $(SIM_DIR)/tb_atr.log"; exit 1; }
+	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -D TARGET_B210 -I $(ROOT)/src/rtl/control \
+	  -s tb_ctrl_fifo -o tb_ctrl_fifo.vvp $(CTRL_FIFO_TEST_SRCS)
+	@cd $(SIM_DIR) && $(VVP) -n tb_ctrl_fifo.vvp | tee tb_ctrl_fifo.log | grep -E 'PASS: ctrl path|FAIL'
+	@grep -q 'PASS: ctrl path' $(SIM_DIR)/tb_ctrl_fifo.log || \
+	  { echo "ERROR: control path through the FX3 interface broken; see $(SIM_DIR)/tb_ctrl_fifo.log"; exit 1; }
 	@cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
 	  -s tb_spi -o tb_spi.vvp $(SPI_TEST_SRCS)
 	@cd $(SIM_DIR) && $(VVP) -n tb_spi.vvp | tee tb_spi.log | grep -E 'SPI'
