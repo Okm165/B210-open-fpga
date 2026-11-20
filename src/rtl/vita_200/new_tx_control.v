@@ -71,7 +71,6 @@ module new_tx_control
    wire [63:0] CODE_UNDERRUN           = {32'd2,20'd0,seqnum};
    wire [63:0] CODE_SEQ_ERROR          = {32'd4,4'd0,expected_seqnum,4'd0,seqnum};
    wire [63:0] CODE_TIME_ERROR         = {32'd8,20'd0,seqnum};
-   wire [63:0] CODE_UNDERRUN_MIDPKT    = {32'd16,20'd0,seqnum};
    wire [63:0] CODE_SEQ_ERROR_MIDBURST = {32'd32,4'd0,expected_seqnum,4'd0,seqnum};
 
    reg clear_seqnum_latch;

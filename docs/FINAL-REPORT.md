@@ -187,6 +187,12 @@ Recorded so they are not repeated (detail in `dsp-audit`):
   mux, the retune - was orphaned, so "105 PASS" did not include it, and its
   last line invoked *itself*, which made a direct run recurse forever.  The
   chain is fixed (test-data -> test-data2) and the gate now reports 120.
+* **Dead declarations are invisible in the bitstream but not in the reading.**
+  A mechanical pass found 24 unused `wire`/`reg` lines in inherited code
+  (frontend-mux leftovers in `duc_chain`, an abandoned CORDIC pair in
+  `ddc_chain`, CHDR header constants, float-converter remnants).  Synthesis
+  had pruned them, so the rebuild is byte-identical; the gain is that the
+  source now says exactly what the hardware does.
 * A page must be drawn from the capture its own target produced.  `make plots`
   runs the converter capture and draws it; `make plots-levels` then re-runs
   that same capture at each sweep point and leaves the last one in the build

@@ -32,9 +32,7 @@ module chdr_12sc_to_16sc
    
    
    
-   wire 	       chdr_has_hdr = 1'b1;
    wire 	       chdr_has_time = i_tdata[61];
-   wire 	       chdr_has_tlr = 1'b0;
 
    wire [15:0] 	       chdr_header_lines = chdr_has_time? 16 : 8;  
    wire [15:0] 	       just_samples_in = i_tdata[47:32] - chdr_header_lines;

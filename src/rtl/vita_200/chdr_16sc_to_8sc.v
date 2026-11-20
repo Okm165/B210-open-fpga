@@ -26,9 +26,7 @@ module chdr_16sc_to_8sc
    //pipeline register
    reg [63:0] 	  hold_tdata;
    //bit assignments
-   wire    chdr_has_hdr = 1'b1;
    wire    chdr_has_time = i_tdata[61];
-   wire    chdr_has_tlr = 1'b0;
 
    wire [7:0]    rounded_i1;
    wire [7:0]    rounded_q1;

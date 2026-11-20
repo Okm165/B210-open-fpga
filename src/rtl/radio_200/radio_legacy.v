@@ -74,9 +74,9 @@ module radio_legacy
    wire 	 tx_tready_r, tx_tvalid_r;
    wire 	 tx_tlast_r;
 
-   wire [63:0] 	 txresp_tdata, txresp_tdata_r;
-   wire 	 txresp_tready, txresp_tready_r, txresp_tvalid, txresp_tvalid_r;
-   wire 	 txresp_tlast, txresp_tlast_r;
+   wire [63:0] 	 txresp_tdata_r;
+   wire 	 txresp_tready_r, txresp_tvalid_r;
+   wire 	 txresp_tlast_r;
 
    wire [63:0] 	 rmux_tdata_r;
    wire 	 rmux_tlast_r, rmux_tvalid_r, rmux_tready_r;

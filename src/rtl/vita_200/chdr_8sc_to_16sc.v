@@ -24,9 +24,7 @@ module chdr_8sc_to_16sc
     );
 
    //bit assignments
-   wire 	  chdr_has_hdr = 1'b1;
    wire 	  chdr_has_time = i_tdata[61];
-   wire 	  chdr_has_tlr = 1'b0;
    wire 	  set_sid;
 
    //chdr length calculations

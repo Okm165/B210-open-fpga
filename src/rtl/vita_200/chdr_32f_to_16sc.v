@@ -26,9 +26,7 @@ module chdr_32f_to_16sc
     );
 
  
-   wire 	      chdr_has_hdr = 1'b1;
    wire 	      chdr_has_time = i_tdata[61];
-   wire 	      chdr_has_tlr = 1'b0;
 
    wire [15:0] 	      s0_imag;
    wire [15:0] 	      s0_real;
@@ -36,10 +34,6 @@ module chdr_32f_to_16sc
    wire [15:0] 	      s1_real;
    
 
-   reg [15:0] 	      imag0;
-   reg [15:0] 	      real0;
-   wire [15:0] 	      imag1;
-   wire [15:0] 	      real1;
    
 
 

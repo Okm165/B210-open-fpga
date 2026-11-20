@@ -34,9 +34,7 @@ module chdr_16sc_to_32f
    wire [31:0] 	      s1_imag;
 
 
-   wire 	      chdr_has_hdr = 1'b1;
    wire 	      chdr_has_time = i_tdata[61];
-   wire 	      chdr_has_tlr = 1'b0;
 
  	      
    //chdr length calculations

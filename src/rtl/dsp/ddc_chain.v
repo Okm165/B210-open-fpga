@@ -36,7 +36,6 @@ module ddc_chain
    reg [31:0]  phase;
 
    wire [cwidth-1:0] to_cordic_i, to_cordic_q;
-   wire [cwidth-1:0] i_cordic, q_cordic;
    reg  [WIDTH-1:0] i_cordic_pipe, q_cordic_pipe;
 
 

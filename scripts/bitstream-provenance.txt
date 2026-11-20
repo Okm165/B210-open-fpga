@@ -9,6 +9,6 @@
 # Toolchain: the container image tag in the Makefile pins yosys/nextpnr; the
 # digest deliberately does not, so bump the tag in the same change as a tool
 # upgrade and regenerate this file.
-image  bcf0a6fc17be573e23d1d44a8e5867d4ce122f93340e0ea4500814484ec8d5bb
-source 69ba8968507c2004511c7aa93e7cbb3e7b7f51b36caddfedbfdb0f9714a482cd
-rtl-commit 6706c10
+image  c1cc09ddf4ca668b66c8d086d9e7c508f4ca79d4740a0a5f5215042424865253
+source abe46e25c031f4148a2c02eb85f4d54f104d073776ca32f5e6fa60690df2fc29
+rtl-commit d4ed54d
