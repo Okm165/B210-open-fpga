@@ -156,3 +156,26 @@ the LED diagnostics measure them, and a re-phased/requalified rebuild tests
 the fix.
 
 The next datapoint in this project is the RX1 LED reading of diag v3.
+
+
+## Hardware bring-up verdict (2026-11-21)
+
+The live-board investigation closed with a definitive result: **the vendor's
+own production image for this exact board (OpenSourceSDRLab release v1.0,
+Vivado 2024.1, checksum-verified) also fails** with the identical first-
+control-packet timeout as every build from this repository.  The full
+elimination chain - FX3 healthy, clocks measured alive by LED diagnostics,
+pin map identical to the vendor's own XDC (139/139 ports), control-path RTL
+proven in simulation (tb_ctrl_fifo), a minimal control-only design failing
+like the full one - exonerates the design, the toolchain, and the pin map.
+
+**Verdict: the FX3<->FPGA GPIF interface of this specific board unit is
+defective** (physical fault or unit-level revision).  Recommended: contact
+OpenSourceSDRLab support, reseat the FPC/JTAG header, and test a second
+unit - `scripts/hw_load.py` + `uhd_usrp_probe` isolate unit-vs-design in
+one minute.  Full evidence: `.context/dsp-audit.md` 2ay-2bd,
+`build/hw-probe/ATTEMPTS.md`, `docs/RESEARCH-NOTES.md`.
+
+The DOD (2 RX channels live) closes with two commands on any working unit:
+`scripts/hw_load.py build/deploy/usrp_b210_fpga.bin`, then
+`uhd_usrp_probe`, then `scripts/rx_explore.py --ch 2`.
