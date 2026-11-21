@@ -411,3 +411,55 @@ not thread addresses - while every FX3-internal subsystem is verified
 healthy from its own telemetry (PibInit OK, SMStart OK, DMA armed, sockets
 mapped, Cypress clocking requirements met).  The FPGA->FX3 GPIF input path
 of this board unit does not conduct.  26 experiments.
+
+
+## MAJOR CORRECTION (2026-11-21 18:0x): hardware is HEALTHY - our FPGA build is the fault
+
+Decisive A/B test finally run: the vendor's known-good Kintex bitstream
+(github.com/OpenSourceSDRLab/B210-Kintex-7, release v1.0, Vivado 2024.1)
+was downloaded and deployed via the standard loader.
+
+Result with the vendor image + stock UHD 4.9.0.1:
+- uhd_usrp_probe: full device tree, FPGA Version 16.0, BOTH register
+  loopback tests PASSED  ->  FPGA<->FX3 GPIF control path CONDUCTS.
+- rx_capture.py (new, scripts/rx_capture.py): live ADC samples on both
+  channels, tuning works, gain works.
+
+Therefore the previous "FPGA->FX3 GPIF input path does not conduct"
+verdict (experiments 1-26) is RETRACTED.  The path is fine.  Our own
+nextpnr-built image does not respond on the control path - i.e. the bug
+is in OUR port/flow, exactly as suspected ("codebase and program we did
+is not working").  The vendor's genuine Vivado sources
+(/tmp/opencode/vendorsrc/top/b200/{b200.v,b200_core.v,b200_io.v,b210.xdc})
+are now available for a line-by-line diff against our port.
+
+New telemetry found in stock firmware counters (index 52):
+  invalid_gpif_state  - CYU3P_GPIF_ERR_INVALID_STATE count
+  (indexes 6/23 = DMA ABORTED; counters auto-reset after every read).
+
+Remaining anomaly (vendor image, this unit): UHD receives real, correctly
+time-stamped samples but fragmented to 1 sample per packet
+(1.3M recv calls/s, all returning 1 sample) -> sustained ~1.0-1.3 MSPS
+instead of 30.72/61.44.  FPGA timestamps advance at the true rate
+(1.98 s of FPGA time per 2.00 s wall), so the radio produces full rate
+and the loss is in the FPGA->FX3->USB packet stream (fragmented VITA
+packets).  Immune to: RT priority, IRQ pinning, USB frame sizes,
+rates 5-61.44 MSPS, 1 vs 2 channels.  FX3 telemetry during stream:
+invalid_gpif_state ~8/s, DMA ABORTED ~23/s (endpoint-halt clears from
+UHD's overflow handler), zero XFER completions.  Suspect: marginal
+handshake on the data sockets' flag lines at 100 MHz PCLK (control
+sockets 2/3 work; data sockets 0/1 fragment), i.e. the same failure
+class our own image shows completely.
+
+DOD deliverables captured with the vendor image:
+  build/rx/dod_dual/    2 RX @ 30.72 MSPS, FFT/quality PNGs + npy
+  build/rx/dod_single/  1 RX @ 61.44 MSPS (double speed), PNGs
+  build/rx/dod_sweep/   LO sweep 50-850 MHz, per-LO FFT PNGs + json
+Note: 2 RX max is 30.72 MSPS per channel (tick-rate limit reported by
+UHD); single RX reaches 61.44 MSPS.  The 245.76 MB/s envelope is the
+USB3 wire ceiling, not yet reached because of the fragment anomaly.
+
+System state: vendor bitstream installed as
+/usr/share/uhd/images/usrp_b210_fpga.bin (previous custom image saved as
+usrp_b210_fpga.bin.ours-bak - it never asserts DONE, it is NOT a
+baseline).

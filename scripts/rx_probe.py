@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-FS = 61.44e6
+FS = 61.44e6   # full ADC rate; overridden by --rate
 FULL = 32768.0
 
 
@@ -40,9 +40,14 @@ def main():
     ap.add_argument("--args", default="type=b200")
     ap.add_argument("--out", default="build/hw-probe")
     ap.add_argument("--secs", type=float, default=0.05)
+    ap.add_argument("--rate", type=float, default=30.72e6,
+                    help="RX rate per channel (30.72e6 dual, 61.44e6 single)")
+    ap.add_argument("--chans", type=int, default=2, choices=[1,2])
     ap.add_argument("--synthetic", action="store_true",
                     help="no hardware: codec-noise-like data, to test this tool")
     a = ap.parse_args()
+    global FS
+    FS = a.rate
     os.makedirs(a.out, exist_ok=True)
 
     if a.synthetic:
@@ -59,10 +64,10 @@ def main():
     print(f"[rx_probe] opening {a.args}")
     usrp = uhd.usrp.MultiUSRP(a.args)
     print(f"[rx_probe] mboard: {usrp.get_mboard_name()}")
-    if usrp.get_rx_num_channels() < 2:
-        sys.exit("[rx_probe] FAIL: fewer than 2 RX channels")
+    if usrp.get_rx_num_channels() < a.chans:
+        sys.exit("[rx_probe] FAIL: fewer than %d RX channels" % a.chans)
 
-    for ch in (0, 1):
+    for ch in range(a.chans):
         usrp.set_rx_rate(FS, ch)
         usrp.set_rx_freq(uhd.types.TuneRequest(1e9), ch)
         usrp.set_rx_gain(0.0, ch)
@@ -71,22 +76,34 @@ def main():
 
     nsamps = int(a.secs * FS)
     st = uhd.usrp.StreamArgs("fc32", "sc16")
-    st.channels = [0, 1]
+    st.channels = list(range(a.chans))
     streamer = usrp.get_rx_stream(st)
-    buf = [np.zeros(nsamps, dtype=np.complex64) for _ in range(2)]
+    buf = np.zeros((nsamps, a.chans), dtype=np.complex64)
     md = uhd.types.RXMetadata()
-    cmd = uhd.types.StreamCMD(uhd.types.StreamCMD.num_samps_done)
+    cmd = uhd.types.StreamCMD(uhd.types.StreamMode.num_done)
     cmd.num_samps = nsamps
     cmd.stream_now = True
     usrp.issue_stream_cmd(cmd)
     t0 = time.time()
-    got = streamer.recv(buf, md, 5.0)
-    usrp.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamCMD.mode_stop_cont))
+    got = 0
+    errs = 0
+    while got < nsamps and (time.time() - t0) < 10.0:
+        n = streamer.recv(buf[got:], md, 2.0)
+        if n == 0:
+            if md.error_code == uhd.types.RXMetadataErrorCode.timeout:
+                errs += 1
+                if errs > 3:
+                    break
+            continue
+        got += n
+    usrp.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
     dt = time.time() - t0
     eff = got / dt / FS * 100 if dt > 0 else 0
     print(f"[rx_probe] recv {got}/{nsamps} in {dt*1e3:.1f} ms ({eff:.0f}% of rate) "
           f"err {md.error_code}")
-    return report(buf[0][:got], buf[1][:got], got, dt, a.out)
+    c0 = buf[:got, 0]
+    c1 = buf[:got, 1] if a.chans > 1 else buf[:got, 0]
+    return report(c0, c1, got, dt, a.out)
 
 def report(c0, c1, got, dt, outdir, synthetic=False):
     i0, q0, i1, q1 = c0.real, c0.imag, c1.real, c1.imag
