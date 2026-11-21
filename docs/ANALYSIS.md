@@ -222,3 +222,19 @@ the identical RTL passes both directions in simulation.  19 experiments
 total.  The defect is the GPIF data path of this board unit - physical
 layer or FX3-side DMA configuration.  Vendor support is the channel; the
 design, tooling, and evidence are complete and committed.
+
+
+## Raw-USB split-point measurement (final, 2026-11-21)
+
+Bypassing UHD entirely: a properly framed CHDR peek packet written directly
+to the control bulk endpoint (EP4, interface 3) was **accepted by the FX3**
+(all 16 bytes, DMA-level) — the host->FX3 leg works.  Three 2-second reads
+on the response endpoint (EP8, interface 4) returned **nothing**, while the
+FPGA's minimal design was proactively pushing valid responses into the GPIF
+path.
+
+The exact split point: **the host->FX3 leg works; the FX3<->FPGA GPIF data
+exchange and/or the FX3->host return leg does not.**  This is consistent
+with every prior result and pinpoints the fault to the GPIF physical
+exchange on this board unit — the same conclusion the 19-experiment chain
+reached by other means.  Nothing further is measurable from the host.
