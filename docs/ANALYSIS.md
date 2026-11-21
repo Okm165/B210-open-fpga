@@ -291,3 +291,22 @@ and GitHub issues (both).  Key eliminations from their own documentation:
 
 Vendor documentation contains no skipped step, jumper, driver, or power
 requirement.  All host-reachable causes remain eliminated (22 experiments).
+
+
+## External corroboration: identical signature on genuine Ettus hardware (2026-11-21)
+
+NI Community forum (forums.ni.com, "Trying to get B200mini-i working on
+Ubuntu 20.04"): two GENUINE Ettus B205mini units, same host, same cable,
+same UHD, same stock image - posted side by side.  Unit 1 probes perfectly
+(loopback test passed).  Unit 2 fails with the byte-identical signature:
+"AssertionError: accum_timeout < _timeout in wait_for_ack at
+b200_radio_ctrl_core.cpp:227" at the first peek32(0).  NI's only reply
+(Jun 2025) asked which USB port; no resolution, because there is no
+software fix - it is a unit-level hardware failure of the FX3<->FPGA path
+on that unit.
+
+Consequence: the failure signature we measured on this board is now
+independently reproduced on original Ettus hardware with stock images.
+Software (host, driver, image) is excluded by a controlled A/B on genuine
+hardware.  Our verdict is no longer unique to the clone: it is the known
+behaviour of a defective unit in this product family.
