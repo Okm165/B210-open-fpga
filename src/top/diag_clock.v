@@ -85,14 +85,16 @@ module diag_clock (
       .RST(GPIF_CTL9)          // v3: the REAL reset, not tied low
    );
    BUFG bufg_fb (.I(clkfbout), .O(clkfbout_buf));
-   // v3 readout: RX1 shows the REAL locked; when it is dark while the blue
-   // LED blinks, GPIF_CTL9 is holding the MMCM in reset (root cause).
-   assign LED_RX1 = locked;
+   // v4 readout: each LED = exactly one fact, no interpretation needed.
+   //   LED_RX1   (E13) = GPIF_CTL9 LEVEL:  lit = FX3 HOLDS RESET, dark = released
+   //   LED_CLK_G (F9)  = MMCM locked with the REAL reset applied
+   //   LED_STATUS(B11) = raw 40 MHz blink (known-wired sanity, must blink)
+   assign LED_RX1 = GPIF_CTL9;   // E13: lit = FX3 HOLDS RESET, dark = released
 
    // v2: the KNOWN-WIRED led (the blue one, B11) now shows the raw 40 MHz:
    //   blinking  -> 40 MHz reaches the FPGA  (clock hypothesis REFUTED)
    //   constant  -> no toggling at AA17      (clock absent - root cause)
    //   dark      -> FPGA not configured (should not happen; FX3 says DONE)
-   assign LED_STATUS = blink_cnt[24];
+   assign LED_STATUS = locked;   // B11 (known wired): on = MMCM locks
 
 endmodule
