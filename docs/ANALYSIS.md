@@ -195,3 +195,18 @@ driver works, another fails.  Corollaries:
 2. the root cause is refined from "GPIF interface dead" to "GPIF interface
    marginal" - measured, not inferred;
 3. the physical-fix path (vendor support, scope on the GPIF bus) stands.
+
+
+## Vendor-flow confirmation (2026-11-21, final)
+
+Following the vendor's documented flow exactly - their image copied into
+the UHD images folder, standard `uhd_image_loader` (no custom args),
+`uhd_usrp_probe` - the vendor image **configures successfully** (no state 5
+on this path) and the control path **still times out identically**
+(`b200_radio_ctrl_core` wait_for_ack).  The vendor's own image, the
+vendor's own documented flow, UHD's own loader: same dead control path.
+
+This is the last available control sample.  Verdict unchanged and now
+closed on every path: the FX3<->FPGA GPIF control interface of this board
+unit does not function with any image through any load method.  Physical
+defect or unit-level hardware issue; vendor support is the correct channel.
