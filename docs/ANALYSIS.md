@@ -310,3 +310,50 @@ independently reproduced on original Ettus hardware with stock images.
 Software (host, driver, image) is excluded by a controlled A/B on genuine
 hardware.  Our verdict is no longer unique to the clone: it is the known
 behaviour of a defective unit in this product family.
+
+
+## ROOT CAUSE FOUND: the FX3 refuses to start the P-port - part-ID check (2026-11-21)
+
+Discovered the firmware's own debug-log ring is readable via standard
+vendor request 0x23 (GET_LOG), plus GET_CONFIG (0x28), GET_COUNTERS (0x24)
+and GET_USB_EVENT_LOG (0x26) - all unmodded stock firmware telemetry.
+
+The firmware log shows, deterministically, at every FPGA-configuration
+cycle:
+
+    FPGA done
+    b200_gpif_init
+    ! CyU3PPibInit        <- PIB INITIALIZATION FAILS
+    GPIF loaded
+    Running
+
+and at every GPIF reset (0x72):
+
+    ! CyU3PGpifSMStart    <- GPIF STATE MACHINE NEVER STARTS
+
+Analysis against the FX3 SDK sources (SDK 1.3.4 binary + 1.3.1 source):
+CyU3PPibInit can only fail via the part-feature check
+CyFx3DevIsGpifSupported() (its other paths always succeed with the fw's
+arguments); it reads the FX3's hardware part-ID register (0xE0055008) and
+matches it against the SDK's 27-entry part-properties table, testing
+property bit 3 = GPIF supported.  On this unit the check fails: the chip
+self-identifies as a part WITHOUT host GPIF support - the SD3/SD2-class
+family (comment in cyu3pib.c: "If the part in use is SD3/SD2, the PIB is
+not supported").  GpifLoad "succeeds" only because CyFx3DevIsGpifConfigurable
+returns true for effectively any part (verified by disassembly: it tests
+mask 0xF00 of a single-byte property value).
+
+This single fact explains every one of the 24 experiments: USB, SPI
+FPGA-configuration, GPIO, I2C, DMA all work (different subsystems); the
+P-port register file/GPIF engine is never enabled by the firmware because
+the chip's own identification does not claim GPIF capability; therefore no
+data can cross the interface in either direction with any image.
+
+Physical hypotheses (in order of likelihood):
+1. the populated FX3 is not a CYUSB3014 (wrong/remarked part - check the
+   chip marking on the board);
+2. the part-ID/strap path of the chip reads wrong (defective silicon).
+
+Not a design, toolchain, driver, or deployment issue: the stock vendor
+image, stock firmware, and our image all behave identically because the
+chip's identity is upstream of all of them.
