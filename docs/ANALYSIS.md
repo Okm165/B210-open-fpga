@@ -357,3 +357,18 @@ Physical hypotheses (in order of likelihood):
 Not a design, toolchain, driver, or deployment issue: the stock vendor
 image, stock firmware, and our image all behave identically because the
 chip's identity is upstream of all of them.
+
+
+## AN65974 cross-check: clocking requirements satisfied (2026-11-21)
+
+Cypress AN65974 (authoritative slave FIFO app note) requires for 32-bit
+slave FIFO at 100 MHz: setSysClk400 = CyTrue in CyU3PDeviceInit ("essential
+for the functioning of slave FIFO at 100 MHz with 32-bit data").  UHD's
+b200_main.c sets exactly that (line 3256); the firmware is Cypress-
+compliant.  The DLL question is also settled: Cypress's own slave FIFO
+examples run with isDllEnable = CyFalse; the FX3's slave FIFO samples the
+interface on the external PCLK (GPIO16 input) without the DLL.  The
+firmware-side configuration is correct per the vendor's own documentation,
+leaving the FX3 P-port input path (PCLK/CTL/D pins or the input stage) as
+the only unverified element - consistent with the zero-DMA-movement result
+of the unconditional-strobe experiment.
