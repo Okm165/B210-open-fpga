@@ -179,3 +179,19 @@ one minute.  Full evidence: `.context/dsp-audit.md` 2ay-2bd,
 The DOD (2 RX channels live) closes with two commands on any working unit:
 `scripts/hw_load.py build/deploy/usrp_b210_fpga.bin`, then
 `uhd_usrp_probe`, then `scripts/rx_explore.py --ch 2`.
+
+
+## Margin discovery (2026-11-21)
+
+`uhd_image_loader` (UHD's own loader) hits `fx3 is in state 5` with the
+VENDOR's own image even from a clean UNCONFIGURED/READY state, while
+`scripts/hw_load.py` (same vendor-request protocol, same 512-byte chunks)
+configures that image to RUNNING successfully.  This board's FX3<->FPGA
+configuration path is **margin-sensitive to the driving pattern** - one
+driver works, another fails.  Corollaries:
+
+1. always load through `scripts/hw_load.py` on this board; UHD's loader
+   cannot be trusted to configure here;
+2. the root cause is refined from "GPIF interface dead" to "GPIF interface
+   marginal" - measured, not inferred;
+3. the physical-fix path (vendor support, scope on the GPIF bus) stands.
