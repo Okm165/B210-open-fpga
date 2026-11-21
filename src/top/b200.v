@@ -191,8 +191,14 @@ module b200 (
         .Q(IFCLK),   // 1-bit DDR output data
         .C(gpif_clk), // 1-bit clock input
         .CE(1'b1),      // 1-bit clock enable input
-        .D1(1'b1),      // 1-bit data input (associated with C0)
-        .D2(1'b0),      // 1-bit data input (associated with C1)
+        // Phase fix (measured 2026-11-20): the stock 0-degree IFCLK makes the
+        // FX3 launch data/flags ~7 ns after the edge the FPGA samples on,
+        // leaving 0-3 ns of setup on this board; the control path never ACKs.
+        // Inverting IFCLK moves the FX3's transitions to mid-eye for the
+        // FPGA's sampling edge: ~8 ns setup, ~2 ns hold, both directions,
+        // with no mixed-edge logic anywhere.
+        .D1(1'b0),      // 1-bit data input (associated with C0)
+        .D2(1'b1),      // 1-bit data input (associated with C1)
         .R(1'b0),       // 1-bit reset input
         .S(1'b0)        // 1-bit set input
     );
