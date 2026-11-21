@@ -1,5 +1,6 @@
 # diag_ctrl.xdc - clocks, the full GPIF pin set, and LEDs.
 create_clock -period 25.000 -name codec_main_clk_p [get_ports codec_main_clk_p]
+create_clock -period 10.000 -name ifclk_in [get_ports IFCLK]
 set_property LOC AA17 [get_ports codec_main_clk_p]
 set_property IOSTANDARD LVDS [get_ports codec_main_clk_p]
 set_property LOC AA18 [get_ports codec_main_clk_n]
