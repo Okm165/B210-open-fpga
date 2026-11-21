@@ -255,3 +255,18 @@ image are all one coherent Ettus design - and this board unit still returns
 no GPIF data in either direction.  Every information source reachable from
 the host is now exhausted and all point to the same verdict: physical defect
 in this unit's FX3<->FPGA GPIF data path.  Total: 21 experiments.
+
+
+## usbmon kernel-level confirmation (2026-11-21)
+
+Captured /dev/usbmon8 (bus 8, SuperSpeed) during a raw bulk control
+exchange.  Kernel-level facts, independent of UHD and pyusb:
+
+- bulk OUT to EP4 (16-byte CHDR peek): Submit -> Callback, status 0,
+  16 bytes.  The FX3 ACKed the packet at the USB protocol level; no stall.
+- bulk IN from EP8 (64 bytes): Submit only; no Callback.  The FX3 never
+  completed a single transfer toward the host.
+
+Lowest observable layer confirms the split point exactly: host + FX3 USB
+engine perfect, FX3 delivers nothing because its GPIF side produces no
+data.  22 experiments; verdict unchanged.
