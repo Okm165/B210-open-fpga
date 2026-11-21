@@ -238,3 +238,20 @@ exchange and/or the FX3->host return leg does not.**  This is consistent
 with every prior result and pinpoints the fault to the GPIF physical
 exchange on this board unit — the same conclusion the 19-experiment chain
 reached by other means.  Nothing further is measurable from the host.
+
+
+## cyfxgpif2config.h analysis - last source closed (2026-11-21)
+
+Decoded UHD's FX3 GPIF waveform (firmware/fx3/gpif2_designer/b200_v2.cydsn)
+against our RTL: our gpif2_slave_fifo32.v is the Ettus upstream file
+verbatim, and the waveform matches it on every axis - CTRL_BUS_DIRECTION
+0x0500 (FX3 drives only the two flag CTLs; FPGA drives address/strobes as
+our RTL does), CTRL_BUS_SELECT 0x18/0x19 (thread watermark flags matching
+fx3_ready/fx3_wmark), ALPHA_RESET 0x8 (CTL3 idle strobe polarity), 32-bit
+slave-FIFO threads.  Zero contradictions.
+
+Consequence: FPGA RTL, FX3 waveform, pin map, and the vendor's production
+image are all one coherent Ettus design - and this board unit still returns
+no GPIF data in either direction.  Every information source reachable from
+the host is now exhausted and all point to the same verdict: physical defect
+in this unit's FX3<->FPGA GPIF data path.  Total: 21 experiments.
