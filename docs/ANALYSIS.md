@@ -270,3 +270,24 @@ exchange.  Kernel-level facts, independent of UHD and pyusb:
 Lowest observable layer confirms the split point exactly: host + FX3 USB
 engine perfect, FX3 delivers nothing because its GPIF side produces no
 data.  22 experiments; verdict unchanged.
+
+
+## Vendor documentation fully mined (2026-11-21)
+
+Complete read of the vendor's Quick-Start-Guide, blog user manual, README,
+and GitHub issues (both).  Key eliminations from their own documentation:
+
+1. The board is USB bus-powered ("USB: data and power from the host") -
+   the external-supply hypothesis is dead by vendor spec.
+2. Their troubleshooting knows exactly one failure mode (fx3 state 5 =
+   wrong image) - our wait_for_ack signature is undocumented for this
+   board, and we eliminated the state-5 cause first.
+3. Their flow was followed verbatim earlier (their image via UHD's own
+   loader): configures, control path still silent.
+4. Image is from UHD v4.9.0.0 sources, tested on UHD 4.6-4.10; our host
+   4.9.0.1 is in range.
+5. No community report of our failure - and none confirming a working
+   control path on this board revision either.
+
+Vendor documentation contains no skipped step, jumper, driver, or power
+requirement.  All host-reachable causes remain eliminated (22 experiments).
