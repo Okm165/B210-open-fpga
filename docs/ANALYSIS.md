@@ -210,3 +210,15 @@ This is the last available control sample.  Verdict unchanged and now
 closed on every path: the FX3<->FPGA GPIF control interface of this board
 unit does not function with any image through any load method.  Physical
 defect or unit-level hardware issue; vendor support is the correct channel.
+
+
+## Proactive-response test - final (2026-11-21)
+
+The last experiment: the FPGA itself pushed well-formed response packets
+into the FX3 (request generator inside diag_ctrl, no host request needed).
+The host still received nothing.  Combined with every prior test: **no data
+crosses the GPIF data path in either direction on this board unit**, while
+the identical RTL passes both directions in simulation.  19 experiments
+total.  The defect is the GPIF data path of this board unit - physical
+layer or FX3-side DMA configuration.  Vendor support is the channel; the
+design, tooling, and evidence are complete and committed.
