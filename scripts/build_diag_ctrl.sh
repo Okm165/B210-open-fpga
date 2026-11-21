@@ -14,7 +14,7 @@ set -euo pipefail
 CR=/work; FPGA_PART=xc7k325tffg676-1; FPGA_HOME=/opt/fpga
 PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
 OUT=$CR/build/fpga/diag
-SRCS="$CR/src/top/diag_ctrl.v $CR/src/top/b200_clk_gen.v $CR/src/rtl/gpif2/gpif2_slave_fifo32.v $CR/src/rtl/gpif2/gpif2_to_fifo64.v $CR/src/rtl/gpif2/fifo64_to_gpif2.v $CR/src/rtl/gpif2/gpif2_error_checker.v $CR/src/rtl/fifo/axi_fifo32_to_fifo64.v $CR/src/rtl/fifo/axi_fifo64_to_fifo32.v $CR/src/rtl/fifo/axi_fifo.v $CR/src/rtl/fifo_200/axi_fifo_legacy.v $CR/src/rtl/fifo/axi_fifo_short.v $CR/src/rtl/fifo/axi_fifo_flop.v $CR/src/rtl/fifo/axi_fifo_flop2.v $CR/src/rtl/fifo/axi_fifo_bram.v $CR/src/rtl/fifo/axi_fifo_2clk_sim.v $CR/src/rtl/control_200/radio_ctrl_proc.v $CR/src/rtl/control/synchronizer.v $CR/src/rtl/control/synchronizer_impl.v $CR/src/rtl/control/bin2gray.v $CR/src/rtl/control/gray2bin.v $CR/src/rtl/fifo/axi_packet_gate.v $CR/src/rtl/control/ram_2port.v $CR/src/rtl/timing/time_compare.v $CR/src/rtl/timing/timekeeper_legacy.v $CR/src/rtl/timing/pps_generator.v"
+SRCS="$CR/src/top/diag_ctrl.v $CR/src/top/b200_clk_gen.v"
 mkdir -p $OUT/synth $OUT/pnr $OUT/bitstream $CR/build/fpga/logs
 yosys -p "read_verilog -I $CR/src/rtl/control $SRCS; synth_xilinx -flatten -abc9 -family xc7 -top diag_ctrl; write_json $OUT/synth/diag_ctrl.json; stat" \
   > $CR/build/fpga/logs/diagc-synth.log 2>&1 \
