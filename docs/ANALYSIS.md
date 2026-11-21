@@ -372,3 +372,20 @@ firmware-side configuration is correct per the vendor's own documentation,
 leaving the FX3 P-port input path (PCLK/CTL/D pins or the input stage) as
 the only unverified element - consistent with the zero-DMA-movement result
 of the unconditional-strobe experiment.
+
+
+## XDC cross-check vs vendor (2026-11-21)
+
+Systematic diff of all GPIF pins against the vendor's own XDC:
+- pins identical (AA4, AE2, AE1, AC2, AB6, Y2, AD3, Y5, AC3, AB1, AC4, AB4, AD1)
+- IO standards identical (LVCMOS18 everywhere)
+- vendor adds SLEW SLOW on every GPIF pin; nextpnr's default is SLOW (our
+  XDC documents this), so no bitstream-level difference exists
+- the genuine Ettus Spartan-6 design uses the identical fifoadr/gpif_ctl
+  wiring (`{GPIF_CTL11,GPIF_CTL12}`, `{CTL8,CTL6,CTL5,CTL4}`)
+
+Conclusion: our constraints and wiring match both the vendor and the
+genuine reference exactly.  Firmware v4.6.0.0 vs v4.9 diffed: only cosmetic
+(whitespace/formatting) - no behavioural difference between the version the
+vendor documents and the one we run.  The failure is therefore not in any
+configuration we control.
