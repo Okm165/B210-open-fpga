@@ -389,3 +389,25 @@ genuine reference exactly.  Firmware v4.6.0.0 vs v4.9 diffed: only cosmetic
 (whitespace/formatting) - no behavioural difference between the version the
 vendor documents and the one we run.  The failure is therefore not in any
 configuration we control.
+
+
+## Sustained-strobe overrun test - USB/terminal observable (2026-11-21)
+
+Method: fresh fw session, flag-free unconditional strobe master loaded as
+config cycle #1, 0x72 issued (log shows clean 'GPIF reset', no SMStart
+error), then 10 s of continuous SLWR strobing into thread 3 while
+deliberately NOT reading EP8 - the 2x16 KB DMA buffers must overflow
+within microseconds IF the FX3 samples a single strobe.  Any sampled
+write with a full buffer raises CYU3P_PIB_ERR_THRx_WR_OVERRUN, which the
+firmware logs (readable via 0x23).
+
+Result: log EMPTY of any PIB error; DMA counters show zero movement; EP8
+silent.  If the FX3's P-port sampled even one strobe, an overrun would
+have been logged.  It did not.
+
+Conclusion (USB+terminal observable, no LED reliance): the FX3's P-port
+samples NOTHING from the FPGA - not PCLK-synchronised strobes, not data,
+not thread addresses - while every FX3-internal subsystem is verified
+healthy from its own telemetry (PibInit OK, SMStart OK, DMA armed, sockets
+mapped, Cypress clocking requirements met).  The FPGA->FX3 GPIF input path
+of this board unit does not conduct.  26 experiments.
