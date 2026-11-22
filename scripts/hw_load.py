@@ -44,6 +44,24 @@ def boost_hash(data):
     return h
 
 
+def wait_for_device(timeout=45.0):
+    """Wait until the FX3 re-enumerates AND answers a vendor control read."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        time.sleep(0.5)
+        d = usb.core.find(idVendor=VID, idProduct=PID)
+        if d is None:
+            continue
+        try:
+            d.set_configuration()
+            d.ctrl_transfer(VIN, GET_STATUS, 0, 0, 1, 1000)
+            return d
+        except Exception as exc:      # still rebooting / stale handle
+            last = exc
+    sys.exit(f"[hw_load] FAIL: FX3 did not come back after reset ({last})")
+
+
 def wait_for(dev, target, tries):
     seen = {}
     for _ in range(tries):
@@ -74,13 +92,11 @@ def main():
     # A full FX3 reset before every load: back-to-back configuration cycles
     # leave the FX3 in a state where even a known-good image fails to pass
     # the control-path probe afterwards (measured 2026-11-21).
+    # The FX3 re-enumerates on reset -- it can even land on a different host
+    # controller -- so wait until a *responsive* device is back before
+    # touching the old handle (a stale handle gives EPIPE).
     dev.ctrl_transfer(VOUT, 0x99, 0, 0, b"\x00\x00\x00\x00", 5000)
-    time.sleep(5)
-    import subprocess
-    subprocess.run(["uhd_find_devices"], stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    dev = wait_for_device()
     try:
         dev.detach_kernel_driver(0)
     except Exception:

@@ -753,3 +753,59 @@ Cross-checks:
 Verdict: the site-mapping hypothesis is DISPROVEN as the root cause.
 The elimination table is unchanged; remaining discriminators are a
 Vivado reference build or P-port scope observation.
+
+## ROOT CAUSE FOUND (2026-11-22): the open-source bitstream writer mis-packetizes
+
+Control experiment that settles the whole question:
+
+  vendor FASM  (decoded from the vendor's working .bin with prjxray bit2fasm,
+                652,127 features)
+      |
+      +--> re-emitted with our own writer (fasm2frames + xc7frames2bit)
+             => 11,443,710-byte image
+             => CONFIGURES (CRC ok, DONE high), but **no control response**
+
+Same netlist, same part, same FX3, same host.  Only the bitstream *encoding*
+differs.  So the defect is neither our RTL, nor nextpnr/yosys, nor the
+prjxray kintex7 placement/routing data: it is in **how the frames are
+packaged into configuration packets**.
+
+Diff of the two encodings (build/pkt_dump.py):
+
+  vendor (works):   19,681 FAR writes; FDRI bursts of 1..7 frames;
+                    19,183 MFWR packets (compressed);
+                    CTL1=0x1000 before data (compression on), CTL1=0 after.
+  ours  (silent):   ONE type-2 FDRI packet of 2,860,320 words starting at
+                    FAR=0, relying on the device to auto-increment across
+                    every column/block boundary of the die.
+
+7-series does not auto-increment FAR across block boundaries; frames after
+the first block are written to wrong addresses, so the fabric ends up as
+garbage while the configuration interface still reports success (DONE high,
+CRC over the received stream matches).  That is exactly the observed
+symptom, and it is why two toolchains, two host drivers, every RTL fix and
+every I/O-ring patch changed nothing.
+
+Fix implemented: build/repack.py re-packetizes a .bin with explicit FAR
+writes per contiguous frame run (vendor style).  Our image becomes
+2,155 FAR writes / 4,851 packets (from 2 FAR writes / 546 packets).
+
+## Hardware-neutral findings this round (all committed)
+
+  * IOB_COL_BANK_ACTIVE: present 30x in vendor, 0x in ours -> added
+    (vendor-exact tiles) - necessary but not sufficient.
+  * IOB_COL_OBUF_CASCADE_Y1 + OBUF_HP_BANK_GLUE on driving pins -> added.
+  * Clock tree: our GCLK0 (bus/GPIF clock) had *no* REBUF pass-through in
+    any clock region (vendor has 7, plus HROW muxes in 4 regions); the
+    GPIF I/O at row Y109 therefore had no clock.  Fixed and verified in the
+    emitted frames (14 BOT->TOP pass-throughs, 28 region enables).
+  * Vendor header writes MASK=0x1000 then CTL1=0x1000 (compression enable)
+    and clears CTL1 after the data; our writer emits CTL1=0.  Consistent
+    with us emitting uncompressed frames, so not a mismatch.
+  * The FX3 wedges (EPIPE on all vendor requests) when the *repacked* image
+    is streamed - the first time any of our images had a visible effect on
+    the FX3 side.  Recovery needs a real power cycle (bus re-enumeration is
+    not enough: the firmware state survives it).
+
+Status: repacked image built and ready to test the moment the board is
+power-cycled.
