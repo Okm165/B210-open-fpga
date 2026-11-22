@@ -62,3 +62,4 @@ __pycache__/
 # Temporary downloads and fragments.
 *.tmp
 *.part
+third_party/prjxray-db-openxc7/
