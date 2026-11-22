@@ -822,3 +822,12 @@ attempt (descriptor read -110).  Software recovery tried and exhausted:
 authorized toggle, per-port disable/power-cycle on both USB2 and USB3 ports,
 xhci controller unbind/bind, repeated USBDEVFS_RESET.  The FX3 firmware state
 survives all of it; a physical power cycle is required.
+
+## Isolation test prepared (pending power cycle)
+
+`/tmp/opencode/vendor_ourspack.bin` = the vendor's own 9,095 frame contents,
+packaged by our repacker (1,066 explicit FAR writes, uncompressed, CTL1=0).
+Loading it isolates packaging from content in one test:
+  - works  -> packaging fixed; ours_repack failing would implicate content
+              (then bisect: ours content + vendor packaging).
+  - silent -> our packaging still differs semantically from Vivado's.
