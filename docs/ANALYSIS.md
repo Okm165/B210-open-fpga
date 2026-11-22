@@ -968,3 +968,22 @@ Closing the gap requires one of:
   - an oscilloscope on IFCLK/CTL at the FX3 pins, or
   - an upstream kintex7 DB validation effort (e.g. comparing against a
     Vivado-generated FASM for the same part).
+
+## Stale-frames bug found and fixed; max-coverage image still silent (2026-11-22)
+
+Found a real defect in my repack: it wrote only the 27,850 frames present
+in the frames file, leaving ~470 device frames with STALE content from the
+previously-loaded image.  Fixed by using the original writer path
+(frames -> xc7frames2bit, which covers every frame).  Also restored the
+346 DB-undecodable vendor bits + 317 dropped bits (all non-fabric) into
+the frames.
+
+Result (atomic_ultra.bin): vendor-exact everything outside CLB/INT
+fabric + all recoverable dropped bits + full frame coverage ->
+configures, STILL SILENT.
+
+Remaining suspect, precisely localized: nextpnr's kintex7 fabric
+implementation (LUT configuration / routing correctness) - logic is
+sim-verified, so a placed/routed LUT or net mismatch is the candidate.
+Next: multi-seed sweep (different P&R results) + upstream report with
+the complete evidence chain.
