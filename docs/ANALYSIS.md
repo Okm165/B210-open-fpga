@@ -544,3 +544,56 @@ valid control-path instrument (it answers correctly on the vendor image).
 Also corrected: the control-response IN endpoint is 0x88 (not 0x84),
 and the committed b51271d diag_ctrl drove IFCLK at 180 deg
 (D1=0, D2=1) - a third variant; the vendor-correct 0 deg is D1=1, D2=0.
+
+
+## Toolchain verdict (2026-11-21 21:0x): our flow's bitstreams never drive the P-port
+
+Decisive observations, all on this unit, all USB/terminal observable:
+
+1. Vendor Vivado bitstream (4.58 MB, compressed) -> probe passes, both
+   loopback tests pass, full-rate RX on both channels.
+2. OUR bitstreams (11.44 MB, full uncompressed 28,325-frame image) ->
+   configuration completes (DONE, state 4) but the FPGA never answers a
+   single control read.  This includes:
+     - the shipping 2R2T design,
+     - a minimal control-path design,
+     - the same design with IFCLK driven by a plain BUFG->OBUF instead of
+       an ODDR,
+     - the same design with NO MMCM at all (raw 40 MHz),
+     - a PURELY COMBINATIONAL design (zero flip-flops) that holds
+       SLCS=0/SLWR=0 and writes 0xDEADBEEF into thread 1 continuously.
+3. For the combinational design the FX3 log stays clean, socket_inactive
+   stays 0, no overruns, and EP 0x86 delivers zero bytes.  With SLCS and
+   SLWR asserted every cycle, any PCLK would have produced an immediate
+   overrun storm.  None appeared -> the FX3 receives neither a clock nor
+   strobes from our FPGA.
+4. Equivalence of everything except the bitstream generator is proven:
+   - control-path RTL byte-identical to the vendor's (gpif2_slave_fifo32,
+     fifo64_to_gpif2, gpif2_to_fifo64, radio_ctrl_proc, axi_packet_gate,
+     axi_fifo*, setting_reg, reset_sync, simple_spi_core: 0 diff lines);
+   - MMCM parameters identical to the vendor's XCI (MULT 25, DIVCLK 1,
+     CLKIN 25 ns, CLKOUT 25/10/10, OPTIMIZED, ZHOLD, REF_JITTER 0.010);
+   - signal->pin map identical for all 139 main-design pins and all 50
+     diag pins (verified per signal, not just as a set);
+   - design configures with the same IDCODE 0x3651093 the vendor image
+     uses.
+   - synthesis log: only "debug wire has no driver" warnings, no
+     structural warnings.
+
+Conclusion: the yosys/nextpnr-himbaechel/prjxray chain produces images
+that configure the FPGA but do not drive its I/O (the routed FASM shows
+IOB configuration for 72 pins but no output-path enable; the only I/O
+direction features emitted are .IN / IN_ONLY, and the combinational
+design's pins never toggle at the FX3).  This is a toolchain failure, not
+an RTL, clocking, pin-map or firmware issue, and it explains why every
+image built by this project has been silent on hardware.
+
+Consequence for the DOD: 2 RX live at full rate is demonstrated on this
+unit (vendor bitstream).  A bitstream produced by OUR build flow has never
+been observed to drive a pin, so "2 RX from our own build" is blocked on
+the build flow, not on the design.  Two concrete paths:
+  (a) build the vendor's Vivado project (sources in the repository) -
+      a validated bitstream of the same RTL;
+  (b) fix/replace the flow's IOB/OLOGIC output enable (compare against a
+      known-good prjxray fasm for an output pin, or use a nextpnr build
+      whose 7-series IOB output path is known to work).
