@@ -21,6 +21,8 @@ CR := /work
 
 TOP                     ?= b200
 FPGA_PART               ?= xc7k325tffg676-1
+# P&R seed; override for a retry when a seed fails to converge.
+NEXTPNR_SEED            ?= 3
 FPGA_ALLOW_TIMING_FAIL  ?= 0
 FPGA_HOME               ?= /opt/fpga
 DIE                     := $(shell printf '%s\n' '$(FPGA_PART)' | sed -E 's/^(xc7[azkv][0-9]+t?).*/\1/')
@@ -398,7 +400,7 @@ pnr: tools
 	# as an escape hatch for seed experiments.  The gate stays at 1.05.
 	args=(--device "$(FPGA_PART)" --chipdb "$(CHIPDB)" --json "$(CSYNTH_JSON)" \
 	  -o "xdc=$(CXDC)" -o "fasm=$(CFASM)" \
-	  --seed 3 \
+	  --seed $(NEXTPNR_SEED) \
 	  --report "$(CFPGA)/reports/pnr-report.json" --detailed-timing-report)
 	if [ "$(FPGA_ALLOW_TIMING_FAIL)" = "1" ]; then args+=(--timing-allow-fail); fi
 	set +e
