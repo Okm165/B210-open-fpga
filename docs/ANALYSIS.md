@@ -503,3 +503,30 @@ num_samps, USB frame size/count, RT priority, IRQ affinity, rate, channel
 count.  Control path (sockets 2/3) is healthy; data sockets (0/1) are
 affected -> handshake/flag-level issue, to be pursued after our own image
 is confirmed responding.
+
+
+## THROUGHPUT MYSTERY SOLVED (2026-11-21 20:5x): it was the capture tool, not the board
+
+The '1 sample per VITA packet' anomaly was a pyuhd BUFFER-SHAPE artifact in
+our own capture script: recv() expects the buffer shaped (nchannels,
+nsamples).  A (nsamples,) or (nsamples, nchannels) buffer makes recv()
+return ONE sample per call, silently capping the stream at the Python call
+rate (~1.3 MSPS) and generating the overflow storm.
+
+With the correct (chans, N) shape, on the SAME unit, SAME vendor image,
+SAME host:
+- 2 RX @ 30.72 MSPS: 30.73M samples in 1.0 s (full dual rate), 5 overflows
+- 1 RX @ 61.44 MSPS: 61.4 MSPS sustained, ZERO overflows, 100% of request
+  -> 245.76 MB/s (61.44e6 x 4 B fc32) - the theoretical USB3 envelope
+- LO sweep 100-900 MHz in 4 MHz steps: 101 LOs, all tuned and captured
+
+The 'marginal flag lines at 100 MHz' hypothesis is RETRACTED.  The board
+meets its full published streaming envelope.
+
+Also applied Ettus's documented B200/B210 USB constraint
+(recv_frame_size multiple of 8, NOT of 1024) as a device-arg option.
+
+Deliverables (full rate):
+  build/rx/dod_dual_fullrate/    2 RX @ 30.72 MSPS + PNGs + npy
+  build/rx/dod_single_fullrate/  1 RX @ 61.44 MSPS + PNG
+  build/rx/dod_sweep_fullrate/   101-LO sweep, PNG per LO + summary json

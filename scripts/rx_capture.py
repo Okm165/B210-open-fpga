@@ -103,7 +103,10 @@ def capture(usrp, uhd, chans, rate, secs, freq, gain):
         cmd.stream_now = True
     rx.issue_stream_cmd(cmd)
 
-    buf = np.zeros((65536, chans), dtype=np.complex64)
+    # NOTE: pyuhd expects the buffer shaped (nchannels, nsamples); a
+    # (nsamples,) or (nsamples, nchannels) buffer makes recv() return one
+    # sample per call and silently caps throughput.
+    buf = np.zeros((chans, 65536), dtype=np.complex64)
     md = uhd.types.RXMetadata()
     chunks = []
     total = 0
@@ -120,7 +123,7 @@ def capture(usrp, uhd, chans, rate, secs, freq, gain):
                 if timeouts > 5:
                     break
             continue
-        chunks.append(buf[:n].copy())
+        chunks.append(buf[:, :n].T.copy())
         total += n
     rx.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
     dt = time.time() - t0
