@@ -681,3 +681,18 @@ path RTL is byte-identical to the working vendor image's.
 
 Every USB-observable check is exhausted.  Remaining discriminators need
 a scope on the P-port or a Vivado reference build.
+
+
+## Extra-CCLK test (2026-11-21 21:4x): ruled out
+
+Appended 64 KB of 0x20000000 padding (~16k extra CCLK cycles after the
+command stream) to our bitstream and reloaded from a clean FX3 state:
+configures, DONE asserts, still no control response.  The 'startup runs
+out of configuration clocks after DONE' theory is ruled out.
+
+USB-observable debugging is exhausted.  Final state:
+  - working image on the board: vendor bitstream (same RTL lineage),
+    full-rate RX verified;
+  - our builds: mainline and openXC7 toolchains, both silent;
+  - remaining discriminators: oscilloscope on the P-port, or a Vivado
+    reference build of the byte-identical sources.
