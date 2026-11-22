@@ -191,11 +191,12 @@ module b200 (
         .Q(IFCLK),   // 1-bit DDR output data
         .C(gpif_clk), // 1-bit clock input
         .CE(1'b1),      // 1-bit clock enable input
-        // Stock (unmodified) 0-degree IFCLK: matches the genuine Ettus
-        // design exactly.  The 180-degree variant was an experiment and is
-        // reverted for standards conformance.
+        // 0-degree IFCLK: D1=1 at the rising edge, D2=0 at the falling edge.
+        // The genuine Ettus/vendor design uses exactly this.  A previous
+        // "experiment" left D2=1'b1, which makes the ODDR output constant
+        // high: NO PCLK reaches the FX3 at all, and the whole GPIF is dead.
         .D1(1'b1),      // 1-bit data input (associated with C0)
-        .D2(1'b1),      // 1-bit data input (associated with C1)
+        .D2(1'b0),      // 1-bit data input (associated with C1)
         .R(1'b0),       // 1-bit reset input
         .S(1'b0)        // 1-bit set input
     );
