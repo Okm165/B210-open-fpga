@@ -463,3 +463,43 @@ System state: vendor bitstream installed as
 /usr/share/uhd/images/usrp_b210_fpga.bin (previous custom image saved as
 usrp_b210_fpga.bin.ours-bak - it never asserts DONE, it is NOT a
 baseline).
+
+
+## ROOT CAUSE FOUND in our port (2026-11-21 20:2x): IFCLK was a constant
+
+Line-by-line diff of our src/top/b200.v against the vendor's genuine
+Vivado source (fpga/.../top/b200/b200.v) shows:
+
+    vendor:  ODDR .D1(1'b1), .D2(1'b0)      -> 100 MHz square wave
+    ours:    ODDR .D1(1'b1), .D2(1'b1)      -> CONSTANT LOGIC HIGH
+
+With DDR_CLK_EDGE="OPPOSITE_EDGE" the ODDR emits D1 on the rising edge and
+D2 on the falling edge; D1=D2=1 therefore emits a DC level.  The FX3's
+PCLK input never received a clock in the shipping image.  Every one of the
+26 "GPIF is silent" experiments (including the strobe-master/overrun tests)
+was run against a clockless interface, which is why the control path never
+answered while the FX3 itself reported a healthy PIB and running SM.
+
+The comment above the code said "0-degree, reverted for standards
+conformance" while the code was worse than the 180-degree experiment -
+a comment/code mismatch introduced during the polarity experiments.
+
+Also aligned with the vendor XDC: SLEW SLOW on all 33 GPIF/IFCLK pins
+(the vendor sets it on every P-port pin).
+
+Fix committed at 563d1ad.  Full build + the automated deploy->probe->
+2RX->1RX chain (scripts/after_build.sh) armed.
+
+Independent confirmation that this is a *design* bug and not this unit:
+the vendor's own bitstream on the same unit gives a passing probe, both
+register loopback tests, live samples on both RX channels and a working
+LO sweep (see previous section).  Our image, with the same FX3 firmware
+and host, never answered - the only difference was the clock.
+
+Separate remaining data-plane anomaly (affects the vendor image too):
+VITA packets arrive with 1 sample each (1.27M recv calls/s at 1 sample),
+capping sustained throughput at ~1.3 MSPS.  Not caused by: stream-cmd
+num_samps, USB frame size/count, RT priority, IRQ affinity, rate, channel
+count.  Control path (sockets 2/3) is healthy; data sockets (0/1) are
+affected -> handshake/flag-level issue, to be pursued after our own image
+is confirmed responding.
