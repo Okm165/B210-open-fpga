@@ -696,3 +696,32 @@ USB-observable debugging is exhausted.  Final state:
   - our builds: mainline and openXC7 toolchains, both silent;
   - remaining discriminators: oscilloscope on the P-port, or a Vivado
     reference build of the byte-identical sources.
+
+
+## Host-driver A/B completed (2026-11-22): UHD 3.15 built and tested
+
+Built UHD 3.15.LTS from source (patched for modern boost: bundled rpclib
+io_service->io_context, resolver API updates, filesystem shim; RFNoC and
+legacy N/X/E-series devices disabled) and ran it against this unit:
+
+  - vendor bitstream  + UHD 3.15: probe passes, both loopback tests pass,
+    FPGA 16.0 -> the host driver works with this hardware;
+  - our bitstream     + UHD 3.15: identical wait_for_ack timeout.
+
+Complete A/B matrix now closed:
+  bitstream: vendor (works) vs ours (silent) - the only differing element;
+  P&R toolchain: mainline nextpnr and openXC7 nextpnr - both silent;
+  host driver: UHD 4.9 and UHD 3.15 - both work with vendor, both fail
+  with ours;
+  FX3 firmware: stock, identical in all cases.
+
+Since our bitstream's frame content decodes correctly against the
+prjxray database, the remaining explanation is a defect in the
+open-source kintex7 device data / bitstream generation itself (much less
+hardware-validated than prjxray's artix7 support), which both of our
+toolchains share.  A Vivado build of the byte-identical sources, or
+hardware observation of the P-port, is required to close this.
+
+Final deliverable state: hardware fully operational with the vendor
+bitstream; full-rate dual/single RX, tuning, quality all measured; our
+own bitstream blocked on the open-source kintex7 device data.
