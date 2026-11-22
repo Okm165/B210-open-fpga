@@ -725,3 +725,31 @@ hardware observation of the P-port, is required to close this.
 Final deliverable state: hardware fully operational with the vendor
 bitstream; full-rate dual/single RX, tuning, quality all measured; our
 own bitstream blocked on the open-source kintex7 device data.
+
+## IOB_Y0-vs-Y1 site-mapping lead resolved (2026-11-22): NOT a bug
+
+Lead: package_pins.csv puts AD1 (our IFCLK PCLK output) at site
+IOB_X1Y110 (the upper half) of tile RIOB18_X95Y109, while our FASM
+configures the IOB/OLOGIC features on IOB_Y0/OLOGIC_Y0 of that tile.
+
+Resolution: prjxray numbers the halves of an I/O tile the complement of
+site order - IOB_Y0 is the P/master (upper) half.  The openXC7 fasm.cc
+implements exactly this (`yLoc = 1 - ioLoc.y` for non-SING tiles) and
+documents that the convention was validated against a golden Vivado
+bitstream on VC707 (where a wrong mapping left their UART driving the
+N-half pin and thus silent).  Our full-design FASM therefore correctly
+targets AD1's master half: IOB_Y0 + OLOGIC_Y0 of X95Y109 with the
+ODDR/DRIVE features.
+
+Cross-checks:
+- RIOB18_X95Y109 sites per tilegrid: IOB_X1Y109 = IOB18S (AE1, N half),
+  IOB_X1Y110 = IOB18M (AD1, P half); FASM IOB_Y0 = master half = AD1. OK.
+- The RIOB18_SING alias entries (IOB33_Y0<->IOB33_Y1 flips on odd tiles)
+  are the same complement convention, not an inconsistency.
+- The mainline toolchain's FASM predates the openXC7 fix and cannot be
+  A/B'd (artifact overwritten, not in git), but is moot: the openXC7
+  build with the validated mapping is equally silent.
+
+Verdict: the site-mapping hypothesis is DISPROVEN as the root cause.
+The elimination table is unchanged; remaining discriminators are a
+Vivado reference build or P-port scope observation.
