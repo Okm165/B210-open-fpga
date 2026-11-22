@@ -841,3 +841,27 @@ packets for our image).  Images regenerated:
   /tmp/opencode/ours_repack.bin      (ours, 11,588,036 B)
   /tmp/opencode/vendor_ourspack.bin  (vendor content, 3,785,956 B)
 Upstream bug report drafted: docs/UPSTREAM-BUGREPORT.md.
+
+## Atomic (minimal) test image built (2026-11-22)
+
+Because the full-design image can confound several layers at once, an
+atomic test image is prepared from the minimal control-path design
+(usrp_diag_ctrl) with today's two fixes applied:
+
+  1. IOB_COL_BANK_ACTIVE bits set directly in the frames for the vendor's
+     30 tiles (build/patch_bank_active_frames.py; feature bit layout
+     38_012 / 38_032 / 38_034 from segbits_int_r.db), 90 bits patched;
+  2. per-frame FAR packaging (build/repack.py --per-frame): 27,850
+     explicit FAR write / FDRI pairs instead of one burst.
+
+Result: /tmp/opencode/atomic_diag.bin (11,587,928 B).  Decodes to 48,610
+features (48 IOB drive features, bank-active present) - i.e. the minimal
+design itself, nothing else.
+
+Test ladder when the board is powered again (simplest first):
+  A. /tmp/opencode/atomic_diag.bin      minimal control path only
+  B. /tmp/opencode/ours_repack.bin      full 2R2T design
+  C. /tmp/opencode/vendor_ourspack.bin  vendor content, our packaging
+  D. vendor original                    known-good control
+A passing A proves "our flow can drive this FPGA's control interface at
+all"; B then carries the full design; C/D separate packaging vs content.
