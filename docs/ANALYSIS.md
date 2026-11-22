@@ -656,3 +656,28 @@ P-port; the vendor's Vivado image on the same unit is fully operational.
 Closing this needs either a Vivado build of the (now-identical) RTL or a
 known-good reference bitstream/fasm from this toolchain to diff the IOB
 output-enable configuration against.
+
+
+## FX3 stale-state discovery (2026-11-21 21:3x): reset between loads is mandatory
+
+After a long session of back-to-back configuration cycles, a known-good
+image load followed by a probe started failing with the same
+wait_for_ack timeout as our images.  A full FX3 reset (0x99) + USB
+re-enumeration restored it immediately.
+
+Operational rule: always do a full FX3 reset between image loads.
+scripts/hw_load.py now does this automatically before every load.
+Re-testing our latest image from a clean state: still no control response
+- the stale-state issue was real but is not the cause of our image's
+silence.
+
+Also this round: built the openXC7 toolchain (their nextpnr with the
+IO/clocking fixes + openXC7/prjxray-db, xc7k325t chipdb) and rebuilt the
+full 2R2T design with it.  Result: identical - configures, never answers.
+So the P&R toolchain is not the cause either.  Timing is met
+(bus 109 MHz, radio 85.7 MHz), the IOB configuration is verified present
+in the frames (frames decoded against the prjxray DB), and the control
+path RTL is byte-identical to the working vendor image's.
+
+Every USB-observable check is exhausted.  Remaining discriminators need
+a scope on the P-port or a Vivado reference build.

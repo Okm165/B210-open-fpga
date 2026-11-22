@@ -71,6 +71,21 @@ def main():
     s = dev.ctrl_transfer(VIN, GET_STATUS, 0, 0, 1)[0]
     print(f"[hw_load] FX3 state before: {NAMES.get(s, s)}")
 
+    # A full FX3 reset before every load: back-to-back configuration cycles
+    # leave the FX3 in a state where even a known-good image fails to pass
+    # the control-path probe afterwards (measured 2026-11-21).
+    dev.ctrl_transfer(VOUT, 0x99, 0, 0, b"\x00\x00\x00\x00", 5000)
+    time.sleep(5)
+    import subprocess
+    subprocess.run(["uhd_find_devices"], stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    time.sleep(2)
+    dev = usb.core.find(idVendor=VID, idProduct=PID)
+    try:
+        dev.detach_kernel_driver(0)
+    except Exception:
+        pass
+
     dev.ctrl_transfer(VOUT, FPGA_CONFIG, 0, 0, b"\x00", 5000)
     ok, seen = wait_for(dev, 1, 500)
     if not ok:

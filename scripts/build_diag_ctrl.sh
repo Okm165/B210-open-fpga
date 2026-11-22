@@ -9,7 +9,7 @@ FPGA_HOME=/opt/fpga
 PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
 CE=podman
 $CE run --rm -i --userns=keep-id -v "$ROOT:$CR:z" -w "$CR" -e HOME="$CR/build" \
-  -e FPGA_PART=$FPGA_PART -e FPGA_HOME=$FPGA_HOME b210-open-fpga:0.1.0 bash -s <<-'EOF'
+  -e FPGA_PART=$FPGA_PART -e FPGA_HOME=$FPGA_HOME ${FPGA_IMAGE:-b210-open-fpga:0.1.0} bash -s <<-'EOF'
 set -euo pipefail
 CR=/work; FPGA_PART=xc7k325tffg676-1; FPGA_HOME=/opt/fpga
 PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
