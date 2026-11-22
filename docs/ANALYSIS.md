@@ -865,3 +865,32 @@ Test ladder when the board is powered again (simplest first):
   D. vendor original                    known-good control
 A passing A proves "our flow can drive this FPGA's control interface at
 all"; B then carries the full design; C/D separate packaging vs content.
+
+## Ring-transplant experiment (2026-11-22): fault is INSIDE our fabric
+
+The FX3 wedged after a failed config and was recovered by UHD (which
+re-loads its Kintex image and passes both loopback tests - the recovery
+loop is now fast and reliable).
+
+New capability: frames-level patching directly (no fasm2frames needed):
+  build/patch_clock_frames.py   (bank-active + GCLK0/5 delivery, 157 feats)
+  build/transplant_ring.py      (vendor's ENTIRE I/O+clock ring, 3,264
+                                 features incl. zero-features, bit-exact)
+
+Experiments on the live board (each: configure -> DONE, then probe):
+  1. original diag bin (single burst)      -> RUNNING, loopback n/a (silent)
+  2. repacked diag (per-frame FAR)         -> RUNNING ... first attempt
+     UNCONFIGURED (FX3 marginal state), second attempt RUNNING
+  3. repacked diag + bank-active + GCLK0/5 -> RUNNING, still silent
+  4. repacked diag + FULL VENDOR RING      -> RUNNING, STILL SILENT
+
+Result 4 is decisive: with the vendor's complete I/O and clock-ring
+configuration (IOB, OLOGIC, ILOGIC, IDELAY, HROW muxes, REBUF
+pass-throughs, bank enables, OBUF glue - everything except fabric
+routing and the CMT), the control path is still dead.  Therefore the
+defect is inside our compiled fabric logic/routing - prime suspects now
+the routing-select lines excluded from the transplant (IMUX/T1 tri-state
+control on the PCLK output and the control-path inputs), or a yosys
+compilation defect in the control-path logic itself.
+
+Images: /tmp/opencode/atomic_ring.bin (diag + vendor ring).
