@@ -919,3 +919,31 @@ yosys miscompilation (memory init / FSM / clock-enable handling).
 FX3 counters with our image: firmware tick counter [36] moves (~67.6k/s,
 same as vendor = firmware tick, not FPGA activity); invalid_gpif_state=0;
 pib1_socket_inactive=2 (vendor: 3).  No FPGA-driven PIB activity yet.
+
+## Atomic PCLK test + HP OBUF glue findings (2026-11-22 late)
+
+Built the most minimal possible design (diag_pclk.v): IFCLK driven
+STRAIGHT from the differential input clock through fabric to the ODDR
+(no MMCM, no BUFG, no global spine, no lock dependency) + unconditional
+FD-bus strobe master.  Bank-active + per-frame FAR applied.
+
+Result: configures (DONE), but the FX3 receives nothing on any IN
+endpoint (0x88/0x86/0x84) - and a control experiment shows the vendor
+image also sends nothing when idle, so the raw read cannot discriminate
+PCLK-alive from PCLK-dead.  The only discriminating observable remains
+UHD's peek32, which fails for every image we produce.
+
+HP OBUF enable findings: IOB_Y1.OBUF_HP_BANK_GLUE and
+INT_R.IOB_COL_OBUF_CASCADE_Y1 are the SAME physical bits (DB alias).
+Our flow sets glue on BOTH halves; vendor sets Y1(+cascade) only and
+leaves Y0 clear.  Clearing Y0-glue per the vendor pattern: still no
+FX3 data.
+
+Counter observations: firmware tick counter [36] moves identically
+(~67.6k/s) under both images - it is not FPGA activity.
+
+CONCLUSION unchanged but hardened: with vendor-exact everything except
+CLB/INT fabric - and now even with a design whose entire clock path is
+one IBUFDS, a fabric counter and one ODDR - the FX3 GPIF never delivers
+a byte.  Next: netlist-level simulation bisect (yosys write_verilog +
+GPIF testbench vs behavioral RTL), fully offline.
