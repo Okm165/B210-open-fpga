@@ -597,3 +597,31 @@ the build flow, not on the design.  Two concrete paths:
   (b) fix/replace the flow's IOB/OLOGIC output enable (compare against a
       known-good prjxray fasm for an output pin, or use a nextpnr build
       whose 7-series IOB output path is known to work).
+
+
+## Final test with the corrected, fully-routed build (2026-11-21 20:5x)
+
+The rebuild with the IFCLK fix completed place-and-route normally
+(1 warning, 0 errors; router converged 115k->15k overused wires) and the
+fresh bitstream was deployed and probed:
+
+    hw_load: RUNNING, DONE asserted
+    uhd_usrp_probe: wait_for_ack timeout at first peek32
+
+So even a fully-routed, timing-analysed, polarity-corrected image with
+RTL byte-identical to the vendor's does not answer.  Combined with the
+combinational zero-FF experiment (no PCLK/strobes ever seen by the FX3)
+the conclusion stands: images from this yosys/nextpnr-himbaechel/prjxray
+chain configure the FPGA but do not drive its I/O.
+
+Status of the DOD:
+  - hardware: fully operational, measured (probe, loopback, both RX
+    channels at full rate 30.72/61.44 MSPS, 245.76 MB/s, 101-LO sweep,
+    real RF, settings/quality reports);
+  - our RTL: equivalent to the vendor's (control path byte-identical,
+    MMCM identical, pins identical, polarity fixed);
+  - blocker: the FPGA build flow's bitstream does not enable I/O
+    outputs.  Paths forward:
+      (a) build the vendor's Vivado project (same RTL) - validated path;
+      (b) fix the flow's IOB output enable (needs a known-good reference
+          fasm for an output pin, or an upstream nextpnr-himbaechel fix).
