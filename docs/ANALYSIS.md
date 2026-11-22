@@ -987,3 +987,22 @@ implementation (LUT configuration / routing correctness) - logic is
 sim-verified, so a placed/routed LUT or net mismatch is the candidate.
 Next: multi-seed sweep (different P&R results) + upstream report with
 the complete evidence chain.
+
+## Full-design DOD image tested (2026-11-22 late): still silent
+
+Applied the complete patch set (462 features: bank-active, GCLK0/5
+delivery, HROW muxes, non-fabric dropped bits) to the FULL 2R2T design's
+frames, through the original writer with full frame coverage:
+/tmp/opencode/dod_full.bin.  Configures (DONE); control path silent -
+identical to every other variant.
+
+This closes the frames-level search completely: the full design now
+carries vendor-exact everything outside CLB/INT fabric, plus all
+recoverable dropped bits, plus the stale-frames fix.
+
+Remaining unverified layer (unreachable by any tool we have):
+the correctness of nextpnr's CLB/INT fabric placement+routing for
+kintex7 (LUT truth-table bit placement / net routing in the fabric
+frames).  Logic is sim-verified; the placed/routed LUT config is not.
+Next: LVS equivalence (fasm2netlist's Z3/SOP matcher) between the
+extracted bitstream netlist and the reference netlist - fully offline.
