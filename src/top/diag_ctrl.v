@@ -70,46 +70,15 @@ module diag_ctrl (
    wire tx_tvalid, rx_tvalid, ctrl_tvalid, resp_tvalid;
    wire tx_tready, rx_tready, ctrl_tready, resp_tready;
 
-   // ---- UNCONDITIONAL STROBE MASTER (override) ----
-   // Bypasses the slave_fifo32 flag gating entirely: continuously write an
-   // incrementing 32-bit word into GPIF thread 3 (CTRL_RESP) with SLWR,
-   // ignoring every flag.  If the FX3's GPIF samples ANY of this, its DMA
-   // counters move and EP8 delivers data (possibly garbage).
-   wire        ov_slwr, ov_sloe, ov_slcs, ov_slrd, ov_pktend;
-   wire [1:0]  ov_fifoadr;
-   wire [31:0] ov_data;
-   wire        ov_d_drive;
-
-   reg [31:0] strobe_cnt = 32'd0;
-   always @(posedge gpif_clk) strobe_cnt <= strobe_cnt + 32'd1;
-
-   assign ov_slcs    = 1'b0;                 // SLCS always active
-   assign ov_sloe    = 1'b1;                 // never tri-state the bus for read
-   assign ov_slrd    = 1'b1;                 // no reads
-   assign ov_pktend  = 1'b1;                 // no PKTEND
-   assign ov_fifoadr = 2'b11;                // thread 3 = CTRL_RESP
-   // SLWR active-low strobe: one low cycle every 4, data launched one cycle early
-   assign ov_slwr    = (strobe_cnt[1:0] == 2'b00);
-   assign ov_d_drive = 1'b1;                 // we always drive (sloe=1 keeps Z off)
-   assign ov_data    = {strobe_cnt[15:0], ~strobe_cnt[15:0]};
-
-   assign GPIF_CTL0    = ov_slcs;
-   assign GPIF_CTL1    = ov_slwr;
-   assign GPIF_CTL2    = ov_sloe;
-   assign GPIF_CTL3    = ov_slrd;
-   assign GPIF_CTL7    = ov_pktend;
-   assign GPIF_CTL11   = ov_fifoadr[1];
-   assign GPIF_CTL12   = ov_fifoadr[0];
-   assign GPIF_D       = ov_data;
-
+   // ---- proper slave-FIFO wiring, identical to b200.v ----
+   // The earlier "beacon override" left gpif_d/fifoadr/strobes unconnected,
+   // which made every control-path hardware test void by construction.
    gpif2_slave_fifo32 #(.DATA_RX_FIFO_SIZE(13), .DATA_TX_FIFO_SIZE(13))
      slave_fifo32 (
       .gpif_clk(gpif_clk), .gpif_rst(gpif_rst), .gpif_enb(1'b1),
-      .gpif_ctl({GPIF_CTL8, GPIF_CTL6, GPIF_CTL5, GPIF_CTL4}),
-      .fifoadr(), 
-      .slwr(), .sloe(), .slcs(),
-      .slrd(), .pktend(),
-      .gpif_d(), 
+      .gpif_ctl({GPIF_CTL8, GPIF_CTL6, GPIF_CTL5, GPIF_CTL4}), .fifoadr({GPIF_CTL11,GPIF_CTL12}),
+      .slwr(GPIF_CTL1), .sloe(GPIF_CTL2), .slcs(GPIF_CTL0), .slrd(GPIF_CTL3), .pktend(GPIF_CTL7),
+      .gpif_d(GPIF_D),
       .fifo_clk(bus_clk), .fifo_rst(bus_rst),
       .tx_tdata(tx_tdata), .tx_tlast(tx_tlast), .tx_tvalid(tx_tvalid), .tx_tready(tx_tready),
       .rx_tdata(rx_tdata), .rx_tlast(rx_tlast), .rx_tvalid(rx_tvalid), .rx_tready(rx_tready),
