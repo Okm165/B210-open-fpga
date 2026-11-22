@@ -809,3 +809,16 @@ writes per contiguous frame run (vendor style).  Our image becomes
 
 Status: repacked image built and ready to test the moment the board is
 power-cycled.
+
+## Repacked image validated offline (2026-11-22)
+
+bit2fasm of the repacked image decodes to **1,030,764 features, byte-identical
+to the pre-repack image (0 differences)** - the repacker changes only
+packetization, not content.  One-command deploy: `sudo -n scripts/deploy_ours.sh`
+(recover FX3 -> load -> probe -> dual/single RX capture).
+
+Board state at end of session: FX3 wedged off-bus after the failed streaming
+attempt (descriptor read -110).  Software recovery tried and exhausted:
+authorized toggle, per-port disable/power-cycle on both USB2 and USB3 ports,
+xhci controller unbind/bind, repeated USBDEVFS_RESET.  The FX3 firmware state
+survives all of it; a physical power cycle is required.
