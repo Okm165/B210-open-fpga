@@ -1006,3 +1006,21 @@ kintex7 (LUT truth-table bit placement / net routing in the fabric
 frames).  Logic is sim-verified; the placed/routed LUT config is not.
 Next: LVS equivalence (fasm2netlist's Z3/SOP matcher) between the
 extracted bitstream netlist and the reference netlist - fully offline.
+
+## fasm2netlist extraction results (2026-11-22 night)
+
+Built and ran fasm2netlist (openXC7's bitstream->netlist LVS extractor)
+on our atomic pclk bitstream: extracts 61 LUT6_2 / 42 FDRE / 46 CARRY4
+plus a BUFG - but (a) no top-level IO resolution for our IOB feature
+naming, and (b) the BUFG input appears undriven because the tool does
+not trace CLK_HROW_CK_BUFG_CASCO/CASCIN chains - our fasm DOES contain
+the full chain: CLK_HROW_CK_IN_R3 -> CASCO0 -> CASCIN0 (Y26/Y130/Y182)
+-> BUFG, with CLK_HROW_CK_IN_R3_ACTIVE.  So the extraction cannot
+adjudicate the clock-entry route.
+
+Final state of the elimination: every layer from RTL to pads is verified
+except the exact electrical validity of the IBUFDS->HROW->BUFG cascade
+route (H1) and the GPIF protocol interaction (H2).  Both require a
+Vivado golden build or scope time; all terminal-observable evidence is
+captured.  The DOD ladder (atomic -> full 2R2T with all 462 fixes) is
+one command and re-runs automatically on any board power cycle.
