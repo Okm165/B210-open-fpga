@@ -894,3 +894,28 @@ control on the PCLK output and the control-path inputs), or a yosys
 compilation defect in the control-path logic itself.
 
 Images: /tmp/opencode/atomic_ring.bin (diag + vendor ring).
+
+## Max transplant: fault localized to our compiled fabric (2026-11-22)
+
+Board returned (user replug; FX3 enumerated in its USB2 "WestBridge"
+stage; UHD talks to it fine - recovery loop proven).
+
+Extended the ring transplant to EVERYTHING except pure fabric
+(INT/CLB/BRAM/DSP): I/O ring + CMT/MMCM routing + HCLK + BUFG + HROW +
+REBUF + TBYTESRC/TERM = 3,871 vendor features, bit-exact, zero-features
+included.  Our diag: configures (DONE), control path STILL silent.
+
+Also ruled out this round: OCLK leaf-mux contention (after the clock
+patch only GCLK0 is enabled on the PCLK tile), BUFGCTRL0 ZINV_S0
+(already set), FIFO36E1 primitives (design uses behavioral FIFOs).
+
+CONCLUSION: with vendor-exact everything except CLB/INT fabric, the
+control path is dead.  The defect is in what yosys compiled from the
+(byte-identical) RTL.  Next: netlist-level simulation - yosys
+write_verilog of the synthesized diag netlist + GPIF stimulus testbench,
+compared against the behavioral RTL sim.  A mismatch localizes the
+yosys miscompilation (memory init / FSM / clock-enable handling).
+
+FX3 counters with our image: firmware tick counter [36] moves (~67.6k/s,
+same as vendor = firmware tick, not FPGA activity); invalid_gpif_state=0;
+pib1_socket_inactive=2 (vendor: 3).  No FPGA-driven PIB activity yet.
