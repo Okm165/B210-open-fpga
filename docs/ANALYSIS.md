@@ -530,3 +530,17 @@ Deliverables (full rate):
   build/rx/dod_dual_fullrate/    2 RX @ 30.72 MSPS + PNGs + npy
   build/rx/dod_single_fullrate/  1 RX @ 61.44 MSPS + PNG
   build/rx/dod_sweep_fullrate/   101-LO sweep, PNG per LO + summary json
+
+
+## Invalidated test (2026-11-21 20:3x): raw peek64 via pyusb
+
+A hand-rolled VITA control packet written to EP4 with the response read
+from EP0x88 times out even against the KNOWN-GOOD vendor image, so the
+hand-rolled peek probe is itself wrong (packet framing / sequence).
+Consequence: the "minimal design does not answer a raw peek" result
+carries no information and is discarded.  UHD's uhd_usrp_probe is the
+valid control-path instrument (it answers correctly on the vendor image).
+
+Also corrected: the control-response IN endpoint is 0x88 (not 0x84),
+and the committed b51271d diag_ctrl drove IFCLK at 180 deg
+(D1=0, D2=1) - a third variant; the vendor-correct 0 deg is D1=1, D2=0.

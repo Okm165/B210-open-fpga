@@ -47,7 +47,7 @@ module diag_ctrl (
       .DDR_CLK_EDGE("OPPOSITE_EDGE"), .INIT(1'b0), .SRTYPE("SYNC")
    ) ODDR_IFCLK (
       .Q(IFCLK), .C(gpif_clk), .CE(1'b1),
-      .D1(1'b0), .D2(1'b1), .R(1'b0), .S(1'b0)
+      .D1(1'b1), .D2(1'b0), .R(1'b0), .S(1'b0)
    );
 
    reg [15:0] ready_cnt = 16'd0;
