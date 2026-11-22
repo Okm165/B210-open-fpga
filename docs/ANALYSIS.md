@@ -1047,3 +1047,18 @@ the chain should work - the DB cannot tell us which.  This is the same
 class of shared blind spot that has made every clock-chain diagnosis
 inconclusive, and it is concrete enough to file upstream with the
 reproduction images in this repo.
+
+## MILESTONE (2026-11-22): control path ALIVE on hardware from OUR bitstream
+
+- Root cause of all "silent diag" hardware tests: diag_ctrl.v instantiated
+  gpif2_slave_fifo32 with gpif_d/fifoadr/slrd/slwr/sloe UNCONNECTED (a
+  one-way beacon experiment). Fixed to wire exactly like b200.v.
+- RTL simulation now PASSES end-to-end: behavioral FX3 model injects a
+  genuine UHD CHDR peek32 packet (4x32b wire words, first word
+  0x8001_0010 = {context,seq=1,16 bytes}; high 64-bit half first on the
+  wire), radio_ctrl_proc answers {0x0000_0002, 0x0000_BABE}.
+- Corrected diag image built (openXC7 flow) CONFIGURES and PASSES both
+  UHD register loopback tests on the board. OUR bitstream talks.
+- Full 2R2T DOD image still silent on first peek (UHD falls back to its
+  own image). With diag working, the fault is bisectable inside the full
+  design's bitstream; the earlier "path is dead" conclusion is void.
