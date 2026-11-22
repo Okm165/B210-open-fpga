@@ -831,3 +831,13 @@ Loading it isolates packaging from content in one test:
   - works  -> packaging fixed; ours_repack failing would implicate content
               (then bisect: ours content + vendor packaging).
   - silent -> our packaging still differs semantically from Vivado's.
+
+## Repacker hardened to per-frame FAR (2026-11-22)
+
+Address continuity does not imply physical continuity across 7-series
+column boundaries, so runs are no longer trusted at all: every frame is
+now preceded by an explicit FAR write (27,852 FAR writes / 27,850 FDRI
+packets for our image).  Images regenerated:
+  /tmp/opencode/ours_repack.bin      (ours, 11,588,036 B)
+  /tmp/opencode/vendor_ourspack.bin  (vendor content, 3,785,956 B)
+Upstream bug report drafted: docs/UPSTREAM-BUGREPORT.md.
