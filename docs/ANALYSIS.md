@@ -947,3 +947,24 @@ CLB/INT fabric - and now even with a design whose entire clock path is
 one IBUFDS, a fabric counter and one ODDR - the FX3 GPIF never delivers
 a byte.  Next: netlist-level simulation bisect (yosys write_verilog +
 GPIF testbench vs behavioral RTL), fully offline.
+
+## Netlist simulation bisect: yosys is exonerated for the atomic design (2026-11-22)
+
+Simulated diag_pclk at both levels (iverilog, 100 us, 40 MHz input):
+  - behavioral RTL:  IFCLK toggles (~5000 edges), FD bus strobes - PASS
+  - yosys netlist:   identical - PASS
+Combined with the ring transplant and the minimal-design hardware tests,
+every layer between the RTL and the pads is now verified except ONE:
+the open-source kintex7 device data / bit-position tables themselves
+(tilegrid/segbits/fasm2frames), which both our decoder and the writer
+share - a shared-error blind spot.  A device whose DB misplaces I/O
+configuration bits would: pass CRC, assert DONE, decode "correctly"
+against the same DB, and leave the I/O dead.  That is exactly the
+observed behavior, and it is consistent with prjxray's kintex7 support
+being far less hardware-validated than artix7.
+
+Closing the gap requires one of:
+  - a Vivado build of the byte-identical sources (golden FASM diff), or
+  - an oscilloscope on IFCLK/CTL at the FX3 pins, or
+  - an upstream kintex7 DB validation effort (e.g. comparing against a
+    Vivado-generated FASM for the same part).
