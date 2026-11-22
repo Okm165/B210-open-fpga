@@ -625,3 +625,34 @@ Status of the DOD:
       (a) build the vendor's Vivado project (same RTL) - validated path;
       (b) fix the flow's IOB output enable (needs a known-good reference
           fasm for an output pin, or an upstream nextpnr-himbaechel fix).
+
+
+## Bitstream command-stream comparison (2026-11-21 21:1x)
+
+Parsed both bitstreams' configuration command streams:
+
+| packet | vendor (works) | ours (silent) |
+|---|---|---|
+| header (sync, COR1, CTL0=0, IDCODE 0x3651093) | identical | identical |
+| CMD START (releases GTS/GWE) | present | present |
+| COR=0x1, CTL0=0x9400122, MASK=0x0, CTL=0xa0000001 | absent | present (prjxray-generated) |
+| GCAPTURE commands | absent | present x2 |
+| MASK=0x1000, RCRC | present | absent |
+| final MASK=0x501 / CTL=0x501 | present | present |
+
+So the startup sequence (CMD START, which releases global three-state)
+exists in both; the difference is prjxray's extra CTL0/CTL/GCAPTURE
+writes.  CTL0=0x9400122 does NOT set GTS_USER_B (bit 26 = 0), so the
+'GTS never released' hypothesis is NOT supported by the header; the
+remaining difference is inside the frame data (IOB/OLOGIC output
+configuration), which cannot be compared without a reference fasm from
+this flow.
+
+Also tested and ruled out this round: IFCLK DRIVE 16 / SLEW FAST (no
+change - still zero samples at the FX3).
+
+Current status unchanged: our bitstreams configure but never drive the
+P-port; the vendor's Vivado image on the same unit is fully operational.
+Closing this needs either a Vivado build of the (now-identical) RTL or a
+known-good reference bitstream/fasm from this toolchain to diff the IOB
+output-enable configuration against.
