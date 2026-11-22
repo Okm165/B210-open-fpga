@@ -1024,3 +1024,26 @@ route (H1) and the GPIF protocol interaction (H2).  Both require a
 Vivado golden build or scope time; all terminal-observable evidence is
 captured.  The DOD ladder (atomic -> full 2R2T with all 462 fixes) is
 one command and re-runs automatically on any board power cycle.
+
+## DB gap identified: HROW-CASCIN -> BUFG-mux hop is unmodeled (2026-11-22 night)
+
+In our minimal pclk bitstream, BUFGCTRL0.I0 is sourced from
+"CLK_BUFG_BOT_R_CK_MUXED0", and the HROW side has the full entry chain
+(CLK_IN_R3 -> CASCO0 -> CASCIN0 across Y26/Y130/Y182) - but the final
+hop CASCIN0 -> CK_MUXED0 has no representation ANYWHERE in the prjxray
+kintex7 DB: not in segbits_clk_bufg_bot_r.db, not in
+segbits_clk_hrow_bot_r.db (which only models HROW->HROW cascade
+pass-through), not in ppips (which only cover BUFGCTRL_O<-I0 and the
+CE/IGNORE IMUX feedback taps).
+
+The vendor image sidesteps this hop entirely: its BUFG inputs come from
+the CMT (CLK_BUFG_R_FBG_OUT1), a path whose connection features decode
+in the CMT tiles.
+
+Implication: nextpnr's fabric-clock-to-BUFG routing either relies on a
+connection the DB does not model (so fasm2frames cannot emit whatever
+bit Vivado would set for that hop), or the hop is hardwired silicon and
+the chain should work - the DB cannot tell us which.  This is the same
+class of shared blind spot that has made every clock-chain diagnosis
+inconclusive, and it is concrete enough to file upstream with the
+reproduction images in this repo.
