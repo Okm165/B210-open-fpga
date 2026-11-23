@@ -1184,3 +1184,13 @@ This is now a minimal, fully-instrumented upstream bug package.
   the specific bitstream's INIT/DONE/CTL behavior, or an unmodeled
   global-resource bit that differs between the two designs' config
   frames). All artifacts and single-command scripts are committed.
+
+## BREAKTHROUGH (2026-11-23): it was a SEED LOTTERY all along
+
+diag8 (the "+2 LUT" design believed deterministically dead) PASSES 2/2
+UHD loopback at container-PnR seeds 2, 3 and 4 - only seed 1 was dead.
+diag2 at 80MHz (container PnR) and VCO-800 variants were also just bad
+seeds/placements, not MMCM or RTL problems. There is no logic defect:
+some openXC7 kintex7 placements produce dead config, others work.
+DOD strategy: sweep PnR seeds of the full 2R2T design until one comes
+alive on hardware.
