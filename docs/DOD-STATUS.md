@@ -468,3 +468,20 @@ NEXT SESSION PLAN (concrete, staged):
 2. Exhaustive all-tile documented diff (not just clock) between vendor_true
    and our design, prioritizing shared-function tiles.
 3. If (1) shows fabric corruption, bisect tile classes to locate it.
+
+## 26. Additional isolation rounds (2026-11-23, continued)
+
+- Vendor's GCLK0 confirmed driven (BUFGCTRL0_O->GCLK0, documented bits set).
+- hybrid4 (hybrid3 + leaf-line L0 <- GCLK0 + GCLK0_ACTIVE at the leaf's hrow):
+  dead.
+- Vendor ZINV_CE(X1Y11) knockout: kills vendor -> CE effective-high required.
+
+Full accounting of the hybrid series: vendor's complete clock column
+(BUFG+cascade+rebuf+HCLK_*+hrow rows+MMCM) with documented bits only, plus
+our ODDR tile with tied D inputs and our static CTL pads, is inert, while
+the vendor image with the same documented bits is alive.  The delta is
+therefore in (a) vendor fabric nets feeding the clock infrastructure
+(CE nets, D-input constants route through fabric), or (b) our CLB/INT
+output.  Both are testable next session with the picosoc-qmtech oracle
+(silicon-proven 325T design, buildable through our container flow) and an
+all-tile documented diff.
