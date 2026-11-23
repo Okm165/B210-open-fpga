@@ -1112,3 +1112,39 @@ Upstream repro package: scripts/build_diag_ctrl{,2,4,5,6}.sh +
 build/sim/tb_diag_ctrl*.v (sim PASS harness) + constraints.  The
 working image is build/fpga/diag2/usrp_diag_ctrl2.bin; silent ones differ
 by the probe block only.
+
+## Session addendum (2026-11-22 late): priming, determinism, and the GCLK6 lead
+
+Methodology fixes to all earlier "silent" verdicts:
+- Our-image probes are only valid when primed (a passing our-image probe
+  immediately before). diag2 is RELIABLE: 5/5 consecutive passes + seeds
+  2 and 3 pass. Failing rungs fail deterministically even primed.
+
+Sharp result: diag2 + 2 extra LUTs (one extra readback-mux entry, diag8)
+is reliably DEAD. The trigger is not tile type (LUTRAM probe also dies),
+not seed (3 seeds), not the frames patches, and the RTL sim passes. The
+FASM/frames are faithful (all HROW features' bits verified present).
+
+The one systematic difference found between working and failing designs:
+- the working designs' clock spine entry uses CLK_HROW_CK_MUX_OUT ports
+  onto GCLK5 where failing designs use the equivalent ports onto GCLK6;
+- the vendor (Vivado) bitstream contains ZERO GCLK6 usage anywhere,
+  while every openXC7 design we build uses GCLK6 lines.
+
+Remedies tried:
+- chipdb rebuilt with all GCLK6 pips banned (tools in
+  /tmp/opencode/npx_build2, generator patch in
+  openxc7-nextpnr/himbaechel/uarch/xilinx/gen/xilinx_device.py):
+  nextpnr then FAILS to route gpif_clk (BUFG->fabric) - GCLK6 is the only
+  modeled spine path for that route, so it cannot simply be banned.
+- surgical frames retarget of the two differing HROW mux ports
+  GCLK6->GCLK5 (diag8_gclk5mux.bin): still silent - the whole spine
+  segment chain, not just the entry mux, would need retargeting.
+
+Conclusion for upstream: prjxray/openXC7 kintex7 models GCLK6 spine
+routing but silicon does not deliver it the way the DB claims (Vivado
+never emits GCLK6). Minimal repro: diag_ctrl2 (works, 2/2 loopback on
+HW) vs diag_ctrl8 (identical + 2 LUTs, dead) with build scripts and sim
+harness committed. A GCLK6-avoiding router pass (or corrected GCLK6
+bits) is the likely fix; alternatively the fasm/frames patcher needs
+whole-net GCLK6->GCLK5 retargeting.
