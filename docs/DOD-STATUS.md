@@ -245,3 +245,34 @@ is consistent with every image we have ever built being inert, regardless of
 design content, clock topology, or pad configuration.
 
 Recovery after wedge: `RESET_DEVICE` → UHD reload (documented above).
+
+## 14. INSTRUMENT BUG FOUND AND FIXED — vendor decode was garbage (2026-11-23)
+
+**The vendor bitstream is COMPRESSED (4.5 MB vs 11.4 MB uncompressed).** Our
+linear FDRI dump (vendor_rt.frames, 27 850 "frames") was corrupt. Proof:
+reassembling those frames with our own pipeline yields a configuring-but-dead
+image, while the original vendor image drains at 12 MB/s.
+
+Fix: `bitread` (prjxray, compression-aware) on the vendor .bit → 9494 true
+frames (build/tmp/vendor_true.frames, build/tmp/vendor_bitread.txt) →
+reassembled → **drains 8 388 608 B at 12.23 MB/s. INSTRUMENT VALIDATED.**
+
+Consequences:
+- All pre-§14 patched/grafted-image evidence is VOID (built on corrupt frames).
+- The true decode nevertheless CONFIRMS the clock-path story:
+  vendor leaf IOI_LEAF_GCLK5 / IGCLK11←BUFHCLK11 / CK_IN1←MMCM2,
+  ours leaf GCLK0 / IGCLK0←BUFHCLK0 / CK_IN0←MMCM11.
+- New true-frame MMCM findings: ours sets all 16 POWER_REG bits (vendor: only
+  bit 8); COMPENSATION Z_ZHOLD (ours) vs ZHOLD (vendor); different CLKOUT
+  enables.  Tested alone and combined on hardware: not sufficient alone.
+- Our own bitstream round-trips perfectly (bitread(file) == file), so the
+  flow's output is faithfully what fasm2frames computed.
+- True-frame grafts (clock spine tiles, +MMCM tiles, +ENABLE_BUFFERs) remain
+  dead — the failure is deeper than the copied tiles; fabric-level.
+
+## 15. Operational learnings
+- After ANY config load, send GPIF_RESET (0x72) before draining; a wedged
+  GPIF otherwise stalls even the vendor image.
+- Board-health restore loop proven twice: RESET_DEVICE (0x99) → bootloader →
+  uhd_usrp_probe (fw+fpga reload) → healthy.
+- bitread-based decode is now the only valid vendor frame source.
