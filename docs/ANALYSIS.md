@@ -1062,3 +1062,25 @@ reproduction images in this repo.
 - Full 2R2T DOD image still silent on first peek (UHD falls back to its
   own image). With diag working, the fault is bisectable inside the full
   design's bitstream; the earlier "path is dead" conclusion is void.
+
+## MILESTONE 2 (2026-11-22): FULL b200 RTL also proven; fault isolated to large-design P&R bitstream
+
+- Built full-b200 RTL testbench (tb_b200.v, same behavioral FX3 + genuine
+  UHD peek32 packet). First run failed: the TB advanced its word pointer
+  on slrd3 while gpif2 captures on slrd2 -> first wire word was ingested
+  TWICE, corrupting the CHDR (the diag design had no demux so it masked
+  this). Fixed TB cadence.
+- FULL b200 RTL round trip PASSES: response carries 0xACE0BA5E
+  (SR_CORE_READBACK magic) through demux -> radio_ctrl_proc -> resp mux
+  -> gpif2 -> FX3 model.
+- Timing closure re-verified: seed 1/2/3 final routed timing PASSES
+  (bus_clk 104-109 MHz at 100 required; radio_clk 85-94 at 61.44). The
+  earlier "timing FAIL" grep was an intermediate placement phase.
+- Status matrix:
+    diag_ctrl:  RTL PASS, bitstream WORKS ON HW (UHD loopback 2/2)
+    b200 full:  RTL PASS, timing PASS, bitstream SILENT on first peek
+- Remaining fault is therefore in the placed/routed bitstream of the
+  LARGE design only: candidates are scale-related fasm2frames/device-data
+  gaps concentrated in BRAM/DSP48E2/extra-IOB tiles (diag uses none of
+  DSP/BRAM-heavy structures and ~20 IOs vs ~90).  bisect ladder next:
+  diag+demux+settings-bus -> +radio -> +DSP -> full.
