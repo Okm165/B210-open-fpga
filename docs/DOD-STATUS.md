@@ -86,3 +86,48 @@ is below RTL (bitstream/physical layer).
 
 Everything below this line in older docs that claims "2 RX live from our
 bitstream" refers to the vendor image and must not be used as a DOD result.
+
+## 7. Frame-level clock-path decode (2026-11-23, scripts/tilecmp.py)
+
+Using `build/vendor_rt.frames` (decoded vendor bitstream) and our frames,
+decoded with the container prjxray DB at identical tile coordinates:
+
+- IFCLK ODDR tile `RIOI_X95Y109`: identical except the clock leaf —
+  vendor selects `IOI_LEAF_GCLK5`, ours `IOI_LEAF_GCLK0`; ours additionally
+  has ODDR.SRUSED/ZSRVAL (SR routed).
+- `HCLK_IOI_X235Y130`: vendor leaf `GCLK_BOT5+TOP5 ← IGCLK11 ← BUFHCLK11`;
+  ours `GCLK_BOT0 ← IGCLK0 ← BUFHCLK0` (TOP not set).
+- `HCLK_CMT_L_X228Y26`: vendor `CK_IN1 ← MMCM_CLKOUT1` (100 MHz),
+  `CK_IN0 ← CCIO0`; ours `CK_IN0 ← MMCM_CLKFBOUT` (40 MHz feedback),
+  `CK_IN1 ← MMCM_CLKOUT2`, `CK_IN10 ← MMCM_CLKOUT1`.
+- MMCM feedback: both route CLKFBIN through the regional spine
+  (`MUX_MMCM_CLKFBIN ← CK_BUFHCLK0`), but in OUR bitstream the IFCLK leaf
+  taps that same `BUFHCLK0` spine — i.e. the ODDR is clocked by the 40 MHz
+  *feedback* clock, while nextpnr's netlist says its clock net is
+  `gpif_clk` (100 MHz, BUFG on GCLK5).  Two different networks, router
+  reported success — the exact failure class of openXC7/nextpnr-xilinx#100.
+
+## 8. Drain experiment (scripts/gpif_drain.py) — the decisive measurement
+
+Host writes to the FX3 data OUT endpoint; a live GPIF master drains
+continuously:
+
+| image | drained |
+|---|---|
+| vendor_ref.bin | **8 388 608 B** (12.2 MB/s, no stalls) |
+| diag2 (all variants) | 1024 B (FX3 socket buffer only) |
+| glue/IOB_COL-patched diag2 | 1024 B |
+| static reader (SLRD low, no logic) | 1024 B |
+| static writer (SLWR low, FD const) — host read | no data |
+| 40 MHz no-MMCM | 1024 B |
+| fabric ring oscillator (3×LUT1, verified in netlist) | 1024 B |
+| internal-feedback MMCM, single 100 MHz BUFG | 1024 B |
+| **fabric-generated 20 MHz PCLK, plain OBUF, no clock spine** | **1024 B** |
+
+Every protocol-level, clock-source-level, size-level and glue-level
+hypothesis is eliminated by measurement.  The remaining explanations are
+(1) our bitstreams do not drive the bank-34 output pads at all, or
+(2) the FX3 firmware only works with a 100 MHz PCLK, which our clock-leaf
+misroute prevents even when the design intends 100 MHz.  Distinguishing
+them requires a scope on AD1/CTL or a Vivado golden build; both are
+outside the USB-only constraint.
