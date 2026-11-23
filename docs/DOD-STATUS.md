@@ -358,3 +358,29 @@ output.  Reversing the 150 undocumented HROW bits (cross-instance knockout
 correlation across the vendor's four clock rows) is the remaining
 reverse-engineering task; it is beyond what a single reference bitstream
 supports quickly and is best done upstream with more reference configs.
+
+## 20. Hybrid isolation experiments (2026-11-23, session end)
+
+Corrected undocumented audit (indexing bug fixed): CLK_HROW clock row vendor
+= 184 bits, **150 (82%) undocumented**; ours = 17 bits all documented. The
+HCLK_IOI leaf mux is fully documented in both (exonerated).
+
+Built the definitive isolation hybrid: **vendor's complete clock
+infrastructure** (all CLK_HROW rows, BUFG/rebuf, CMT/MMCM, HCLK_* tiles)
+**+ vendor's IFCLK leaf tile** (its ODDR ties D1/D2 internally — no fabric
+dependency) **+ our static CTL pads** (SLCS/SLRD/FIFOADR driven by our
+fabric). If IFCLK toggles, the FX3 must drain. Result: **dead (1024 B)**,
+twice (with all CTL tile variants protected). Board re-verified healthy on
+the vendor image afterwards.
+
+Also built and tested the archived nextpnr-xilinx 0.9.8 engine end-to-end
+(chipdb for k325t generated, probe P&R'd, bitstream assembled): dead.
+
+FINAL STATE OF KNOWLEDGE: even a bit-exact vendor clock system with our
+simple static slave-FIFO master does not move data. The remaining
+un-eliminated variables are (a) undocumented hrow/CMT bits beyond what any
+fasm copy captures (i.e., bits OUTSIDE the CLB_IO_CLK blocks we copied —
+e.g. other bit buses), or (b) a board/firmware interaction we cannot
+observe without a scope or Vivado. Both engines (himbaechel, 0.9.8) are
+equally affected. This is the hard stop of terminal-only debugging; the
+evidence package in #222 is complete and final for this session.
