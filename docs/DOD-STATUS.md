@@ -427,3 +427,15 @@ toggle IFCLK.  The confirmed remaining delta is the BUFHCE CE-input routing
 semantics with a floating CE are undefined).  Decoding it requires more
 reference bitstreams (Vivado) or a scope.  Session hard stop; A/B proof and
 full evidence chain are in #222 and sections 7-23 above.
+
+## 24. Leaf-tap experiment (2026-11-23, close)
+
+Patched our own design's ODDR leaf selection GCLK0->GCLK5 (bus clock, fully
+hopped rebuf chain, documented bits only): dead.  Combined with chain0/chain1
+and the hybrid experiments, every documented-bit path to the IFCLK ODDR is
+now proven inert on silicon, while the vendor image (whose clock rows carry
+82%/41% undocumented bits) works through the identical probe.
+
+Conclusion stands: the missing kintex7 clock-forwarding DB bits are the
+blocker.  Terminal-only debugging is exhausted; the evidence package in
+openXC7/nextpnr#222 is final.
