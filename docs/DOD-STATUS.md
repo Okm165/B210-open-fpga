@@ -131,3 +131,21 @@ hypothesis is eliminated by measurement.  The remaining explanations are
 misroute prevents even when the design intends 100 MHz.  Distinguishing
 them requires a scope on AD1/CTL or a Vivado golden build; both are
 outside the USB-only constraint.
+
+## 9. BUFH workaround attempt and toolchain blockers
+
+The DB shows every IOI clock leaf is fed ONLY from a regional BUFHCLK line
+(`HCLK_IOI_CK_IGCLK0 ← CK_BUFHCLK0`; no direct GCLK→leaf path exists).
+Vivado solves this by converting the driving BUFG into a BUFHCE for
+I/O-forwarded clocks (the vendor bitstream has 17 BUFHCEs).  Our attempts:
+
+- RTL `BUFHCE` on clkout1: nextpnr places it only with a BEL constraint;
+  unconstrained placement fails ("no BELs remaining of type BUFHCE").
+- Constraining by site is blocked: the container XDC parser rejects cell
+  targets, and the host nextpnr does not accept any site naming for the
+  clock-row tiles we could discover (`CLK_HROW_BOT_R_X121Y26`,
+  `BUFHCE_X0Y1`, `tile/BUFHCE_X0Y1` all rejected).
+
+So within this toolchain the ODDR forwarded-clock path is unbuildable with a
+driven regional clock — consistent with every static-reader/writer experiment
+failing regardless of the clock source.
