@@ -693,3 +693,42 @@ LH6/LV9-class long-line drivers, and the clock-network companion bits the
 vendor sets (215 _ACTIVE rows and friends).  All three classes require
 Vivado-generated reference bitstreams to decode - the standard openXC7
 fuzzing method.  Instruments for verification are complete and committed.
+
+## 36. CRITICAL CORRECTION: the LOGIC_OUTS sweep was confounded by the ODDR self-toggle (2026-11-23)
+
+Controlled A/B with proper negative controls invalidated a key earlier
+interpretation:
+
+- The vendor IFCLK OLOGIC_Y0 config (D1/D2 silicon defaults + IS_D2_INVERTED)
+  toggles the pad AUTONOMOUSLY - any drain test against a vendor-base image
+  therefore proves only that PCLK runs, nothing about fabric.
+- With IS_D2_INVERTED cleared (self-toggle off): vendor FF outputs (L4),
+  vendor LUT outputs, and our grafted rings ALL stall at 1024 B.  The
+  fabric->OLOGIC D1->pad path does NOT work with documented bits alone -
+  consistent with the exhaustive BFS result.  The earlier "6 LOGIC_OUTS
+  indices drain at full speed" finding was an artifact of the self-toggle.
+- The "vendor D1 route" (EE2BEG0 -> ... -> IMUX34 -> D1) was OUR graft
+  construction; vendor fasm contains no D1 IMUX row at X95Y109.  The only
+  PROVEN fabric->pad crossings in the vendor image are the GPIF_D data pads
+  (real data flows) - which use ODDR/OSERDES configs without D1 IMUX rows,
+  i.e. their data-entry mechanism is still to be decoded (125 OSERDES rows,
+  40 ODDR rows at X95).  That decode is the next decisive target: replicate
+  the vendor's working GPIF_D output path, feed it from our BEL-pinned
+  ring (36 stages, vendor-empty tiles Y0-72 + audited Y96 X0/A6), and read
+  the result on the IN endpoint while the vendor's IFCLK self-toggle
+  provides PCLK.
+
+Rig improvements this session (all committed):
+- graft_ring9.py: bit-level graft of our CLB/INT rows into vendor_true.frames
+  with same-dst one-hot conflict clearing; LUT INIT bit-accurate overwrite.
+- Negative controls (constant-0 tap) now verified to stall -> instruments
+  are sound; all prior alive/dead results re-interpretable.
+- 36-stage slow ring BEL-pinned across vendor-empty CLBLL_L_X92Y{0..72}
+  X0-sites (+ audited X0/A6LUT@Y96 tap); build honors every BEL.
+- XDC/DB fixes: generate-block cell naming (g[i].genblk1.inv), and
+  segbits_riob18.db DRIVE alias patch (mounted at build time) unblocking
+  fasm2frames for IO designs.
+
+DOD remains NOT met.  The confound removal makes every future result
+trustworthy; the decoded target is now exactly one thing: the vendor's
+working GPIF_D output data path.
