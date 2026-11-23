@@ -414,3 +414,16 @@ BUFHCE_CE_R0<-CE_INT<-IMUX fabric rows); in our copied-vendor-chain images
 the CE net does not exist, so the buffer enable may be undriven.  Next step
 when work resumes: tie the BUFHCE CE high via a documented fabric-VCC route
 (or decode the CE mux row), then re-run the chain experiments.
+
+## 23. Chain experiments concluded (2026-11-23)
+
+chain1 (= chain0 + all 21 vendor ENABLE_BUFFER tiles for BUFHCLK11): bit
+hash identical to chain0 — the enables were already present.  Still dead.
+
+The documented-bit chain (leaf<-IGCLK11, BUFHCE_X1Y11, MUX_OUT_R11<-GCLK0,
+GCLK0_ACTIVE, enables, CMT rows) is complete per the DB and still does not
+toggle IFCLK.  The confirmed remaining delta is the BUFHCE CE-input routing
+(vendor drives CE from its fabric through undocumented hrow hops; ZINV_CE
+semantics with a floating CE are undefined).  Decoding it requires more
+reference bitstreams (Vivado) or a scope.  Session hard stop; A/B proof and
+full evidence chain are in #222 and sections 7-23 above.
