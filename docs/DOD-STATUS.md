@@ -322,3 +322,15 @@ tiles our clock path needs).  The flow can therefore neither route nor
 verify these paths.  Everything reachable from the terminal has been tested;
 the blocker is DB completeness for kintex7 clocking, now proven with a
 validated instrument.
+
+## 18. Upstream finalized (2026-11-23)
+
+Posted the complete corrected evidence to openXC7/nextpnr#222: the
+compression-decode correction, the validated pipeline (reassembled reference
+drains at 12 MB/s), the undocumented-bit audit (41% MMCM / 100% HROW), and
+the observation that no 325T design has ever been silicon-verified through
+this flow. Offered our tooling (true-frame dumps, knockout scripts, audit).
+
+DOD status: BLOCKED on upstream kintex7 clocking DB. Everything on our side
+is staged: on a DB fix, `scripts/build_b200_full.sh` (TARGET_B210) ->
+`scripts/hw_gate.sh` -> 2-RX ladder -> FFT/graph/tuning work.
