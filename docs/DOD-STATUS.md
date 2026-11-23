@@ -620,3 +620,34 @@ Vivado reference bitstreams for fuzzer-style decoding (the standard openXC7
 method, cf. cavearr's bench) or upstream acceptance of the gap report.
 All instruments to verify a fix are in place: counter liveness read,
 frame pipeline, knockout harness, BFS router for re-verification.
+
+## 33. BEL-pinned flow, vendor-route grafts, half-decode corrections (2026-11-23)
+
+New assets built and verified this session:
+
+1. **Rebuilt nextpnr-himbaechel from openXC7/nextpnr 8d6d112** (container
+   image's binary predates `get_cells`): now supports
+   `set_property BEL <site>/<lut> [get_cells {name}]`, enabling exact
+   placement. Built chipdb-xc7k325t.bin in the same run.
+2. **Site-naming discovered**: prjxray slice sites are numbered by die grid
+   (e.g. CLBLL_L_X92Y96 -> SLICE_X150/151Y96); CLBLL_LOGIC_OUTS_L8 =
+   site CLBLL_L's A-LUT O6 (combinational), L4/L0 = FF Q (not usable
+   without a clock).
+3. **diag_ring5**: 51-LUT ring, every LUT BEL-pinned 2 tiles from the IFCLK
+   pad; loop routes locally (no long lines).
+4. **Vendor route decode**: the vendor's IFCLK is the **Y0-half ODDR**
+   toggling from D1/D2 defaults, clocked by its LEAF_GCLK network; its D1
+   mesh enters the column via
+   `LOGIC_OUTS_L4 -> EE2BEG0@INT_L_X92Y96 -> ... -> IMUX34@INT_R_X95Y109`.
+   My earlier Y1-half hypothesis was wrong (Y1 carries a different signal).
+5. **XDC bugs fixed**: `set_property IOSTANDARD <pin>` lines (silently
+   ignored by the old engine) corrected to real standards.
+6. Despite BEL-pinned logic, a live LOCAL ring, the vendor's exact route
+   rows grafted, T tied, and both half variants tested: counter stays 3.
+   The remaining delta is the undocumented clock/bridge bits that only
+   Vivado emits (LEAF_GCLK leaf hop and/or the final IOI crossing).
+
+Everything reproducible: scripts/bfs_route.py (exhaustive route prover),
+scripts/fix_half.py (vendor-route graft), scripts/build_diag_ring5.sh,
+constraints with BEL pinning, counter instrument (/tmp/opencode/diag_log.py
+pattern recorded above).
