@@ -439,3 +439,32 @@ now proven inert on silicon, while the vendor image (whose clock rows carry
 Conclusion stands: the missing kintex7 clock-forwarding DB bits are the
 blocker.  Terminal-only debugging is exhausted; the evidence package in
 openXC7/nextpnr#222 is final.
+
+## 25. PARADIGM SHIFT: undocumented bits are NOT load-bearing (2026-11-23)
+
+Binary-search knockout preparation produced a decisive result first: clearing
+**ALL 150 undocumented CLK_HROW bits from the vendor bitstream** leaves it
+**fully functional** (drains 1 MB, no stall).  The vendor's entire working
+clock configuration is expressible in DOCUMENTED bits only.
+
+This overturns the "missing DB rows" framing.  The blocker is a
+**documented-space difference** between our flow's output and the reference.
+Subsequent tests this round:
+- ZINV_CE(X1Y11) knockout on vendor: kills it -> CE effective-high required
+  (vendor: CE pin low + ZINV_CE, or tied internally).
+- ZINV_CE flip in our chain1: still dead.
+- hybrid3 (our ODDR tile with tied D inputs + our CTL pads + vendor's whole
+  clock column incl. BUFG/rebuf/CMT): dead.
+
+The exhaustive documented-feature diff of all clock tiles between vendor and
+our closest hybrid shows only benign leftovers (ENABLE_ABOVE/BELOW at unused
+top-of-die rebuf tiles).  Therefore the difference lives in the tiles NOT
+covered: our CLB/INT fabric or a global/config-level setting.
+
+NEXT SESSION PLAN (concrete, staged):
+1. Build the silicon-proven picosoc-qmtech design through OUR container flow
+   (himbaechel) and diff its frames against a known-good build -> oracle for
+   325T fabric/clock correctness of the new flow.
+2. Exhaustive all-tile documented diff (not just clock) between vendor_true
+   and our design, prioritizing shared-function tiles.
+3. If (1) shows fabric corruption, bisect tile classes to locate it.
