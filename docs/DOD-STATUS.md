@@ -672,3 +672,24 @@ Remaining: verify the leaf/BUFH chain with a CONTINUOUS in-region clock.
 Candidates not yet exhausted: the FX3 slfifo flags (CTL4/5) toggling during
 DMA activity in region Y2, and decoding the vendor's 215 ACTIVE rows + the
 HCLK-row bridge bits as a systematic fuzzer target.  All tooling in place.
+
+## 35. UHD source-level confirmation; no external in-region clock exists (2026-11-23)
+
+Verified against UHD's b200_iface.cpp (master):
+- B200 `read_i2c`/`write_i2c` throw not_implemented - the FX3 never performs
+  user-visible I2C; VRQ 0xBB/0xBA are the FX3's own EEPROM (returns 0xFF
+  image, does not toggle our SCL pin, counter static).
+- CTL6/CTL8 (SDA/SCL) are the FPGA's own DEBUG I2C master outputs in the
+  vendor design (b200.v .debug_scl/.debug_sda) - NOT FX3-driven.
+- CTL4/5 are slfifo flags - static without a running PCLK (chicken-and-egg).
+
+Therefore no FX3-driven toggling signal exists in IFCLK's clock region, and
+every in-region clock source must come from the documented clock network
+whose vendor companion bits remain undecodable from the terminal.
+
+This closes the search for an external clock bypass.  The blocker is fully
+characterized: the open Kintex-7 DB lacks the IOI<->fabric bridge pips, the
+LH6/LV9-class long-line drivers, and the clock-network companion bits the
+vendor sets (215 _ACTIVE rows and friends).  All three classes require
+Vivado-generated reference bitstreams to decode - the standard openXC7
+fuzzing method.  Instruments for verification are complete and committed.
