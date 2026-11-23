@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# build_diag_ctrl3.sh - build the minimal control-path diagnostic.
+# Output: build/fpga/diag/usrp_diag_ctrl3.bin
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CR=/work
+FPGA_PART=xc7k325tffg676-1
+FPGA_HOME=/opt/fpga
+PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
+CE=podman
+$CE run --rm -i --userns=keep-id -v "$ROOT:$CR:z" -w "$CR" -e HOME="$CR/build" \
+  -e FPGA_PART=$FPGA_PART -e FPGA_HOME=$FPGA_HOME ${FPGA_IMAGE:-b210-open-fpga:0.1.0} bash -s <<-'EOF'
+set -euo pipefail
+CR=/work; FPGA_PART=xc7k325tffg676-1; FPGA_HOME=/opt/fpga
+PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
+OUT=$CR/build/fpga/diag3
+SRCS="$CR/src/top/diag_ctrl3.v $CR/src/top/b200_clk_gen.v $CR/src/rtl/gpif2/gpif2_slave_fifo32.v $CR/src/rtl/gpif2/gpif2_to_fifo64.v $CR/src/rtl/gpif2/fifo64_to_gpif2.v $CR/src/rtl/gpif2/gpif2_error_checker.v $CR/src/rtl/fifo/axi_fifo32_to_fifo64.v $CR/src/rtl/fifo/axi_fifo64_to_fifo32.v $CR/src/rtl/fifo/axi_fifo.v $CR/src/rtl/fifo_200/axi_fifo_legacy.v $CR/src/rtl/fifo/axi_fifo_short.v $CR/src/rtl/fifo/axi_fifo_flop.v $CR/src/rtl/fifo/axi_fifo_flop2.v $CR/src/rtl/fifo/axi_fifo_bram.v $CR/src/rtl/fifo/axi_fifo_2clk_sim.v $CR/src/rtl/fifo/axi_demux4.v $CR/src/rtl/fifo/axi_mux4.v $CR/src/rtl/control/setting_reg.v $CR/src/rtl/control_200/radio_ctrl_proc.v $CR/src/rtl/control/synchronizer.v $CR/src/rtl/control/synchronizer_impl.v $CR/src/rtl/control/bin2gray.v $CR/src/rtl/control/gray2bin.v $CR/src/rtl/fifo/axi_packet_gate.v $CR/src/rtl/control/ram_2port.v $CR/src/rtl/timing/time_compare.v $CR/src/rtl/timing/timekeeper_legacy.v $CR/src/rtl/timing/pps_generator.v"
+mkdir -p $OUT/synth $OUT/pnr $OUT/bitstream $CR/build/fpga/logs
+yosys -p "read_verilog -I $CR/src/rtl/control $SRCS; synth_xilinx -flatten -abc9 -family xc7 -top diag_ctrl3; write_json $OUT/synth/diag_ctrl3.json; stat" \
+  > $CR/build/fpga/logs/diagc-synth.log 2>&1 \
+  || { tail -40 $CR/build/fpga/logs/diagc-synth.log; exit 1; }
+echo "synth ok"
+nextpnr-himbaechel --device $FPGA_PART \
+  --chipdb $FPGA_HOME/share/nextpnr/himbaechel/xilinx/chipdb-xc7k325t.bin \
+  --json $OUT/synth/diag_ctrl3.json \
+  -o xdc=$CR/src/constraints/diag_ctrl3.xdc -o fasm=$OUT/pnr/diag_ctrl3.fasm \
+  --seed 1 > $CR/build/fpga/logs/diagc-pnr.log 2>&1 \
+  || { tail -40 $CR/build/fpga/logs/diagc-pnr.log; exit 1; }
+echo "pnr ok"
+fasm2frames --db-root $PRJXRAY_DB/kintex7 --part $FPGA_PART \
+  $OUT/pnr/diag_ctrl3.fasm $OUT/pnr/diag_ctrl3.frames \
+  > $CR/build/fpga/logs/diagc-f2f.log 2>&1 \
+  || { tail -40 $CR/build/fpga/logs/diagc-f2f.log; exit 1; }
+xc7frames2bit --part_file $PRJXRAY_DB/kintex7/$FPGA_PART/part.yaml \
+  --part_name $FPGA_PART --frm_file $OUT/pnr/diag_ctrl3.frames \
+  --output_file $OUT/bitstream/diag_ctrl3.bit \
+  > $CR/build/fpga/logs/diagc-bit.log 2>&1 \
+  || { tail -40 $CR/build/fpga/logs/diagc-bit.log; exit 1; }
+python3 $CR/scripts/bit2bin.py $OUT/bitstream/diag_ctrl3.bit $OUT/usrp_diag_ctrl3.bin \
+  > $CR/build/fpga/logs/diagc-b2b.log 2>&1 \
+  || { cat $CR/build/fpga/logs/diagc-b2b.log; exit 1; }
+idcode=$(bittool get_device_id $OUT/usrp_diag_ctrl3.bin)
+echo "idcode: $idcode (expect 0x3651093)"
+echo "diag ctrl image ok: $OUT/usrp_diag_ctrl3.bin"
+EOF

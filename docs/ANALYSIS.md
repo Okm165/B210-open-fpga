@@ -1084,3 +1084,31 @@ reproduction images in this repo.
   gaps concentrated in BRAM/DSP48E2/extra-IOB tiles (diag uses none of
   DSP/BRAM-heavy structures and ~20 IOs vs ~90).  bisect ladder next:
   diag+demux+settings-bus -> +radio -> +DSP -> full.
+
+## MILESTONE 3 (2026-11-22): hardware bisect ladder completed
+
+Ladder (all sim-verified PASS before HW test, all configure DONE on HW):
+
+| rung | content                                        | HW probe        |
+|------|------------------------------------------------|-----------------|
+| 1    | diag_ctrl (gpif2 + responder)                  | PASS 2/2 loopback |
+| 1.5  | + axi_demux4 + setting_reg + resp mux + R0/L0 responders | PASS 2/2 loopback, full tree |
+| 2    | + radio_legacy (radio_clk=bus_clk)             | SILENT          |
+| 2a   | + BRAM probe (256x32 block RAM)                | SILENT          |
+| 2b   | + DSP probe (1 mult)                           | SILENT          |
+| full | b200 DOD (78 DSP + 28 BRAM)                    | SILENT          |
+
+Diagnostics that sharpen the picture:
+- diag_ctrl (WORKING) also contains 19 RAMB36E1 -> tile TYPE is not the
+  discriminator; the fault is placement-dependent bitstream generation.
+  Tiny RTL deltas (one block RAM + 5 lines) flip working<->silent while
+  every design passes RTL sim and final routed timing (104-109 MHz).
+- Full-b200 RTL sim PASSES (0xACE0BA5E round trip) with the same FX3 TB.
+- Net effect: openXC7 kintex7 nextpnr/fasm2frames produce config for the
+  placed fabric that is electrically wrong for many placements, killing
+  the whole control path; the diag_ctrl placement happens to be valid.
+
+Upstream repro package: scripts/build_diag_ctrl{,2,4,5,6}.sh +
+build/sim/tb_diag_ctrl*.v (sim PASS harness) + constraints.  The
+working image is build/fpga/diag2/usrp_diag_ctrl2.bin; silent ones differ
+by the probe block only.
