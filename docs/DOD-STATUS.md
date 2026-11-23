@@ -149,3 +149,20 @@ I/O-forwarded clocks (the vendor bitstream has 17 BUFHCEs).  Our attempts:
 So within this toolchain the ODDR forwarded-clock path is unbuildable with a
 driven regional clock — consistent with every static-reader/writer experiment
 failing regardless of the clock source.
+
+## 10. Upstream report filed
+
+All 12 leaf-mux sources were brute-forced on hardware (`scripts/leaf_sweep.py`):
+1024 B each — the leaf mux is exonerated; the leaf's *spine* has no driver.
+Filed as openXC7/nextpnr#222 ("kintex7: ODDR forwarded clock is dead on
+silicon — IOI leaf mux driven from an undriven BUFHCLK spine").
+
+Context established from the tree: **no example or test anywhere in openXC7
+exercises ODDR**; HP-bank differential outputs were first exercised only
+recently (vc707-hp-diffio) and immediately found real bit bugs.  The B210
+IFCLK shape (MMCM → ODDR → HP-bank pin, FX3 slave-FIFO PCLK) sits on this
+untested path.
+
+Unblock path: upstream fix (they closed #100 within a day) → rebuild →
+`scripts/hw_gate.sh` → 2-RX ladder.  Everything on our side is ready and
+one command away.
