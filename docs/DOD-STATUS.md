@@ -485,3 +485,25 @@ therefore in (a) vendor fabric nets feeding the clock infrastructure
 output.  Both are testable next session with the picosoc-qmtech oracle
 (silicon-proven 325T design, buildable through our container flow) and an
 all-tile documented diff.
+
+## 27. hybrid5 (2026-11-23)
+
+Silicon-proven old-engine fabric (its own routing of diag_slrd, CE tied via
+its fabric) + vendor's entire proven-driven clock column: dead.  The overlay
+also swaps the hrow row, breaking the old engine's BUFHCE placement ->
+confirms the clock infra and the CE/IMUX fabric nets are tightly coupled;
+partial overlays cannot work.
+
+## 28. IDENTIFIED PATH TO A WORKING BITSTREAM (next session)
+
+The old nextpnr-xilinx engine is Python-scriptable (`--run script.py`):
+we can drive placement programmatically.  Plan:
+1. Build diag_slrd with the old engine, but force a BUFHCE at X1Y11
+   (the vendor-proven BEL whose BUFHCLK11 spine + enables are documented)
+   with CE tied via the engine's own VCC routing.
+2. Route the 100 MHz into it via MUX_OUT_R11 (documented row).
+3. Leaf <- IGCLK11 (documented).
+This constructs the vendor-proven topology entirely from documented bits
+with an engine that provably produces working fabric on 325T.  If this
+bitstream drains, we have OUR design working on OUR board through OUR
+toolchain -> DOD unblocked without any upstream dependency.
