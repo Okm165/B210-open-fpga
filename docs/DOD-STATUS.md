@@ -384,3 +384,20 @@ e.g. other bit buses), or (b) a board/firmware interaction we cannot
 observe without a scope or Vivado. Both engines (himbaechel, 0.9.8) are
 equally affected. This is the hard stop of terminal-only debugging; the
 evidence package in #222 is complete and final for this session.
+
+## 21. DEFINITIVE A/B CONTROL (2026-11-23, session end)
+
+Implemented the FX3 bootloader protocol directly (raw 0xA0 downloads,
+no UHD): fresh firmware boot -> our bitstream loaded as the FIRST FPGA
+image the fresh GPIF ever sees.
+
+Same firmware session, same sockets, same probe:
+- our bitstream (first image): **dead (1024 B)**
+- vendor bitstream loaded seconds later in the same session: **healthy
+  (4 MB @ 12 MB/s)**
+
+The last confound (GPIF state initialized against a different FPGA) is
+removed. The difference is the bitstream content, i.e. the clock-forwarding
+layer (82% undocumented CLK_HROW bits, 41% CMT bits, shared by both P&R
+engines). On-terminal debugging is exhausted; posted as the final control
+to openXC7/nextpnr#222. Tooling preserved: scripts/fx3_raw_load.py.
