@@ -732,3 +732,51 @@ Rig improvements this session (all committed):
 DOD remains NOT met.  The confound removal makes every future result
 trustworthy; the decoded target is now exactly one thing: the vendor's
 working GPIF_D output data path.
+
+## 37. Upstream #222 solution tested on hardware; remaining variable narrowed (2026-11-23)
+
+Read (not posted) upstream openXC7/nextpnr#222. cavearr reproduced the issue
+with Vivado 2026.1 on xc7k325tffg676-1 and measured the root cause:
+
+- The missing piece is ONE bit per global clock: `CLK_HROW_R_CK_GCLK<n>_ACTIVE`
+  must be set in EVERY clock row the clock crosses, not only where it has a
+  load. nextpnr sets it only on loaded rows (nextpnr-xilinx got the rule in
+  f0975539; the himbaechel port never did). He opened #226 for the general
+  case.
+- Correction to our earlier claims (his Vivado A/B): every bit Vivado sets in
+  INT/IOI/IOB tiles is named in the DB (no undocumented bits); LH6/LV9 are the
+  middle taps of long lines and are driven at the ends (LH0/LH12), so our
+  "phantom route" conclusion was wrong; a plain OBUF needs no GND T-tie
+  (Vivado writes the same 22 IOB/IOI lines as nextpnr).
+
+Measured here after that analysis (all with the raw FX3 loader, GET_COUNTERS
+byte 24 as liveness, and the drain probe as the DOD instrument):
+
+| design | clock source | spine ACTIVE patch | counter | drain |
+|---|---|---|---|---|
+| diag_ring11 | codec SRCC pad -> IBUFDS -> BUFG -> GCLK0 -> BUFHCE -> leaf -> ODDR | no  | 3 | 1024 |
+| diag_ring11 | same | yes (3 rows added, incl. the crossed row Y182) | 3 | 1024 |
+| diag_ring12 | our 36-stage ring -> BUFG -> GCLK14 -> BUFHCE -> leaf -> ODDR | no | 3 | 1024 |
+| diag_ring12 | same | yes (3 rows added) | 3 | 1024 |
+
+So the upstream hypothesis is necessary-or-not, but not sufficient in our
+shapes: with the spine fully ACTIVE the pad still does not toggle. Remaining
+variables, in order of suspicion, are all in OUR side of the chain:
+(1) the fabric->BUFG input (the engine's `CLK_BUFG_BUFGCTRL0_I0.CLK_BUFG_BOT_R_CK_MUXED0`
+row may be a phantom input, as the IBUFDS path at X95Y27 shows no IGCLK hop);
+(2) whether the ring oscillates at all (no independent observability);
+(3) the HCLK_CMT companion bits (`HCLK_CMT_CK_BUFHCLK<n>_USED`) that upstream
+says artix runs without.
+
+Decoded while re-examining the vendor (corrects the earlier misread): the
+vendor's GPIF_D pads drive through `OLOGIC_Y?.ODDR (DATA_RATE_OQ.SDR)` and the
+ODDR's D1 input is a *bitless always-pip* hardwired to `IMUX34` of the same
+tile; the vendor feeds `IMUX34 <- SL1END1` (ordinary routing). The whole
+fabric->GPIF_D crossing is therefore documented, and is the right graft target
+(no clock-network work needed: the vendor's own IFCLK self-toggle supplies
+PCLK while our logic drives the data pin).
+
+New assets: src/top/diag_ring11.v, src/top/diag_ring12.v,
+scripts/build_diag_ring11.sh, scripts/build_diag_ring12.sh,
+scripts/patch_spine_active.py (marks the whole GCLK spine stretch ACTIVE),
+src/top/diag_pad26.v + scripts/build_diag_pad26.sh (single-pad output probe).
