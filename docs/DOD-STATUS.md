@@ -528,3 +528,23 @@ Next: verify what our design's GCLK0 actually carries end-to-end (BUFG input
 side), or simply re-run the chain against GCLK2/GCLK5 taps of OUR design's
 other clocks (bus 100 MHz on GCLK5/6) — i.e. leaf/mux index sweeps on OUR
 own builds rather than vendor copies.
+
+## 30. GCLK sweep on our own build (2026-11-23, session close)
+
+Proven BUFHCE_X1Y11 chain (leaf<-IGCLK11, IN_USE+ZINV_CE, MUX_OUT_R11 mux,
+ACTIVE, 21 ENABLE_BUFFERs, CMT USED rows) built on OUR design with the mux
+swept across our three GCLK spines (GCLK0/5/6, covering all three of our
+clocks): **all dead**.
+
+The complete documented-bit chain, on a self-consistent design, on a
+proven-driven spine, on silicon-proven engine output, does not produce a
+toggling IFCLK; the vendor's identical-structure chain does.  The remaining
+unexplained delta cannot be resolved without additional reference data
+(more Vivado bitstreams to decode the mux encodings, or a scope on AD1/CTL).
+
+Terminal-only debugging is exhausted after ~75 hardware experiments across
+two engines, one validated decode pipeline, and one confound-free A/B.
+All instruments and the full evidence chain (SS 7-30) are committed; #222
+carries the package.  The staged DOD ladder (2R2T build -> hw_gate -> 2RX ->
+FFT/graphs -> tuning -> Diorama) runs the moment the missing encodings are
+known.
