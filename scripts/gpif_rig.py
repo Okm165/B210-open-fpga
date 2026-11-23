@@ -113,6 +113,8 @@ def main():
                 ok += 1
     if expect:
         print(f"matches {expect}: {ok}/{reads}")
+        if ok != reads:
+            sys.exit(1)
 
 
 if __name__ == '__main__':

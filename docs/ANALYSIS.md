@@ -1,3 +1,12 @@
+# RETRACTED IN PART — READ docs/DOD-STATUS.md FIRST
+
+> **2026-11-23 correction.** UHD reflashes `/usr/share/uhd/images/usrp_b210_fpga.bin`
+> (the vendor reference bitstream) on every open unless device args carry
+> `fpga=<path>`.  Every section below that claims OUR bitstream passed a
+> loopback test, enumerated, or streamed RX was measuring the **vendor image**
+> and is void.  Use `scripts/hw_gate.sh` for any hardware claim; only
+> `docs/DOD-STATUS.md` reflects the measured state.
+
 # What we built, what we learned, where the line is
 
 A reflection on this repository and the live-board debugging of 2026-11-20.

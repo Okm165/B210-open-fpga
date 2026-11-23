@@ -7,7 +7,7 @@ podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -w /work -e HOME=/work/bu
 set -euo pipefail
 cd /work
 SRCS=$(tr '\n' ' ' < build/srcs80_abs.txt)
-yosys -p "read_verilog -I /work/src/rtl/control $SRCS; synth_xilinx -flatten -abc9 -family xc7 -top b200_80; write_json /work/build/fpga/synth/b200_80.json; stat" \
+yosys -p "read_verilog -I /work/src/rtl/control $SRCS; synth_xilinx -flatten -abc9 -D TARGET_B210 -family xc7 -top b200_80; write_json /work/build/fpga/synth/b200_80.json; stat" \
   > build/fpga/logs/b200_80-synth.log 2>&1
 tail -n 5 build/fpga/logs/b200_80-synth.log
 echo "b200_80 synth ok"
