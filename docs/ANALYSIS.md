@@ -1148,3 +1148,18 @@ HW) vs diag_ctrl8 (identical + 2 LUTs, dead) with build scripts and sim
 harness committed. A GCLK6-avoiding router pass (or corrected GCLK6
 bits) is the likely fix; alternatively the fasm/frames patcher needs
 whole-net GCLK6->GCLK5 retargeting.
+
+## Session addendum 2: nextpnr 42d06c5 rebuild test
+
+Built nextpnr-himbaechel + chipdb from openXC7/nextpnr @ 42d06c5 on the
+host (gcc16, eigen3 needed; container meta/ dir copied into the repo
+tree). diag8 rebuilt with the new PnR (seed 4, timing PASS 101/130 MHz,
+DRIVE 12 fix for LVCMOS18 IOB rows): STILL silent on HW, primed.
+- Net->BUFG->GCLK mapping confirmed identical in working and failing
+  designs (bufg_fb->GCLK0, bufg_bus->GCLK5, bufg_100->GCLK6 from PnR log)
+  so GCLK6 itself carries gpif_clk even in the WORKING design; the
+  earlier GCLK6 correlation is about HROW mux PORT classes, not the line.
+- Current repro state: diag_ctrl2 (works, 5/5, seeds 1-3) vs
+  diag_ctrl8 (+2 LUTs: dead at any seed, any PnR version, any RAM style).
+  All failing variants: config DONE, RTL sim PASS, timing PASS.
+This is now a minimal, fully-instrumented upstream bug package.
