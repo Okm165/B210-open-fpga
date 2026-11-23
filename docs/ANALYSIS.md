@@ -1194,3 +1194,22 @@ seeds/placements, not MMCM or RTL problems. There is no logic defect:
 some openXC7 kintex7 placements produce dead config, others work.
 DOD strategy: sweep PnR seeds of the full 2R2T design until one comes
 alive on hardware.
+
+## RESOLVED (2026-11-23): full 2R2T DOD image works on hardware
+
+Root cause of every earlier "dead" full-design verdict: single-seed builds.
+diag8 and the full b200 both fail at some placements and work at others.
+Rung ladder 1.5 / 4 / 6 re-run at container-PnR seeds 2 and 3 (the seeds
+that work for diag8) all PASS 2/2 UHD loopback --- control path, RAMB36,
+DSP48E1 all exonerated.
+
+The winning configuration (built from OUR Verilog, zero stock content):
+  src/top/b200_80.v         full 2R2T b200 top
+  src/top/b200_clk_gen80.v  80 MHz bus/gpif clock (VCO 1200, /15)
+  scripts/synth_b200_80.sh  yosys synthesis (b200_80.json)
+  scripts/build_b200_80_full.sh  PnR -> frames -> patch -> bit -> bin
+  build/fpga/pnr/b200_80_seed2.bin   THE WORKING IMAGE
+
+Timing: bus_clk 108.14 MHz (PASS), radio_clk 93.59 MHz (PASS at 61.44).
+Hardware: 2/2 register loopback, both RX frontends enumerate, dual-channel
+RX capture at 30.72 MSPS PASS (100% of requested samples).
