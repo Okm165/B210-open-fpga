@@ -209,3 +209,39 @@ Consequences:
 Posted to openXC7/nextpnr#222 with the knockout proof and fix direction
 (add the missing CLK_HROW BUFHCLK routing rows; make fasm2frames fail on
 features without backing bits).
+
+## 13. FX3 firmware diagnostics + terminal-only reset + graft experiments (2026-11-23)
+
+### Firmware forensics (unmodified stock UHD firmware, via vendor requests)
+- `GET_LOG` (0x23), `GET_COUNTERS` (0x24): our images load with
+  "FPGA done / b200_gpif_init / GPIF loaded / Running"; counters show
+  `pib[1].socket_inactive` increments (GPIF SM alive, socket inactive),
+  `invalid_gpif_state = 0`. Vendor-vs-ours counter comparison was interrupted
+  by a wedge (below).
+- `RESET_DEVICE` (0x99): full FX3 reboot from the terminal. Lands in the
+  USB bootloader ("Cypress | WestBridge"); `uhd_usrp_probe` then reloads
+  firmware + FPGA and the board comes back healthy. **Complete no-replug
+  reset path demonstrated**, board restored and verified healthy.
+
+### Graft experiments (decisive, all measured)
+1. 34 CMT `CK_INk→CK_BUFHCLK0` hop variants brute-forced on hardware: dead.
+2. Vendor BUFHCLK11 chain reconstruction (CMT rows + hrow correlated bits +
+   BUFHCE_X1Y11 + ENABLE_BUFFERs + leaf←IGCLK11) on our fabric: dead.
+3. **Wholesale vendor clock-spine graft** (CLK_HROW/HCLK_IOI/RIOI/CMT tiles
+   for the IFCLK path copied from the vendor bitstream into ours): dead.
+4. **Full vendor IO+clock graft** (86 vendor IO-column + hclk-column tiles,
+   3564 frames, complete GPIF-bank IO and clock configuration) + our fabric:
+   dead.  Vendor image through the identical probe: healthy.
+5. Our image on a freshly UHD-initialized FX3 (sockets configured by UHD
+   before our load): still dead, while the vendor baseline drains on the
+   same firmware state.
+
+### Conclusion
+With the vendor's complete IO and clock configuration in place, the only
+remaining difference is our fabric (CLB/routing) frames. The phantom-routing
+defect (§12, knockout proof) is therefore not limited to the BUFHCLK network:
+the flow's fabric-level routing cannot be trusted on this part either. This
+is consistent with every image we have ever built being inert, regardless of
+design content, clock topology, or pad configuration.
+
+Recovery after wedge: `RESET_DEVICE` → UHD reload (documented above).
