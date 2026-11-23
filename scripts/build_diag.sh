@@ -1,54 +1,80 @@
 #!/usr/bin/env bash
-# build_diag.sh - build the diagnostic LED image (diag_clock) with the same
-# container toolchain as the real build, but standalone: no DSP/MMCM-netlist
-# asserts, no gate, no deploy overwrite.  Output: build/fpga/diag/usrp_diag.bin
+# build_diag.sh - one parameterized build for every diagnostic design.
 #
-# The image answers, by eye alone, whether the 40 MHz reference reaches the
-# FPGA (see src/top/diag_clock.v).  Load it with:
-#   python3 scripts/hw_load.py build/fpga/diag/usrp_diag.bin
+#   DESIGN=diag_ring13 ./scripts/build_diag.sh
+#
+# Inputs (conventional, no per-design scripts):
+#   src/top/$DESIGN.v               the design
+#   src/constraints/$DESIGN.xdc     constraints (falls back to diag_pad.xdc)
+# Outputs:
+#   build/fpga/ring2/{synth,pnr}/*  json/fasm/frames
+#   build/fpga/ring2/usrp_$DESIGN.bin
+#
+# Env:
+#   SEED=1        nextpnr seed
+#   IGNORE_LOOPS=1 pass --ignore-loops (combinational ring designs)
+#
+# Engine: the rebuilt himbaechel binary (supports `set_property BEL`) plus its
+# matching chipdb, and a segbits_riob18.db with the LVCMOS18 DRIVE aliases the
+# stock DB lacks for every pin the GPIF bank uses.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DESIGN="${DESIGN:?usage: DESIGN=<name> $0}"
 CR=/work
 FPGA_PART=xc7k325tffg676-1
-DIE=xc7k325t
 FPGA_HOME=/opt/fpga
 PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
 CE=podman
-$CE run --rm -i --userns=keep-id -v "$ROOT:$CR:z" -w "$CR" -e HOME="$CR/build" \
-  -e FPGA_PART=$FPGA_PART -e FPGA_HOME=$FPGA_HOME b210-open-fpga:0.1.0 bash -s <<-'EOF'
+[[ -f "$ROOT/src/top/$DESIGN.v" ]] || { echo "missing src/top/$DESIGN.v" >&2; exit 2; }
+if [[ -f "$ROOT/src/constraints/$DESIGN.xdc" ]]; then
+  XDC="$CR/src/constraints/$DESIGN.xdc"
+else
+  XDC="$CR/src/constraints/diag_pad.xdc"
+fi
+
+$CE run --rm -i --userns=keep-id \
+  -v "$ROOT:$CR:z" \
+  -v /tmp/opencode/segbits_riob18.db:/opt/fpga/share/prjxray-db/kintex7/segbits_riob18.db:z \
+  -v /tmp/opencode/openxc7-nextpnr/build/nextpnr-himbaechel:/opt/fpga/bin/nextpnr-himbaechel:z \
+  -v /tmp/opencode/openxc7-nextpnr/build/himbaechel/uarch/xilinx/chipdb-xc7k325t.bin:/opt/fpga/share/nextpnr/himbaechel/xilinx/chipdb-xc7k325t.bin:z \
+  -w "$CR" -e HOME="$CR/build" \
+  -e DESIGN="$DESIGN" -e XDC="$XDC" \
+  -e SEED="${SEED:-1}" -e IGNORE_LOOPS="${IGNORE_LOOPS:-0}" \
+  ${FPGA_IMAGE:-b210-open-fpga:0.1.0} bash -s <<-'EOF'
 set -euo pipefail
 CR=/work; FPGA_PART=xc7k325tffg676-1; FPGA_HOME=/opt/fpga
 PRJXRAY_DB=$FPGA_HOME/share/prjxray-db
-OUT=$CR/build/fpga/diag
-mkdir -p $OUT/synth $OUT/pnr $OUT/bitstream $CR/build/fpga/logs
-yosys -p "read_verilog $CR/src/top/diag_clock.v; \
-          synth_xilinx -flatten -abc9 -family xc7 -top diag_clock; \
-          write_json $OUT/synth/diag_clock.json; stat" \
-  > $CR/build/fpga/logs/diag-synth.log 2>&1 \
-  || { tail -40 $CR/build/fpga/logs/diag-synth.log; exit 1; }
-grep -q '"type": "MMCME2_ADV"' $OUT/synth/diag_clock.json
-echo "synth ok"
+OUT=$CR/build/fpga/ring2
+LOGS=$CR/build/fpga/logs
+mkdir -p "$OUT/synth" "$OUT/pnr" "$OUT/bitstream" "$LOGS"
+LOOPS=""; [[ "$IGNORE_LOOPS" == "1" ]] && LOOPS="--ignore-loops"
+
+yosys -p "read_verilog $CR/src/top/$DESIGN.v; synth_xilinx -flatten -abc9 -family xc7 -top $DESIGN; write_json $OUT/synth/$DESIGN.json; stat" \
+  > "$LOGS/$DESIGN-synth.log" 2>&1
+
 nextpnr-himbaechel --device $FPGA_PART \
   --chipdb $FPGA_HOME/share/nextpnr/himbaechel/xilinx/chipdb-xc7k325t.bin \
-  --json $OUT/synth/diag_clock.json \
-  -o xdc=$CR/src/constraints/diag_clock.xdc -o fasm=$OUT/pnr/diag_clock.fasm \
-  --seed 1 > $CR/build/fpga/logs/diag-pnr.log 2>&1 \
-  || { tail -40 $CR/build/fpga/logs/diag-pnr.log; exit 1; }
-echo "pnr ok"
+  --json "$OUT/synth/$DESIGN.json" \
+  -o "xdc=$XDC" -o "fasm=$OUT/pnr/$DESIGN.fasm" $LOOPS --seed "$SEED" \
+  > "$LOGS/$DESIGN-pnr.log" 2>&1 \
+  || { tail -40 "$LOGS/$DESIGN-pnr.log"; exit 1; }
+
 fasm2frames --db-root $PRJXRAY_DB/kintex7 --part $FPGA_PART \
-  $OUT/pnr/diag_clock.fasm $OUT/pnr/diag_clock.frames \
-  > $CR/build/fpga/logs/diag-f2f.log 2>&1 \
-  || { tail -40 $CR/build/fpga/logs/diag-f2f.log; exit 1; }
+  "$OUT/pnr/$DESIGN.fasm" "$OUT/pnr/$DESIGN.frames" \
+  > "$LOGS/$DESIGN-f2f.log" 2>&1 \
+  || { tail -40 "$LOGS/$DESIGN-f2f.log"; exit 1; }
+
 xc7frames2bit --part_file $PRJXRAY_DB/kintex7/$FPGA_PART/part.yaml \
-  --part_name $FPGA_PART --frm_file $OUT/pnr/diag_clock.frames \
-  --output_file $OUT/bitstream/diag_clock.bit \
-  > $CR/build/fpga/logs/diag-bit.log 2>&1 \
-  || { tail -40 $CR/build/fpga/logs/diag-bit.log; exit 1; }
-python3 $CR/scripts/bit2bin.py $OUT/bitstream/diag_clock.bit $OUT/usrp_diag.bin \
-  > $CR/build/fpga/logs/diag-b2b.log 2>&1 \
-  || { cat $CR/build/fpga/logs/diag-b2b.log; exit 1; }
-idcode=$(bittool get_device_id $OUT/usrp_diag.bin)
-echo "idcode: $idcode (expect 0x3651093)"
-sha256sum $OUT/usrp_diag.bin
-echo "diag image ok: $OUT/usrp_diag.bin"
+  --part_name $FPGA_PART --frm_file "$OUT/pnr/$DESIGN.frames" \
+  --output_file "$OUT/bitstream/$DESIGN.bit" \
+  > "$LOGS/$DESIGN-bit.log" 2>&1 \
+  || { tail -40 "$LOGS/$DESIGN-bit.log"; exit 1; }
+
+python3 "$CR/scripts/bit2bin.py" "$OUT/bitstream/$DESIGN.bit" "$OUT/usrp_$DESIGN.bin" \
+  > "$LOGS/$DESIGN-b2b.log" 2>&1 \
+  || { cat "$LOGS/$DESIGN-b2b.log"; exit 1; }
+
+idcode=$(bittool get_device_id "$OUT/usrp_$DESIGN.bin")
+[[ "$idcode" == "0x3651093" ]] || { echo "idcode $idcode != 0x3651093" >&2; exit 1; }
+echo "built: $OUT/usrp_$DESIGN.bin (idcode $idcode)"
 EOF

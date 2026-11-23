@@ -858,3 +858,24 @@ not another permutation:
 Assets added: scripts/graft_ring13.py (documented-crossing graft),
 scripts/graft_ring13_tpath.py (tri-state variant), scripts/graft_ring13_ctl12.py
 (FIFOADR variant), src/top/diag_ctl12.v, scripts/build_diag_ctl12.sh.
+
+## 40. Tooling consolidation: one build entry point (2026-11-23)
+
+The diagnostic flow had accumulated 41 near-duplicate `scripts/build_diag_*.sh`
+files (one per experiment, each a copy with a different design name and slow
+drift in the container mounts). They are replaced by ONE parameterized script:
+
+    DESIGN=diag_ring13 IGNORE_LOOPS=1 ./scripts/build_diag.sh
+
+Conventions it encodes (previously implicit per copy):
+- design:  src/top/$DESIGN.v
+- XDC:     src/constraints/$DESIGN.xdc, else src/constraints/diag_pad.xdc
+- outputs: build/fpga/ring2/{synth,pnr}/*, usrp_$DESIGN.bin
+- engine:  the rebuilt himbaechel binary + matching chipdb (BEL placement)
+- DB:      segbits_riob18.db with the LVCMOS18 DRIVE aliases mounted in
+- checks:  device id is asserted (0x3651093), not just printed
+
+Verified: the consolidated script reproduces the last diag_ring13 build
+byte-identically (fasm diff 0 lines). The deleted scripts remain in git
+history; the experiments they record are documented in §1-§39 above, and the
+designs themselves (src/top/diag_*.v) are kept as the evidence artifacts.
