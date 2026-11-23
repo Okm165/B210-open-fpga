@@ -548,3 +548,44 @@ All instruments and the full evidence chain (SS 7-30) are committed; #222
 carries the package.  The staged DOD ladder (2R2T build -> hw_gate -> 2RX ->
 FFT/graphs -> tuning -> Diorama) runs the moment the missing encodings are
 known.
+
+## 31. IOB "bank glue" + T-tie discovery; counter instrument; pin-site parity (2026-11-23)
+
+### Breakthroughs
+
+1. **Knockout hierarchy (all on hardware):**
+   - Vendor minus all 150 undocumented CLK_HROW bits: ALIVE (DB sufficient there).
+   - Vendor minus 1104 undocumented RIOB18 (HP-bank IOB) bits: DEAD.
+   - Vendor minus 29 undocumented pin-site bits (RIOI+RIOB18_X95Y109): DEAD.
+   These undocumented bits are the "IOB18 HP-bank bank glue" class documented
+   in the openXC7 Virtex-7 port; the open Kintex-7 flow emits none of them.
+2. **GET_COUNTERS (0x24) byte 24/52 is a liveness instrument:** vendor=5
+   (GPIF/PCLK alive), any design with a static/tri-stated IFCLK=3.  Validated
+   by disabling the vendor's IFCLK OLOGIC (5 -> 3).  Fast feedback, no drain.
+3. **T-tie bug (matches openXC7 virtex7 "OBUF T-tie convergence"):** the flow
+   leaves the OBUF tristate input T at its VCC default -> pad tri-stated
+   forever.  Vendor ties T low via GFAN0/GND chain.  Workaround: instantiate
+   OBUFT with T=0 -> engine emits INT_R_X95Y110.GFAN1.GND_WIRE + IMUX15.GFAN1.
+4. **Phantom route class:** several builds ended the D1 route on an undriven
+   wire (e.g. IMUX34.WW2END0 with no WW2BEG anywhere) - a silent engine
+   routing defect into IO-column IMUXes; seed-dependent.
+5. **Vendor IFCLK structure decoded:** OLOGIC_Y1 pass-through/ODDR at
+   RIOI_X95Y109, D1 <- IMUX34_0 <- INT_R_X95Y109.IMUX34 (same row), T tied
+   low, plus undocumented pin-site bits.
+
+### Exhausted deltas
+
+After: OBUFT (T tied) + complete legal D1 route chain + all 29 vendor
+undocumented pin-site bits + all documented-missing bits + input-side
+(RIOI_X95Y27) undoc bits + slow 101-inverter ring AND live-codec-clock
+loopback probes: GET_COUNTERS still 3.  Pin IOB config is now a superset of
+the vendor's at the IFCLK site.
+
+### Remaining unknown (next target)
+
+The RIOI tile's internal switch-matrix routing (3878 undocumented bits in the
+X95 column) is proven load-bearing (Y109 knockout) and is what our flow
+cannot express - the IOI-internal hop from the fabric/LOGIC_OUTS wires into
+the IOB/OLOGIC likely needs undocumented companion bits.  Decoding requires
+Vivado reference bitstreams (cross-instance knockout) or upstream DB work;
+all instruments (counter read, frame pipeline, knockout harness) are ready.

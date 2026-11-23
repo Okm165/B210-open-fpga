@@ -30,13 +30,17 @@ def to_bootloader():
             if 'West' in p or 'Cypress' in p: return d
     raise SystemExit('bootloader not found')
 def load_fw(bl,path):
+    ext=0
     for line in open(path):
         line=line.strip()
         if not line.startswith(':'): continue
         b=bytes.fromhex(line[1:])
         ln=b[0]; addr=(b[1]<<8)|b[2]; typ=b[3]; data=b[4:4+ln]
-        if typ==0: bl.ctrl_transfer(0x40,0xA0,addr,0,data,5000)
-        elif typ==4: assert int.from_bytes(b[4:6],'big')==0
+        if typ==4: ext=int.from_bytes(b[4:6],'big')
+        elif typ==2: ext=int.from_bytes(b[4:6],'big')<<4
+        elif typ==0:
+            a32=(ext<<16)|addr
+            bl.ctrl_transfer(0x40,0xA0,a32&0xFFFF,(a32>>16)&0xFFFF,data,5000)
         elif typ==1: break
     try: bl.ctrl_transfer(0x40,0xA0,0,0,b'',5000)
     except Exception: pass
