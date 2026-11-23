@@ -507,3 +507,24 @@ This constructs the vendor-proven topology entirely from documented bits
 with an engine that provably produces working fabric on 325T.  If this
 bitstream drains, we have OUR design working on OUR board through OUR
 toolchain -> DOD unblocked without any upstream dependency.
+
+## 29. chain2 + old-engine CE semantics (2026-11-23, close)
+
+Old-engine source (arch.cc routeBufhcePassthroughCE) documents that an
+unrouted BUFHCE CE already reads as hard 1 (IMUX default VCC_WIRE + two
+bitless always-pips; all five Vivado references show exactly IN_USE+ZINV_CE
+with zero interconnect bits).  CE was therefore never our problem — and the
+vendor's ZINV_CE-only configuration is the standard pass-through form.
+
+Fixed a real bug in my chain experiments (set GCLK2_ACTIVE instead of
+GCLK0_ACTIVE; corrected in chain2): still dead.
+
+Current exact state: our chain (leaf<-IGCLK11, BUFHCE_X1Y11 IN_USE+ZINV_CE,
+MUX_OUT_R11<-GCLK0, correct GCLK0_ACTIVE, 21 ENABLE_BUFFERs, CMT rows,
+vendor MMCM) is inert while the vendor's identical-structure configuration
+(GCLK2 instead of GCLK0) is alive.  The single remaining difference between
+the two chains is the GCLK index (GCLK0 vs GCLK2) and what rides it.
+Next: verify what our design's GCLK0 actually carries end-to-end (BUFG input
+side), or simply re-run the chain against GCLK2/GCLK5 taps of OUR design's
+other clocks (bus 100 MHz on GCLK5/6) — i.e. leaf/mux index sweeps on OUR
+own builds rather than vendor copies.
