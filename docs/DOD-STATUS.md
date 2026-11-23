@@ -181,3 +181,31 @@ drain experiments, and firmware analysis.
 Also verified: re-assembling the same FASM with the post-#30 openXC7
 prjxray-db (complete HCLK_CMT rows) yields byte-identical frames — not a
 stale-DB artifact.  Both findings added as a comment on issue #222.
+
+## 12. ROOT CAUSE PROVEN BY KNOCKOUT (2026-11-23)
+
+The BUFHCLK routing layer of our designs is **phantom**. `segbits_clk_hrow_bot_r.db`
+(kintex7) contains NO routing rows for the BUFHCLK network — only BUFHCE config
+bits, BUFG_CASC and MUX_OUT/GCLK_ACTIVE rows. nextpnr nevertheless emits route
+PIPs such as `CLK_HROW_CK_BUFHCLK_R0.CLK_HROW_CK_HCLK_OUT_R0`.
+
+Knockout experiment (`scripts/knockout_bufhclk.sh`): delete every
+HCLK_OUT/BUFHCLK route line from the design FASM, reassemble → **frames
+byte-identical (0 of 27850 differ)**.  The router's entire regional-clock
+route has no bits behind it; fasm2frames drops it silently.
+
+Consequences:
+- No bitstream from this flow can drive a regional clock spine. This is the
+  complete root cause of the IFCLK-dead measurements (leaf ← IGCLK ← BUFHCLK
+  with an undriven spine).
+- Not fixable from our side: the bits do not exist in any prjxray-db
+  (prjxray-db#22/#30 merged; neither adds CLK_HROW BUFHCLK routing rows;
+  0 open prjxray-db PRs).
+- New hardware experiments this round: 34 CMT `CK_INk→CK_BUFHCLK0` hop
+  variants brute-forced on silicon — all dead (consistent with phantom
+  routing; the hop bits did reach frames but the spine itself has no driver
+  path with bits).
+
+Posted to openXC7/nextpnr#222 with the knockout proof and fix direction
+(add the missing CLK_HROW BUFHCLK routing rows; make fasm2frames fail on
+features without backing bits).
