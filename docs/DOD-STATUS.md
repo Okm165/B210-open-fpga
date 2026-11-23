@@ -276,3 +276,20 @@ Consequences:
 - Board-health restore loop proven twice: RESET_DEVICE (0x99) → bootloader →
   uhd_usrp_probe (fw+fpga reload) → healthy.
 - bitread-based decode is now the only valid vendor frame source.
+
+## 16. Valid-instrument round 2 (2026-11-23, later)
+
+- Pad tiles verified: our RIOB18 GPIF-pad features match vendor's line-for-line
+  (SLEW/DRIVE/glue all present). Pads exonerated on valid data.
+- BUFG config: our BUFGCTRL sites (X0Y0/5/6) have IN_USE; polarity bits mostly
+  already correct (3 bits differed, patched — no effect).
+- Upstream examples (vc707-carry, vc707-heavyhash4 nonce-verified 2026-11-03,
+  vc707-litex-linux) run on kintex7 hardware through this flow — fabric
+  interconnect works generally. Our failure is design/part-specific.
+- Vendor-shaped clock chain adapted to our GCLK5 (leaf←IGCLK11, BUFHCE_X1Y11,
+  MUX_OUT_R11←GCLK5, ENABLE_BUFFERs, CMT rows, all documented bits) still dead
+  → the likely dead link is upstream of the leaf: our MMCM start-up (COMP/
+  POWER/CLKOUT-enable deltas now tested — not sufficient) or the 40 MHz
+  input path into the MMCM.  Next: verify MMCM lock inputs (CLKIN from
+  CLK_IN1_HCLK spine: who drives it in each bitstream) and MMCM start-up bits
+  (STARTUP_WAIT / table regs) with the valid instrument.
