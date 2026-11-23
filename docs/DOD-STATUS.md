@@ -334,3 +334,27 @@ this flow. Offered our tooling (true-frame dumps, knockout scripts, audit).
 DOD status: BLOCKED on upstream kintex7 clocking DB. Everything on our side
 is staged: on a DB fix, `scripts/build_b200_full.sh` (TARGET_B210) ->
 `scripts/hw_gate.sh` -> 2-RX ladder -> FFT/graph/tuning work.
+
+## 19. Old-engine cross-check (2026-11-23, final for this session)
+
+Built the archived openXC7/nextpnr-xilinx 0.9.8 engine from source (the one
+that is silicon-proven on XC7K325T via the QMTech PicoSoC), generated the
+k325t chipdb from the same prjxray DB, and built our atomic static-reader
+probe through it (yosys 0.69 -> nextpnr-xilinx 0.9.8 -> fasm2frames ->
+xc7frames2bit).  The old engine actively manages BUFHCEs and P&R succeeds —
+and the result is **dead on the board too (1024 B)**.
+
+Root cause shared by both engines, now precisely quantified with the
+validated instrument (corrected audit; the earlier 100% figure was an
+indexing bug, real number 82%):
+- CLK_HROW clock row of our IFCLK leaf: vendor = 184 bits set, **150 (82%)
+  undocumented** in every segbits DB; our flow emits only the 17 documented
+  bits.  The DB simply lacks the regional-clock routing rows.
+- CMT/MMCM tile: vendor 41% undocumented.
+- HCLK_IOI leaf mux: fully documented in both (exonerated).
+
+Two independent P&R engines + one shared incomplete DB = same silent dead
+output.  Reversing the 150 undocumented HROW bits (cross-instance knockout
+correlation across the vendor's four clock rows) is the remaining
+reverse-engineering task; it is beyond what a single reference bitstream
+supports quickly and is best done upstream with more reference configs.
