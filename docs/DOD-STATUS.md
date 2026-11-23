@@ -819,3 +819,42 @@ logic can drive real board pins with documented rows only. What remains for
 2-RX-from-our-Verilog is engineering, not decode: a T-path liveness proof,
 then the staged ladder (single pad -> GPIF CTL handshake -> our 2R2T design
 grafted per-pin).
+
+## 39. Ring-liveness probes inconclusive; a deliberate stop (2026-11-23)
+
+Three discriminators were built and measured after §38. All three confirm the
+fabric->pad arrival and none separates "ring oscillates" from "constant":
+
+| probe (single documented-row repoint into the vendor image) | counter | drain |
+|---|---|---|
+| vendor baseline | 5 | 65536 |
+| ring -> GPIF_D[26] ODDR D1 (IMUX34@X95Y115) | 5 | 1024 |
+| const-0 -> same D1 (negative control) | 5 | 1024 |
+| ring -> GPIF_D[26] OLOGIC T1 (tri-state, data path intact) | 5 | 65536 |
+| const-0 -> same T1 | 5 | 65536 |
+| ring -> GPIF_CTL12 (FIFOADR[0]) via IMUX34@X95Y109 | 5 | 1024 |
+| const-0 -> same | 5 | 1024 |
+
+What the table proves: every graft changes board behaviour exactly when it
+replaces a live vendor-driven pin, i.e. OUR LUT OUTPUT ARRIVES AT REAL PINS
+through documented rows (three different pins, three different configs).
+What none of these rows can prove: whether the 4-inverter ring oscillates,
+because in each observable the constant tap produces the same effect as the
+ring (drive a bus that the vendor owns -> stall; tri-state a pad -> the vendor
+never needs that T).
+
+The honest conclusion of this session's methodology: the board currently
+offers no observable that distinguishes a toggling LUT from a constant one
+without displacing the vendor's own use of that pin. Continuing to permute
+pins would burn time without changing that. The next step is an instrument,
+not another permutation:
+
+1. a host-readable stream in which OUR bit is not shared with vendor data
+   (the FX3 IN endpoint with the vendor's stream set up by a settings-only
+   UHD session is disqualified: UHD reloads the FPGA image), or
+2. a physical probe on a header pin our logic owns exclusively (LED/GPIO),
+   which is the only observable with no vendor contention.
+
+Assets added: scripts/graft_ring13.py (documented-crossing graft),
+scripts/graft_ring13_tpath.py (tri-state variant), scripts/graft_ring13_ctl12.py
+(FIFOADR variant), src/top/diag_ctl12.v, scripts/build_diag_ctl12.sh.
