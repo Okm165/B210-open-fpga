@@ -166,3 +166,18 @@ untested path.
 Unblock path: upstream fix (they closed #100 within a day) → rebuild →
 `scripts/hw_gate.sh` → 2-RX ladder.  Everything on our side is ready and
 one command away.
+
+## 11. Firmware-level confirmation (2026-11-23)
+
+UHD's stock FX3 firmware (`b200_main.c`, `b200_gpif_init`):
+`CyU3PPibInit(CyTrue, {clkDiv=2, clkSrc=CY_U3P_SYS_CLK, isDllEnable=CyFalse})`
+configures only the internal DMA clock; the GPIF slave-FIFO state machine runs
+on the PCLK **supplied by the FPGA** (IFCLK).  Therefore a design with SLRD
+held statically low still stalls at the FX3 socket buffer iff no PCLK arrives
+— which is exactly what we measure.  The IFCLK-dead conclusion is now
+confirmed from three independent directions: raw-bit frame decode, hardware
+drain experiments, and firmware analysis.
+
+Also verified: re-assembling the same FASM with the post-#30 openXC7
+prjxray-db (complete HCLK_CMT rows) yields byte-identical frames — not a
+stale-DB artifact.  Both findings added as a comment on issue #222.
