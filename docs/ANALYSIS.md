@@ -1213,3 +1213,26 @@ The winning configuration (built from OUR Verilog, zero stock content):
 Timing: bus_clk 108.14 MHz (PASS), radio_clk 93.59 MHz (PASS at 61.44).
 Hardware: 2/2 register loopback, both RX frontends enumerate, dual-channel
 RX capture at 30.72 MSPS PASS (100% of requested samples).
+
+## CORRECTION (2026-11-23, rig era): all earlier hardware verdicts were stock
+
+UHD always reflashes /usr/share/uhd/images/usrp_b210_fpga.bin unless the
+device args carry fpga=<path>.  That file is the vendor reference bitstream
+(md5 07096c88..., same as build/vendor_ref.bin).  Every prior UHD-based test
+therefore measured the vendor image.
+
+New instrument scripts/gpif_rig.py (validated: vendor image answers
+ace0ba5e; random data is correctly rejected as a config failure) was used to
+re-test with fpga=<our image>:
+
+- diag2, diag_nommcm, diag_pad, host-nextpnr diag2, b200_80: configure, but
+  never answer a single GPIF transaction.
+- RTL sim passes because it uses our own FX3 model; the defect is below RTL.
+
+Rejected by measurement: seed lottery, toolchain version, MMCM settings,
+MMCM bypass, image size (9.1 MB trimmed and 2.2 MB sparse images still
+silent), IFCLK drive/slew/create_clock.  Real DB gaps found:
+RIOI.IOI_OCLKM_0.IOI_IMUX31_1 missing from kintex7 segbits, and no RIOB18
+partner-half/OBUF_HP_BANK_GLUE defaults.  FX3 loader size limit ~9 MB is real
+but not the cause of the silence.  See docs/DOD-STATUS.md for the corrected
+status table and next steps (Vivado golden build or scope on IFCLK/CTL).
