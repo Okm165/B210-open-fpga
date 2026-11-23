@@ -293,3 +293,32 @@ Consequences:
   input path into the MMCM.  Next: verify MMCM lock inputs (CLKIN from
   CLK_IN1_HCLK spine: who drives it in each bitstream) and MMCM start-up bits
   (STARTUP_WAIT / table regs) with the valid instrument.
+
+## 17. Valid-instrument round 3: the CMT/routing DB is massively incomplete (2026-11-23)
+
+Undocumented-bit audit of the TRUE vendor bitstream:
+- `CMT_TOP_L_LOWER_B_X228Y9` (the MMCM): 311 bits set, **127 (41%) not in any
+  segbits DB row** — including the bits that implement the MMCM's
+  CLKFBOUT→BUFHCLK0 feedback driver and the CLKIN routing.
+- `CLK_HROW_BOT_R_X121Y130`: 184/184 bits undocumented (the entire BUFHCLK
+  routing layer — confirms §12 with valid data).
+- `HCLK_IOI_X235Y130`: 5/5 undocumented.
+
+Also: `build/vendor.fasm` was corrupt-era derived and is now superseded by
+`build/tmp/vendor_true.frames` (bitread). All fasm-based vendor analysis was
+redone from true frames; the clock-path story stands.
+
+Full true-frame clock+IO graft onto our fabric: dead — expected, since the
+vendor CTL pads read vendor fabric nets that do not exist in our image, so
+this graft cannot isolate IFCLK by design.
+
+Clean MMCM diff (valid data): ours = COMP.Z_ZHOLD + CLKFBIN←CLK_IN3_HCLK +
+CLKOUT0/2 enables; vendor = COMP.ZHOLD, no CLKFBIN row (feedback via
+undocumented bits), CLKOUT3-6 enables.
+
+**State of knowledge:** the open prjxray DB cannot express the vendor's clock
+infrastructure on kintex7 at all (41-100% undocumented bits in exactly the
+tiles our clock path needs).  The flow can therefore neither route nor
+verify these paths.  Everything reachable from the terminal has been tested;
+the blocker is DB completeness for kintex7 clocking, now proven with a
+validated instrument.
