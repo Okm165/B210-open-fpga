@@ -603,13 +603,14 @@ Mechanism found for ALL dead probes, replacing all earlier partial theories:
    **routes through them silently** -> the net is electrically disconnected.
    Verified on our builds: ring3's D1 route dies at `EE4BEG1 <- LH6` (no
    LH6 driver anywhere in the bitstream); ring4's dies at `NN6BEG1 <- LV9`.
-3. **Exhaustive proof**: a 2,000,000-node backward BFS over the complete
-   documented pip graph (INT_R/INT_L/IO_INT_INTERFACE/RIOI/R_TERM_INT,
-   cross-tile identity via tileconn) finds **NO legal path** from the codec
-   input pin row (X95Y27) to the IFCLK pad D1 mux (X95Y110).  Any net that
-   must travel more than a few rows/columns in this column is unroutable
-   with the open DB.  This explains why every probe died regardless of
-   design, clocks, or pin glue.
+3. **Exhaustive proof (corrected start, 3M nodes)**: backward BFS from the
+   exact post-IBUF wire (RIOI_X95Y27 'IOI_LOGIC_OUTS18_1' mapped via
+   tileconn to R_TERM_INT_X234's 'TERM_INT_LOGIC_OUTS_L_B18') over the
+   complete documented pip graph finds **NO legal path** to the IFCLK pad
+   D1 mux (INT_R_X95Y110.IMUX34).  The RIOI<->fabric bridge and the
+   LH6/LV9-class long-line drivers are undocumented, so *no* net can cross
+   from the IO column into the fabric with the open DB.  This explains why
+   every probe died regardless of design, clocks, or pin glue.
 4. Same-class defects posted upstream (#222): OBUF T-tie omission, phantom
    long-line routes, RIOB18 HP-bank glue being load-bearing.
 
