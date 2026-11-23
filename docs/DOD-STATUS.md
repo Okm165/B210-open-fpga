@@ -651,3 +651,24 @@ Everything reproducible: scripts/bfs_route.py (exhaustive route prover),
 scripts/fix_half.py (vendor-route graft), scripts/build_diag_ring5.sh,
 constraints with BEL pinning, counter instrument (/tmp/opencode/diag_log.py
 pattern recorded above).
+
+## 34. Vendor-structure clock chain matched exactly; burst-clock tests (2026-11-23)
+
+With the rebuilt engine (BEL placement) a new probe was built that matches
+the vendor's IFCLK structure EXACTLY and needs NO fabric routing:
+- GPIF_CTL8 (the FX3's I2C SCL, same clock region as IFCLK) -> IBUF ->
+  BUFG -> GCLK7 spine (rebuf descent) -> BUFHCE_X1Y0 -> BUFHCLK0 ->
+  IGCLK0 -> leaf -> OCLK -> ODDR C;  D1/D2 = defaults; IS_D2_INVERTED set;
+  no T rows; ODDR rows byte-equal to the vendor's.
+- The missing `CLK_HROW_CK_IN_R0_ACTIVE` bit (vendor sets 215 ACTIVE rows,
+  our flow emits 1) was found and added by hand.
+
+The chain still does not deliver PCLK: SCL is only bursty (I2C on demand),
+UHD reloads the FPGA before/during its own I2C bursts (confounding the
+drain-window test), and the raw I2C vendor-request format could not be
+reverse-engineered from the fixed firmware (all request shapes time out).
+
+Remaining: verify the leaf/BUFH chain with a CONTINUOUS in-region clock.
+Candidates not yet exhausted: the FX3 slfifo flags (CTL4/5) toggling during
+DMA activity in region Y2, and decoding the vendor's 215 ACTIVE rows + the
+HCLK-row bridge bits as a systematic fuzzer target.  All tooling in place.
