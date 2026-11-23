@@ -589,3 +589,33 @@ cannot express - the IOI-internal hop from the fabric/LOGIC_OUTS wires into
 the IOB/OLOGIC likely needs undocumented companion bits.  Decoding requires
 Vivado reference bitstreams (cross-instance knockout) or upstream DB work;
 all instruments (counter read, frame pipeline, knockout harness) are ready.
+
+## 32. DEFINITIVE: the fabric long-line network is unroutable with the open DB (2026-11-23)
+
+Mechanism found for ALL dead probes, replacing all earlier partial theories:
+
+1. The open Kintex-7 DB documents long-line *consumption* rows (e.g.
+   `INT_R.EE4BEG1.LH6`, `INT_R.NN6BEG1.LV9`) but has **ZERO driver rows** for
+   the LH6/LV9 long-line class (grep over every segbits file: no
+   `*.LH6.<src>` / `*.LV9.<src>` anywhere).  Drivable classes (LH12, LH0,
+   LV18, LV0) have full driver rows and are what Vivado uses.
+2. The himbaechel router's graph includes the undrivable wires, so it
+   **routes through them silently** -> the net is electrically disconnected.
+   Verified on our builds: ring3's D1 route dies at `EE4BEG1 <- LH6` (no
+   LH6 driver anywhere in the bitstream); ring4's dies at `NN6BEG1 <- LV9`.
+3. **Exhaustive proof**: a 2,000,000-node backward BFS over the complete
+   documented pip graph (INT_R/INT_L/IO_INT_INTERFACE/RIOI/R_TERM_INT,
+   cross-tile identity via tileconn) finds **NO legal path** from the codec
+   input pin row (X95Y27) to the IFCLK pad D1 mux (X95Y110).  Any net that
+   must travel more than a few rows/columns in this column is unroutable
+   with the open DB.  This explains why every probe died regardless of
+   design, clocks, or pin glue.
+4. Same-class defects posted upstream (#222): OBUF T-tie omission, phantom
+   long-line routes, RIOB18 HP-bank glue being load-bearing.
+
+Consequence: the DOD is blocked on ONE well-defined database gap - the
+long-line (LH6/LV9-class and companions) driver pips.  Closing it needs
+Vivado reference bitstreams for fuzzer-style decoding (the standard openXC7
+method, cf. cavearr's bench) or upstream acceptance of the gap report.
+All instruments to verify a fix are in place: counter liveness read,
+frame pipeline, knockout harness, BFS router for re-verification.

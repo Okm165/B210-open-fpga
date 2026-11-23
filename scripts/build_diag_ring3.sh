@@ -23,7 +23,7 @@ echo "synth ok"
 nextpnr-himbaechel --device $FPGA_PART \
   --chipdb $FPGA_HOME/share/nextpnr/himbaechel/xilinx/chipdb-xc7k325t.bin \
   --json $OUT/synth/diag_ring3.json \
-  -o xdc=$CR/src/constraints/diag_pad.xdc -o fasm=$OUT/pnr/diag_ring3.fasm \
+  -o xdc=$CR/src/constraints/diag_ring3.xdc -o fasm=$OUT/pnr/diag_ring3.fasm \
 --ignore-loops --seed ${SEED:-1} > $CR/build/fpga/logs/diagc-pnr.log 2>&1 \
   || { tail -40 $CR/build/fpga/logs/diagc-pnr.log; exit 1; }
 echo "pnr ok"
