@@ -1163,3 +1163,24 @@ DRIVE 12 fix for LVCMOS18 IOB rows): STILL silent on HW, primed.
   diag_ctrl8 (+2 LUTs: dead at any seed, any PnR version, any RAM style).
   All failing variants: config DONE, RTL sim PASS, timing PASS.
 This is now a minimal, fully-instrumented upstream bug package.
+
+## Session addendum 3: pinned-placement + 80 MHz experiments (final for this round)
+
+- Extracted the working diag2 placement (nextpnr --write placement JSON,
+  9777 control-path cells) and constrained diag8's identical cells to the
+  SAME BELs (diag_ctrl8_pinned.xdc). Timing failed at 100 MHz (92 MHz),
+  so built an 80 MHz clock variant (b200_clk_gen80: VCO 1200, /30 /15 /15;
+  FX3 PCLK 80 MHz is in spec, 320 MB/s > 245.76 MB/s needed). Pinned +
+  80 MHz build: timing PASS, configures DONE -- STILL SILENT on HW,
+  primed. Double-config reload also silent.
+- Fixed the new-PnR IOB drive naming (LVCMOS18.DRIVE.I12 ->
+  LVSMOS15_LVCMOS18 grouped feature) in fasm post-processing.
+- Conclusion of the pinned experiment: even with the control path placed
+  exactly where the proven-working design places it, the design is dead.
+  The failure is therefore NOT the placement of the control logic itself.
+  Combined with: RTL sim PASS, config DONE, timing PASS, bits faithful to
+  FASM, the remaining explanations require silicon observability (e.g. a
+  config-time interaction between the FX3's GPIF re-initialization and
+  the specific bitstream's INIT/DONE/CTL behavior, or an unmodeled
+  global-resource bit that differs between the two designs' config
+  frames). All artifacts and single-command scripts are committed.
