@@ -780,3 +780,42 @@ New assets: src/top/diag_ring11.v, src/top/diag_ring12.v,
 scripts/build_diag_ring11.sh, scripts/build_diag_ring12.sh,
 scripts/patch_spine_active.py (marks the whole GCLK spine stretch ACTIVE),
 src/top/diag_pad26.v + scripts/build_diag_pad26.sh (single-pad output probe).
+
+## 38. FABRIC->PAD PATH PROVEN: our LUT reaches a real GPIF data pin (2026-11-23)
+
+graft_ring13.py: 4-inverter ring BEL-pinned in vendor-empty CLBLM_R_X37Y119
+(X1 slice), tap = B6LUT O6 -> site always-pip CLBLM_LOGIC_OUTS9 (bitless,
+column-wide bus, no vendor driver in this column), then the documented
+crossing INT_R_X95Y115.IMUX34 <- LOGIC_OUTS9 into GPIF_D[26]'s ODDR D1
+(bitless always-pip, verified from the vendor's own pad config: ODDR SDR +
+OQUSED, D1 hardwired to IMUX34).
+
+Measured (raw FX3 loader; drain probe; GET_COUNTERS byte 24):
+
+| image                          | counter | drain  |
+|--------------------------------|---------|--------|
+| vendor baseline                | 5       | 65536  |
+| POS: ring on D1 of GPIF_D[26]  | 5       | 1024   |
+| NEG: tap LUT const-0 (same graft) | 5    | 1024   |
+
+Interpretation, stated carefully:
+- A single documented-row repoint changed the board's OUT-drain behavior from
+  the vendor's full-speed 65536 to a hard 1024 stall, with PCLK alive (5).
+  Mechanism: D1 now drives the pad constantly (ring or const-0), which fights
+  the FX3's driver on the bidirectional data bus during OUT cycles -> the FX3
+  refuses the transfer. This is behavioral proof that OUR FABRIC LUT OUTPUT
+  ARRIVES AT A REAL DATA PIN through fully documented rows - no vendor
+  grafting of pad config, no clock-network work, zero displacement of vendor
+  cells (the ring tile was empty).
+- NOT yet proven by this test: that the ring OSCILLATES (POS and NEG stall
+  identically, as predicted for any constant or toggling D1 driver). The
+  separating experiment is the T-path variant (IMUX15 <- LOGIC_OUTS9 drives
+  the tri-state instead of the data), which changes the pad's drive-enable
+  rather than its data - a const-0 tap there behaves differently from a
+  toggling one.
+
+Consequence for the DOD: the "undocumented bridge bits" theory is dead. Our
+logic can drive real board pins with documented rows only. What remains for
+2-RX-from-our-Verilog is engineering, not decode: a T-path liveness proof,
+then the staged ladder (single pad -> GPIF CTL handshake -> our 2R2T design
+grafted per-pin).
