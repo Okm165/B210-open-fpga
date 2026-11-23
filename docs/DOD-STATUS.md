@@ -401,3 +401,16 @@ removed. The difference is the bitstream content, i.e. the clock-forwarding
 layer (82% undocumented CLK_HROW bits, 41% CMT bits, shared by both P&R
 engines). On-terminal debugging is exhausted; posted as the final control
 to openXC7/nextpnr#222. Tooling preserved: scripts/fx3_raw_load.py.
+
+## 22. Chain correction attempt (2026-11-23, final)
+
+Found and fixed a routing error in our earlier adapted-chain experiment: our
+100 MHz rides **GCLK0** (leaf GCLK0 / BUFGCTRL0->GCLK0), not GCLK5. Rebuilt
+the adapted vendor chain with MUX_OUT_R11<-GCLK0: still dead.
+
+Remaining delta identified precisely: the BUFHCE's CE input routing.  The
+vendor routes CE from a fabric net (old engine routed it via
+BUFHCE_CE_R0<-CE_INT<-IMUX fabric rows); in our copied-vendor-chain images
+the CE net does not exist, so the buffer enable may be undriven.  Next step
+when work resumes: tie the BUFHCE CE high via a documented fabric-VCC route
+(or decode the CE mux row), then re-run the chain experiments.
