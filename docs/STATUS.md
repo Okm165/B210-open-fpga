@@ -179,12 +179,15 @@ bits matches a plain-logic multiplier cycle for cycle.
 
 ## Known limitations
 
-- The dual-clock FIFO (`src/rtl/fifo/axi_fifo_2clk_sim.v`) cannot notice a
-  full pointer wrap when one side outruns the other by 2^SIZE or more words
-  between clock edges: a 32-deep instance stalls permanently at clock ratios
-  above about 32.  The instances in the radio run at a ratio of 3.3, so it
-  cannot trigger there; one 32-deep instance at SIZE 0 was removed with the
-  dead instrumentation it fed.
+- The dual-clock FIFO (`src/rtl/fifo/axi_fifo_2clk_sim.v`) has FIFOSIZE-bit
+  pointers, so it cannot notice a full pointer wrap when one side outruns the
+  other by 2^SIZE or more words between clock edges: such an instance stalls
+  permanently.  The instances in the radio run at a clock ratio of 3.3, so it
+  cannot trigger there.  (Its flags now compare Gray codes rather than
+  converted binary pointers, which took the longest bus-domain path from
+  10.8 ns to a comparator; the capacity is unchanged: 2^SIZE words in the
+  memory plus two in the output register stage, measured by
+  `tests/tb_axi_fifo_2clk_cdc.v`.)
 - The stock receive framer stops with an overrun error when UHD is allowed
   to ask for 4092 samples per packet (12-bit wire format with a receive
   frame of 8200 bytes or more, or `spp=4092`): the whole-packet FIFO then
@@ -193,19 +196,24 @@ bits matches a plain-logic multiplier cycle for cycle.
   a testbench acting as UHD (`tests/tb_e2e_rx.v`); the cleanest fix would be
   UHD-side, not in the FPGA.
 - Streaming at 245 MB/s is limited by the host, not the FPGA: UHD's default
-  USB buffer pool keeps only 0.5 ms in flight (131 kB), and the whole chain
-  holds about 1.3 ms, so any host stall longer than that loses samples - on
-  the vendor image as well.  The device arguments
-  `num_recv_frames=512,recv_frame_size=16360,num_send_frames=256` raise that
-  to 34 ms / 11 ms without root (from the UHD 3.15 source; not yet measured
-  here).
+  USB buffer pool keeps only 0.5 ms in flight (16 x 8176 bytes), and the
+  whole chain about 1.3 ms, so any longer host stall loses samples - on the
+  vendor image as well.  `scripts/hw_gate.sh` therefore runs every
+  throughput measurement, the vendor control runs included, with
+  `num_recv_frames=512,recv_frame_size=16360,num_send_frames=256
+  ,send_frame_size=16360` (12-bit mode: 12264-byte frames, whose 4088
+  samples per packet stay below the framer's clean limit), which queues
+  8.4 MB of receive and 4.2 MB of transmit data - 34 ms and 17 ms at
+  245 MB/s - inside the 16 MB usbfs limit and without root.
 
 ## Reproducibility gaps
 
-- `container/base.Dockerfile` still names a nextpnr image that the flow no
-  longer uses and installs a Java runtime and pypy3 for it; rebuilding the
-  base image (`make tools`) would drop those.  The images in use were built
-  from the current pinned definitions.
+- `container/base.Dockerfile` installs a Java runtime and pypy3 that no tool
+  in the flow uses (they were for a place-and-route engine built in the
+  container, which is now built on the host by `scripts/toolchain.sh`).
+  Removing them means rebuilding the base image, which would change the
+  recorded environment, so it is left for a deliberate rebuild.  The images
+  in use were built from the current pinned definitions.
 - `scripts/toolchain.sh` rebuilds the place-and-route engine, the device
   database and the measuring UHD from pinned sources; the engine and
   database hashes repeat and a design rebuilt with them is byte-identical.

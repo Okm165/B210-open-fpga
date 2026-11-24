@@ -58,6 +58,14 @@
 #               waits up to that long for the host's load average to drop
 #               below QUIET_LOAD (4) before this step starts.
 #
+#               Every run, the vendor's included, uses UHD's deep USB buffer
+#               pool (num_recv_frames / num_send_frames, see BUF16/BUF12):
+#               UHD's default 16 x 8176 B keeps only 0.5 ms of receive data in
+#               flight and any longer host stall loses samples on the vendor
+#               image as well, which is why this step used to end inconclusive
+#               on a machine with other work on it.  The frame sizes keep a
+#               packet inside the range the receive framer delivers cleanly.
+#
 # The raw step reboots the FX3, which forgets the loaded image, so the UHD
 # run that follows has to load the file named here; later steps name their
 # image and UHD reloads whenever it differs from the one in the FPGA.
@@ -208,10 +216,17 @@ quiet() { awk -v max="${QUIET_LOAD:-4}" '{exit !($1 < max)}' /proc/loadavg; }
 DEADLINE=$((SECONDS + ${WAIT_QUIET:-0}))
 until quiet || (( SECONDS >= DEADLINE )); do sleep 20; done
 echo "  host load average $(cut -d' ' -f1 /proc/loadavg)"
+# 512 x 16360 B = 8.4 MB receive and 256 x 16360 B = 4.2 MB transmit of
+# queued USB buffers (UHD's limit is 16360 B per frame; usbfs allows 16 MB).
+# 16360 / 4 = 4090 samples per packet for 16-bit data and 12264 / 3 = 4088 for
+# 12-bit, both inside what the stock receive framer delivers without an
+# overflow (4092 samples per packet is the first size that does not).
+BUF16="num_recv_frames=512,recv_frame_size=16360,num_send_frames=256,send_frame_size=16360"
+BUF12="num_recv_frames=512,recv_frame_size=12264,num_send_frames=256,send_frame_size=12264"
 run() {   # run <image> <log> <rx samples due> <tx samples due> <benchmark args...>: prints "ok" or what went wrong
   local image=$1 log=$2 rx_due=$3 tx_due=$4; shift 4
   LD_LIBRARY_PATH=$PWD/.tools/uhd315/lib UHD_IMAGES_DIR=/usr/share/uhd/images \
-    $RT timeout 120 "$BENCH" --args "type=b200,serial=${SERIAL},fpga=${image}" --duration 10 "$@" > "$log" 2>&1 \
+    $RT timeout 120 "$BENCH" --args "type=b200,serial=${SERIAL},fpga=${image},${BUF}" --duration 10 "$@" > "$log" 2>&1 \
     || { echo "did not complete"; return; }
   awk -F: -v rx_due="$rx_due" -v tx_due="$tx_due" '
     /Num received samples/    {rx = $2}
@@ -239,9 +254,9 @@ bench() {   # bench <name> <rx samples due> <tx samples due> <benchmark args...>
   done
   (( counted >= 2 )) || inconclusive throughput "$name: the vendor image itself kept losing samples; the host is busy"
 }
-bench rx2    614400000 0         --rx_rate 30.72e6 --channels 0,1
-bench tx2    0         614400000 --tx_rate 30.72e6 --channels 0,1
-bench rx1    614400000 0         --rx_rate 61.44e6 --channels 0
-bench 2r2t12 614400000 614400000 --rx_rate 30.72e6 --tx_rate 30.72e6 --channels 0,1 --rx_otw sc12 --tx_otw sc12
+BUF=$BUF16 bench rx2    614400000 0         --rx_rate 30.72e6 --channels 0,1
+BUF=$BUF16 bench tx2    0         614400000 --tx_rate 30.72e6 --channels 0,1
+BUF=$BUF16 bench rx1    614400000 0         --rx_rate 61.44e6 --channels 0
+BUF=$BUF12 bench 2r2t12 614400000 614400000 --rx_rate 30.72e6 --tx_rate 30.72e6 --channels 0,1 --rx_otw sc12 --tx_otw sc12
 
 echo "GATE PASS: $IMG ($SHA)  evidence in $OUT"

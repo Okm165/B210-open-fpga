@@ -6,8 +6,9 @@
 
 # Pinned by manifest-list digest, not by tag: `24.04` is mutable and a silent
 # base-image refresh changes apt package versions, which changes compiler
-# output.  This digest is the image the recorded netlist and bitstream were
-# built with (2026-11; see .context/19-build-alignment-audit.md, F2).
+# output.  This is the base the recorded bitstreams were built from; changing
+# the digest means rebuilding and re-measuring (`scripts/build.sh` records the
+# tool versions with every image).
 FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 
 ARG DEBIAN_FRONTEND=noninteractive

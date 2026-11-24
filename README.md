@@ -66,6 +66,21 @@ build/             generated output, ignored by git
 UHD only tests the image named in `fpga=<path>` of its device arguments; a
 plain UHD call loads the vendor image from `/usr/share/uhd/images`.
 
+## Where the measurements are
+
+Everything below is written by the tools above and is not in git (`build/`):
+
+| Path | What it holds |
+| --- | --- |
+| `build/fpga/usrp_b200.txt` | the build record of the image beside it: every source file with a hash, the tool versions, the three clock frequencies place and route measured and every clock-domain crossing with its bound. `scripts/hw_gate.sh` refuses an image whose record does not match its bytes |
+| `build/fpga/logs/<name>-pnr.log` | the full place-and-route log: the critical path of every clock and crossing, and the routed result |
+| `build/hw-gate-<UTC>/` | one acceptance run, one file per step: `00-identity`, `01-raw` (FX3 bus without UHD), `02-init` and `02-stock-rx-*` (stock UHD), `03-eye`, `04-samples-*` (tone, PRBS, loopback), `05-dsp-*` (board against RTL, sample by sample), `06-bus-margin`, `07-<mode>-{vendor,ours}-*` (throughput, each run of this image between two runs of the vendor image) |
+| `build/rx_look/{ours,vendor}/` | an antenna capture through the stock UHD Python API with its spectrum PNG and the numbers behind it (`scripts/rx_capture.py`) |
+| `build/tmp/` | scratch: patched bitstreams, intermediate logs, `build/tmp/benchfix/` mutant runs |
+
+The numbers those files contain, and what the vendor image does under the
+same conditions, are collected in `docs/STATUS.md`.
+
 Streaming measurements at 245 MB/s need the host: the tools ask for
 real-time priority (`chrt`) when the account may use it, and the gate
 reports "inconclusive" rather than a verdict when even the vendor image

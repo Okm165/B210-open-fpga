@@ -1,7 +1,7 @@
 // xilinx_prim_sim.v — licence-clean behavioural models for the 7-series cells
 // this design instantiates directly. Needed because Xilinx's UNISIM sources
 // cannot be redistributed, and without models the design cannot be elaborated
-// or simulated at all (see .context/19-build-alignment-audit.md, F9).
+// or simulated at all.
 //
 // Fidelity policy:
 //   * connectivity and port/parameter names are exact
