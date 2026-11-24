@@ -349,6 +349,7 @@ test:
 	@rm -f $(SIM_DIR)/elab_iverilog.log $(SIM_DIR)/tb_gray_roundtrip.log \
 	       $(SIM_DIR)/tb_cic_interp.log $(SIM_DIR)/tb_clip.log \
 	       $(SIM_DIR)/tb_ctrl_abi.log $(SIM_DIR)/tb_b200_clk_gen.log \
+	       $(SIM_DIR)/tb_axi_fifo_2clk_capacity.log \
 	       $(SIM_DIR)/tb_axi_fifo_2clk_cdc.log $(SIM_DIR)/tb_axi_fifo_2clk_rate.log \
 	       $(SIM_DIR)/tb_loopback2.log $(SIM_DIR)/tb_loopback2_rev.log
 	cd $(SIM_DIR) && $(IVERILOG) -g2005 -I $(ROOT)/src/rtl/control \
@@ -372,6 +373,11 @@ test:
 	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_rate.log tb_axi_fifo_2clk_rate.vvp
 	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_rate.log || \
 	  { echo "ERROR: CDC FIFO throughput test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_rate.log"; exit 1; }
+	cd $(SIM_DIR) && $(IVERILOG) -g2005 -s tb_axi_fifo_2clk_capacity \
+	  -o tb_axi_fifo_2clk_capacity.vvp $(CDC_TEST_SRCS)
+	cd $(SIM_DIR) && $(VVP) -l tb_axi_fifo_2clk_capacity.log tb_axi_fifo_2clk_capacity.vvp
+	@grep -q '^PASS:' $(SIM_DIR)/tb_axi_fifo_2clk_capacity.log || \
+	  { echo "ERROR: CDC FIFO capacity/ordering test failed; see $(SIM_DIR)/tb_axi_fifo_2clk_capacity.log"; exit 1; }
 	# Gray-pointer integrity must not depend on the two clocks' ratio or
 	# phase: same bench, five relationships (nominal, quarter-phase, far
 	# ratio, 10:1 slow bus, radio faster than bus).

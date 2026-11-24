@@ -46,10 +46,14 @@ module axi_fifo_2clk #(
         .clk(o_aclk), .rst(1'b0),
         .in(reset), .out(o_rst_sync));
 
-    // Gray counter encode / decode + synchronizers
+    // Gray counters.  Every flag compares Gray codes: the binary pointers are
+    // a bijection of them, so comparing them is the same test without a
+    // Gray-to-binary conversion in the far clock domain.  That conversion
+    // followed by pointer arithmetic was the longest path in the bus domain
+    // (10.8 ns: seven LUT levels and a carry chain from a synchroniser flop).
     reg [FIFOSIZE-1:0] wr_addr, rd_addr;
-    wire [FIFOSIZE-1:0] wr_addr_sync, rd_addr_sync;
     wire [FIFOSIZE-1:0] wr_addr_gray_sync, wr_addr_gray, rd_addr_gray_sync, rd_addr_gray;
+    wire [FIFOSIZE-1:0] wr_addr_gray_next, rd_addr_gray_next;
     synchronizer #(
         .INITIAL_VAL(0),
         .WIDTH(FIFOSIZE),
@@ -68,18 +72,15 @@ module axi_fifo_2clk #(
     bin2gray_wr_addr (.bin(wr_addr), .gray(wr_addr_gray));
     bin2gray #(.WIDTH(FIFOSIZE))
     bin2gray_rd_addr (.bin(rd_addr), .gray(rd_addr_gray));
-    gray2bin #(.WIDTH(FIFOSIZE))
-    gray2bin_wr_addr (.gray(wr_addr_gray_sync), .bin(wr_addr_sync));
-    gray2bin #(.WIDTH(FIFOSIZE))
-    gray2bin_rd_addr (.gray(rd_addr_gray_sync), .bin(rd_addr_sync));
+    // The pointer one past the next write (read): the "one slot left" test.
+    // Its inputs are local registers, so the increment is a short carry chain
+    // that runs in parallel with the synchronised value it is compared with.
+    bin2gray #(.WIDTH(FIFOSIZE))
+    bin2gray_wr_next (.bin(wr_addr + 1'b1), .gray(wr_addr_gray_next));
+    bin2gray #(.WIDTH(FIFOSIZE))
+    bin2gray_rd_next (.bin(rd_addr + 1'b1), .gray(rd_addr_gray_next));
 
-    reg [FIFOSIZE:0] i_occupied;
-    reg [FIFOSIZE:0] i_space;
     reg i_full;
-    reg i_empty;
-    reg [FIFOSIZE:0] o_occupied;
-    reg [FIFOSIZE:0] o_space;
-    reg o_full;
     reg o_empty;
 
     reg [WIDTH:0] mem[0:2**(FIFOSIZE)-1];
@@ -102,62 +103,24 @@ module axi_fifo_2clk #(
         end
     end
 
-    // Write ready, full, empty, occupied signals
+    // Write side: ready and full.  A write is accepted until the pointer is
+    // one behind the synchronised read pointer; that slot stays unused, which
+    // is what the 2^FIFOSIZE-entry pointer pair requires (the original
+    // behaviour, kept).
     always @(posedge i_aclk) begin
         if (i_rst_sync) begin
-            i_tready   <= 1'b0;
-            i_full     <= 1'b0;
-            i_empty    <= 1'b1;
-            i_occupied <= 'd0;
-            i_space    <= (1'b1 << FIFOSIZE);
+            i_tready <= 1'b0;
+            i_full   <= 1'b0;
         end else begin
-            if ((rd_addr_sync-1'b1 == wr_addr) & i_tvalid & i_tready) begin
+            if ((wr_addr_gray_next == rd_addr_gray_sync) & i_tvalid & i_tready) begin
                 i_tready <= 1'b0;
                 i_full   <= 1'b1;
-            end else if ((rd_addr_sync != wr_addr) & i_full) begin
+            end else if ((wr_addr_gray != rd_addr_gray_sync) & i_full) begin
                 i_tready <= 1'b1;
                 i_full   <= 1'b0;
             end
-            if ((rd_addr_sync == wr_addr) & ~i_full) begin
+            if ((wr_addr_gray == rd_addr_gray_sync) & ~i_full) begin
                 i_tready <= 1'b1;
-                if (~i_tvalid) begin
-                    i_empty  <= 1'b1;
-                end
-            end else begin
-                i_empty  <= 1'b0;
-            end
-            if (i_tvalid) begin
-                if (wr_addr == rd_addr_sync) begin
-                    if (i_full) begin
-                        i_occupied <= 1'b1 << FIFOSIZE;
-                        i_space    <= 'd0;
-                    end else begin
-                        i_occupied <= 'd1;
-                        i_space    <= (1'b1 << FIFOSIZE)-1'b1;
-                    end
-                end else if (wr_addr > rd_addr_sync) begin
-                    i_occupied <= wr_addr - rd_addr_sync + 1'b1;
-                    i_space    <= (1'b1 << FIFOSIZE) - (wr_addr - rd_addr_sync + 1'b1);
-                end else begin
-                    i_occupied <= wr_addr+1'b1 + (1'b1 << FIFOSIZE)-1'b1 - rd_addr_sync + 1'b1;
-                    i_space    <= rd_addr_sync - wr_addr - 1'b1;
-                end
-            end else begin
-                if (wr_addr == rd_addr_sync) begin
-                    if (i_full) begin
-                        i_occupied <= 1'b1 << FIFOSIZE;
-                        i_space    <= 'd0;
-                    end else begin
-                        i_occupied <= 'd0;
-                        i_space    <= 1'b1 << FIFOSIZE;
-                    end
-                end else if (wr_addr > rd_addr_sync) begin
-                    i_occupied <= wr_addr - rd_addr_sync;
-                    i_space    <= (1'b1 << FIFOSIZE) - (wr_addr - rd_addr_sync);
-                end else begin
-                    i_occupied <= wr_addr+1'b1 + (1'b1 << FIFOSIZE)-1'b1 - rd_addr_sync;
-                    i_space    <= rd_addr_sync - wr_addr;
-                end
             end
         end
     end
@@ -185,59 +148,18 @@ module axi_fifo_2clk #(
         .o_tdata(o_tdata), .o_tvalid(o_tvalid), .o_tready(o_tready),
         .space(), .occupied());
 
-    // Read valid, full, empty, occupied signals
+    // Read side: valid and empty.  Same Gray comparisons, mirrored.
     always @(posedge o_aclk) begin
         if (o_rst_sync) begin
-            r_tvalid   <= 1'b0;
-            o_full     <= 1'b0;
-            o_empty    <= 1'b1;
-            o_occupied <= 'd0;
-            o_space    <= 'd0;
+            r_tvalid <= 1'b0;
+            o_empty  <= 1'b1;
         end else begin
-            if ((rd_addr+1'b1 == wr_addr_sync) & r_tready & r_tvalid) begin
+            if ((rd_addr_gray_next == wr_addr_gray_sync) & r_tready & r_tvalid) begin
                 r_tvalid <= 1'b0;
                 o_empty  <= 1'b1;
-            end else if ((rd_addr != wr_addr_sync) & o_empty) begin
+            end else if ((rd_addr_gray != wr_addr_gray_sync) & o_empty) begin
                 r_tvalid <= 1'b1;
                 o_empty  <= 1'b0;
-            end
-            if ((rd_addr == wr_addr_sync) & ~o_empty & ~r_tready) begin
-                o_full   <= 1'b1;
-            end else begin
-                o_full   <= 1'b0;
-            end
-            if (r_tready) begin
-                if (wr_addr_sync == rd_addr) begin
-                    if (~o_empty) begin
-                        o_occupied <= (1'b1 << FIFOSIZE) - 1'b1;
-                        o_space    <= 'd1;
-                    end else begin
-                        o_occupied <= 'd0;
-                        o_space    <= (1'b1 << FIFOSIZE);
-                    end
-                end else if (wr_addr_sync > rd_addr) begin
-                    o_occupied <= wr_addr_sync - rd_addr - 1'b1;
-                    o_space    <= (1'b1 << FIFOSIZE) - (wr_addr_sync - rd_addr - 1'b1);
-                end else begin
-                    o_occupied <= wr_addr_sync+1'b1 + (1'b1 << FIFOSIZE)-1'b1 - rd_addr - 1'b1;
-                    o_space    <= rd_addr - wr_addr_sync + 1'b1;
-                end
-            end else begin
-                if (wr_addr_sync == rd_addr) begin
-                    if (~o_empty) begin
-                        o_occupied <= 1'b1 << FIFOSIZE;
-                        o_space    <= 'd0;
-                    end else begin
-                        o_occupied <= 'd0;
-                        o_space    <= 1'b1 << FIFOSIZE;
-                    end
-                end else if (wr_addr_sync > rd_addr) begin
-                    o_occupied <= wr_addr_sync - rd_addr;
-                    o_space    <= (1'b1 << FIFOSIZE) - (wr_addr_sync - rd_addr);
-                end else begin
-                    o_occupied <= wr_addr_sync+1'b1 + (1'b1 << FIFOSIZE)-1'b1 - rd_addr;
-                    o_space    <= rd_addr - wr_addr_sync;
-                end
             end
         end
     end

@@ -280,3 +280,124 @@ module tb_axi_fifo_2clk_rate;
    end
 
 endmodule
+
+//
+// tb_axi_fifo_2clk_capacity - how many words the FIFO takes, and in what order
+// they come back.
+//
+// The memory holds 2^SIZE words: full is "the write pointer reaches the read
+// pointer" (the pair of FIFOSIZE-bit pointers cannot tell full from empty, so
+// a flag says which).  The two-entry output register stage holds two more, so
+// a reader that never accepts lets 2^SIZE + 2 words in.  That capacity is the
+// vendor core's, and the flag rewrite must not change it; the count is exact
+// and every word must drain in order.
+//
+module tb_axi_fifo_2clk_capacity;
+
+   localparam N5  = 32 + 2;     // 2^5  + the output stage
+   localparam N13 = 8192 + 2;   // 2^13 + the output stage
+
+   reg clk = 0;
+   always #5.000 clk = ~clk;
+
+   reg rst = 1;
+
+   reg  wvalid5 = 0, wvalid13 = 0;
+   wire ready5, ready13;
+   wire [31:0] rdata5, rdata13;
+   wire valid5, valid13;
+   reg  rready5 = 0, rready13 = 0;
+
+   integer taken5 = 0, taken13 = 0;
+
+   axi_fifo_2clk #(.WIDTH(32), .SIZE(5)) dut5 (
+      .reset(rst), .i_aclk(clk), .i_tdata(taken5 + 1), .i_tvalid(wvalid5), .i_tready(ready5),
+      .o_aclk(clk), .o_tdata(rdata5), .o_tvalid(valid5), .o_tready(rready5));
+
+   axi_fifo_2clk #(.WIDTH(32), .SIZE(13)) dut13 (
+      .reset(rst), .i_aclk(clk), .i_tdata(taken13 + 1), .i_tvalid(wvalid13), .i_tready(ready13),
+      .o_aclk(clk), .o_tdata(rdata13), .o_tvalid(valid13), .o_tready(rready13));
+
+   // a write happens exactly when the producer hands a word over
+   always @(posedge clk) begin
+      if (!rst) begin
+         if (wvalid5  && ready5)  taken5  <= taken5  + 1;
+         if (wvalid13 && ready13) taken13 <= taken13 + 1;
+      end
+   end
+
+   integer rd5 = 0, rd13 = 0, errors = 0, i;
+
+   always @(posedge clk) begin
+      if (!rst) begin
+         if (valid5 && rready5) begin
+            if (rdata5 !== rd5 + 1) begin
+               errors = errors + 1;
+               if (errors <= 3) $display("  SIZE 5: word %0d reads %0d, expected %0d", rd5, rdata5, rd5 + 1);
+            end
+            rd5 <= rd5 + 1;
+         end
+         if (valid13 && rready13) begin
+            if (rdata13 !== rd13 + 1) begin
+               errors = errors + 1;
+               if (errors <= 3) $display("  SIZE 13: word %0d reads %0d, expected %0d", rd13, rdata13, rd13 + 1);
+            end
+            rd13 <= rd13 + 1;
+         end
+      end
+   end
+
+   reg [8*64-1:0] why = 0;
+
+   initial begin : watchdog
+      #5000000;
+      $display("FAIL: timeout (taken %0d/%0d, read %0d/%0d)", taken5, taken13, rd5, rd13);
+      $finish;
+   end
+
+   initial begin : run
+      repeat (4) @(posedge clk);
+      rst = 0;
+      repeat (4) @(posedge clk);
+      wvalid5  = 1;
+      wvalid13 = 1;
+      // the readers never accept: the FIFOs must fill, then stop
+      repeat (40000) @(posedge clk);
+      wvalid5  = 0;
+      wvalid13 = 0;
+      repeat (4) @(posedge clk);
+
+      $display("capacity: SIZE 5 takes %0d words (expected %0d), SIZE 13 takes %0d (expected %0d)",
+               taken5, N5, taken13, N13);
+      if (taken5  != N5)  begin errors = errors + 1; why = "SIZE 5 capacity";  end
+      if (taken13 != N13) begin errors = errors + 1; why = "SIZE 13 capacity"; end
+      if (ready5 || ready13) begin
+         errors = errors + 1;
+         why = "full FIFO still reports ready";
+      end
+
+      // drain both and check order; each drains exactly what it took
+      rready5  = 1;
+      rready13 = 1;
+      repeat (N13 + 100) @(posedge clk);
+      rready5  = 0;
+      rready13 = 0;
+      repeat (4) @(posedge clk);
+
+      if (rd5  != N5)  begin errors = errors + 1; why = "SIZE 5 did not drain";  end
+      if (rd13 != N13) begin errors = errors + 1; why = "SIZE 13 did not drain"; end
+
+      // and it must accept words again afterwards
+      wvalid5 = 1;
+      repeat (8) @(posedge clk);
+      if (taken5 <= N5) begin errors = errors + 1; why = "SIZE 5 stalled after a drain"; end
+      wvalid5 = 0;
+
+      if (errors == 0)
+         $display("PASS: axi_fifo_2clk capacity is 2^SIZE + 2 words and every word drains in order");
+      else
+         $display("FAIL: axi_fifo_2clk capacity or ordering changed (%0s)", why);
+      $finish;
+   end
+
+endmodule
