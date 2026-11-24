@@ -45,7 +45,7 @@ module diag_drain (
    assign GPIF_CTL3  = 1'b0;   // SLRD  active (read a word every IFCLK)
    assign GPIF_CTL7  = 1'b1;   // PKTEND idle
    assign GPIF_CTL11 = 1'b0;   // fifoadr[1]
-   assign GPIF_CTL12 = 1'b1;   // fifoadr[0]  => 2'b01 = ADDR_DATA_RX
+   assign GPIF_CTL12 = 1'b0;   // fifoadr[0]  => 2'b00 = thread0 = EP2 OUT
    assign GPIF_D     = 32'bz;  // read direction only
 
    assign LED_STATUS = ~locked;

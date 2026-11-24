@@ -1158,3 +1158,41 @@ source, clock distribution, reset logic) has now been eliminated by
 measurement, each with a working vendor control image as the negative
 baseline. The next step is toolchain work on fabric routing (or an upstream
 fix), not more design permutations.
+
+## 48. GPIF research digest applied; thread-mapping correction; Dotncom's edits queued (2026-11-24)
+
+### Research (web + GH, read-only)
+- **FX3 firmware thread mapping VERIFIED from EttusResearch/uhd b200 firmware**:
+  FIFOADR 0 = EP2 OUT (host->FPGA data), 1 = EP6 IN (FPGA->host data),
+  2 = EP4 OUT ctrl, 3 = EP8 IN ctrl; watermarks 5/6/5/6; SM starts
+  unconditionally (STATE_RUNNING set regardless of FPGA). The 1024 B stall =
+  the FX3's own USB-side buffer, per AN65974.
+- **Correction to our own diag work**: the RTL's ADDR_DATA_RX (2'b01) is the
+  FPGA->host socket - my minimal drain designs selected thread 1 (always
+  empty). Corrected to thread 0 (2'b00) in diag_drain/diag_drain40/
+  diag_drain_t/diag_ringdrainu and re-measured: still 1024 DEAD. So the
+  thread error did not mask a fix; the failures stand.
+- **PR #228 exists (unmerged, written by cavearr)**: marks a global clock
+  active in every crossed row - superset-equivalent to our section-46
+  exhaustive patch (measured DEAD), but a build from that branch is queued.
+- **Dotncom/B210-Kintex7-openXC7**: independent openXC7 effort on the SAME
+  board. Concrete FASM edits for our exact IFCLK tile, not yet
+  hardware-validated: remove RIOI_X95Y109.OLOGIC_Y0.ODDR.SRUSED +
+  .ZSRVAL_OQ; remove RIOB18_X95Y27.DIFF.ZIBUF_LOW_PWR +
+  .IOB_Y0.IBUFDS_BANK_GLUE; add RIOI_X95Y109.TRIAL_ODDR_OMUX_Q.
+- **kingjamez/B210_XC7K325T_Improvements (Vivado, working)**: the B210 GPIF
+  sits at ~0.1 ns setup margin; needs IOB-registered I/O + IFCLK phase lead.
+  nextpnr has no set_output_delay support (#175 open) - even after the clock
+  arrives, CTL/DQ skew is the next failure mode, not evidence of a second
+  clock bug.
+- No third party has ever run a B210 GPIF on openXC7; both open attempts
+  (ours, Dotncom) stop at the handshake.
+- Firmware ground truth for CTL polarity: b200_gpifconfig.h
+  (GPIF_CTRL_BUS_POLARITY 0xBF, DEFAULT 0xFFCF) - diff target for CTL lines.
+
+### Queued next (in order)
+1. Build nextpnr from cavearr:xilinx/clock-row-active-spine (PR #228) and
+   re-run b200_80t (supersedes our hand patch).
+2. Apply Dotncom's RIOI_X95Y109/RIOB18_X95Y27 FASM edits to our build.
+3. If either revives IFCLK (control channel answers), then evaluate CTL/DQ
+   timing per kingjamez before declaring victory.

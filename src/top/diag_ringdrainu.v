@@ -32,7 +32,7 @@ module diag_ringdrainu (
    assign GPIF_CTL3  = 1'b0;   // SLRD  always active
    assign GPIF_CTL7  = 1'b1;   // PKTEND idle
    assign GPIF_CTL11 = 1'b0;
-   assign GPIF_CTL12 = 1'b1;   // fifoadr = 2'b01 = ADDR_DATA_RX
+   assign GPIF_CTL12 = 1'b0;   // fifoadr = 2'b00 = thread0 = EP2 OUT (host->FPGA)
    assign GPIF_D     = 32'bz;
 
    assign LED_STATUS = 1'b0;
