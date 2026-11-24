@@ -1051,3 +1051,14 @@ CMT pips being undecodable in the open DB).  Next decisive step: make
 bypass the MMCM lock (reset from CTL9 only) and clocks run from the codec
 reference directly; if it drains, the MMCM lock path is confirmed as the
 blocker and can be worked around for RX.
+
+### Addendum: the missing matrix cell
+diag_drain_t (codec 40 MHz IFCLK via IBUFDS->BUFG->OBUFT + all pads
+OBUFT(T=0) + flag-gated reads): 1024 B DEAD.  The full clock-source matrix
+(MMCM / codec / ring) x (plain / OBUFT pads) x (gated / unconditional
+reads) is now complete: every cell stalls.  Remaining unknowns: whether the
+codec clock actually toggles the IFCLK pad (fabric->pad clock arrival is
+still unproven for every source), and whether the minimal flag protocol
+matches the FX3 firmware's expectations.  The next discriminating
+experiment must establish IFCLK liveness at the pad itself, independent of
+the GPIF protocol.
