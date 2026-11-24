@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """rx_capture.py - standard UHD receive capture + FFT/quality graphs.
 
-This is the plain, industry-standard way to receive from a B210-class USRP:
-continuous streaming (start_cont) with a large receive buffer, overflow
-accounting, then offline analysis and PNG graphs.
+A timed, fixed-length capture through the stock UHD API, then offline
+analysis and PNG graphs.
 
 Modes (matching the hardware's own limits, read from UHD):
     dual   : 2 channels, up to 30.72 MSPS per channel (61.44 MSPS total ADC)
     single : 1 channel,  up to 61.44 MSPS (double speed)
 
+PASS means: exactly the requested number of samples on every channel, no
+overflow, timeout or sequence error reported by the streamer, no constant
+channel, and (dual) the two channels not identical.
+
 Usage:
-    python3 scripts/rx_capture.py --rate 30.72e6 --chans 2 --secs 1
-    python3 scripts/rx_capture.py --rate 61.44e6 --chans 1 --secs 1
-    python3 scripts/rx_capture.py --args "type=b200,serial=31B92DD,fpga=..." ...
-    python3 scripts/rx_capture.py --tune-sweep 900e6:1000e6:5 --chans 1
+    python3 scripts/rx_capture.py --args type=b200,fpga=<image.bin> --rate 30.72e6 --chans 2 --secs 1
+    python3 scripts/rx_capture.py --args type=b200,fpga=<image.bin> --rate 61.44e6 --chans 1 --secs 1
 
 RX only.  Never transmits.
 """
@@ -27,7 +28,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-FULL_SCALE = 32768.0
+FULL_SCALE = 1.0      # fc32 samples: 1.0 is converter full scale
 
 
 def graph(chans, rate, outdir, tag, freqs=None, gains=None):
@@ -58,7 +59,7 @@ def graph(chans, rate, outdir, tag, freqs=None, gains=None):
         peak = np.max(X)
         ax[r, 1].axhline(floor, color="grey", lw=0.6, ls="--")
         ax[r, 1].text(0.02, 0.95, f"floor {floor:.1f} dBFS\npeak {peak:.1f} dBFS\n"
-                      f"noise {np.std(x.real):.1f} LSB rms",
+                      f"rms {20*np.log10(max(float(np.std(x)), 1e-9)):.1f} dBFS",
                       transform=ax[r, 1].transAxes, fontsize=7, va="top")
 
         ax[r, 2].hist(x.real[:200000], bins=100, color=colors[0], alpha=0.65, label="I")
@@ -78,6 +79,11 @@ def graph(chans, rate, outdir, tag, freqs=None, gains=None):
 
 
 def capture(usrp, uhd, chans, rate, secs, freq, gain):
+    """Continuous capture of exactly secs*rate samples per channel.
+
+    Returns (data[n, chans], rate, freq, seconds, errors) where errors counts
+    every metadata error the streamer reported, by name.
+    """
     for ch in range(chans):
         usrp.set_rx_rate(rate, ch)
         usrp.set_rx_freq(uhd.types.TuneRequest(freq), ch)
@@ -88,53 +94,46 @@ def capture(usrp, uhd, chans, rate, secs, freq, gain):
     st = uhd.usrp.StreamArgs("fc32", "sc16")
     st.channels = list(range(chans))
     rx = usrp.get_rx_stream(st)
-    try:
-        rx.recv_buff_size = max(1.0, secs * 4)   # seconds of buffering
-    except Exception:
-        pass
 
-    target = int(secs * got_rate)
-    cmd = uhd.types.StreamCMD(uhd.types.StreamMode.start_cont)
-    if chans > 1:
-        # Multiple channels in one streamer must start at a common, known time.
-        cmd.stream_now = False
-        cmd.time_spec = usrp.get_time_now() + uhd.types.TimeSpec(0.2)
-    else:
-        cmd.stream_now = True
+    target = int(round(secs * got_rate))
+    # Buffers exist, with their pages mapped, before the stream starts: page
+    # faults at 245 MB/s are an overflow in the first milliseconds.
+    # pyuhd expects the buffer shaped (nchannels, nsamples).
+    buf = np.empty((chans, 65536), dtype=np.complex64)
+    data = np.empty((chans, target), dtype=np.complex64)
+    buf.fill(0)
+    data.fill(0)
+    cmd = uhd.types.StreamCMD(uhd.types.StreamMode.num_done)
+    cmd.num_samps = target
+    # Channels of one streamer start at a common, known time.
+    cmd.stream_now = False
+    cmd.time_spec = usrp.get_time_now() + uhd.types.TimeSpec(0.2)
     rx.issue_stream_cmd(cmd)
 
-    # NOTE: pyuhd expects the buffer shaped (nchannels, nsamples); a
-    # (nsamples,) or (nsamples, nchannels) buffer makes recv() return one
-    # sample per call and silently caps throughput.
-    buf = np.zeros((chans, 65536), dtype=np.complex64)
     md = uhd.types.RXMetadata()
-    chunks = []
+    none = uhd.types.RXMetadataErrorCode.none
+    errors = {}
     total = 0
-    overflows = 0
-    timeouts = 0
     t0 = time.time()
-    while total < target:
-        n = rx.recv(buf, md, 1.0)
-        if n == 0:
-            if md.error_code == uhd.types.RXMetadataErrorCode.overflow:
-                overflows += 1
-            elif md.error_code == uhd.types.RXMetadataErrorCode.timeout:
-                timeouts += 1
-                if timeouts > 5:
-                    break
-            continue
-        chunks.append(buf[:, :n].T.copy())
+    while total < target and sum(errors.values()) < 100:
+        n = rx.recv(buf, md, 2.0)
+        if md.error_code != none:
+            name = str(md.error_code).split(".")[-1]
+            errors[name] = errors.get(name, 0) + 1
+            if md.error_code == uhd.types.RXMetadataErrorCode.timeout:
+                break
+        n = min(n, target - total)
+        data[:, total:total + n] = buf[:, :n]
         total += n
-    rx.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
     dt = time.time() - t0
-
-    data = np.concatenate(chunks, axis=0) if chunks else np.zeros((0, chans), np.complex64)
-    return data, got_rate, got_freq, dt, overflows, timeouts
+    return data[:, :total].T, got_rate, got_freq, dt, errors
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--args", default="type=b200")
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--args", required=True,
+                    help="UHD device args; must carry fpga=<image>, otherwise "
+                         "UHD loads its own image and that is what gets tested")
     ap.add_argument("--rate", type=float, default=30.72e6)
     ap.add_argument("--chans", type=int, default=2, choices=[1, 2])
     ap.add_argument("--secs", type=float, default=0.5)
@@ -142,58 +141,46 @@ def main():
     ap.add_argument("--gain", type=float, default=0.0)
     ap.add_argument("--out", default="build/rx")
     ap.add_argument("--tag", default=None)
-    ap.add_argument("--tune-sweep", default=None,
-                    help="LO:MHz:step e.g. 900e6:1000e6:5 (single channel)")
     a = ap.parse_args()
+    if "fpga=" not in a.args:
+        ap.error("--args has no fpga=<image>")
 
     import uhd
 
     print(f"[rx_capture] {a.args}")
     usrp = uhd.usrp.MultiUSRP(a.args)
-    print(f"[rx_capture] mboard={usrp.get_mboard_name()} "
-          f"rx_chans={usrp.get_rx_num_channels()} "
-          f"fpga_version={usrp.get_usrp_rx_info().get('fpga_version', '?')}")
-
     os.makedirs(a.out, exist_ok=True)
-    results = []
 
-    if a.tune_sweep:
-        lo, hi, step_mhz = a.tune_sweep.split(":")
-        freqs = np.arange(float(lo), float(hi) + 1, float(step_mhz) * 1e6)
-    else:
-        freqs = [a.freq]
+    data, rate, freq, dt, errors = capture(usrp, uhd, a.chans, a.rate, a.secs, a.freq, a.gain)
+    want = int(round(a.secs * rate))
+    print(f"[rx_capture] LO {freq/1e6:.3f} MHz  rate {rate/1e6:.3f} MSPS x {a.chans}  "
+          f"got {len(data)}/{want} samples in {dt:.2f} s  errors {errors or 'none'}")
 
-    for f in freqs:
-        data, rate, ff, dt, ovf, tmo = capture(usrp, uhd, a.chans, a.rate, a.secs, f, a.gain)
-        n = len(data)
-        msps = n / dt / 1e6 if dt > 0 else 0
-        print(f"[rx_capture] LO {ff/1e6:.3f} MHz  rate {rate/1e6:.3f} MSPS  "
-              f"chans {a.chans}  got {n} samples ({msps:.1f} MSPS sustained, "
-              f"{n/max(1,(rate*a.secs))*100:.1f}% of request)  "
-              f"overflows {ovf}  timeouts {tmo}")
-        results.append(dict(freq=ff, rate=rate, chans=a.chans, n=n,
-                            msps=msps, overflows=ovf, timeouts=tmo))
-        if n == 0:
-            continue
-        tag = a.tag or (f"rx_{a.chans}ch_{rate/1e6:.2f}msps_{ff/1e6:.1f}mhz")
-        np.save(os.path.join(a.out, f"{tag}_ch0.npy"), data[:, 0])
-        if a.chans > 1:
-            np.save(os.path.join(a.out, f"{tag}_ch1.npy"), data[:, 1])
-        chans = [(rate, data[:, c]) for c in range(a.chans)]
-        p = graph(chans, rate, a.out, tag)
+    problems = []
+    if len(data) != want:
+        problems.append(f"{len(data)} of {want} samples")
+    if errors:
+        problems.append(f"stream errors {errors}")
+    tag = a.tag or f"rx_{a.chans}ch_{rate/1e6:.2f}msps_{freq/1e6:.1f}mhz"
+    if len(data):
         for c in range(a.chans):
             x = data[:, c]
-            print(f"    ch{c}: {len(x)} samples  rms(I)={np.std(x.real):.2f} "
-                  f"rms(Q)={np.std(x.imag):.2f}  peak={np.max(np.abs(x)):.1f} "
-                  f"codes={len(np.unique(np.ascontiguousarray(x).view(np.float32)))}")
-        print(f"    graph: {p}")
+            np.save(os.path.join(a.out, f"{tag}_ch{c}.npy"), x)
+            rms = float(np.sqrt(np.mean(np.abs(x) ** 2)))
+            print(f"    ch{c}: rms {20*np.log10(max(rms, 1e-9)):.1f} dBFS  "
+                  f"peak {20*np.log10(max(float(np.max(np.abs(x))), 1e-9)):.1f} dBFS  "
+                  f"dc {20*np.log10(max(abs(np.mean(x)), 1e-9)):.1f} dBFS")
+            if rms == 0 or np.all(x == x[0]):
+                problems.append(f"ch{c} is constant")
+        if a.chans == 2 and np.array_equal(data[:, 0], data[:, 1]):
+            problems.append("both channels carry identical samples")
+        print("    graph: " + graph([(rate, data[:, c]) for c in range(a.chans)], rate, a.out, tag))
+    with open(os.path.join(a.out, f"{tag}.json"), "w") as fh:
+        json.dump(dict(freq=freq, rate=rate, chans=a.chans, samples=len(data), wanted=want,
+                       seconds=dt, errors=errors, problems=problems), fh, indent=2)
 
-    with open(os.path.join(a.out, "capture_summary.json"), "w") as fh:
-        json.dump(results, fh, indent=2)
-
-    ok = all(r["n"] > 0.9 * r["rate"] * a.secs for r in results)
-    print(f"[rx_capture] OVERALL: {'PASS' if ok else 'PARTIAL'}")
-    return 0 if ok else 1
+    print("[rx_capture] OVERALL: " + ("PASS" if not problems else "FAIL - " + "; ".join(problems)))
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
