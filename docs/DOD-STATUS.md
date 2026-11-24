@@ -912,3 +912,35 @@ Next: either a fixed nextpnr build with the CMT input routing corrected, or a
 Vivado golden diff of this exact net (the file to compare is
 HCLK_CMT_L_X228Y26 + CMT_TOP_L_LOWER_B_X228Y9). Everything else in the design
 is now measured as matching the vendor where it matters.
+
+## 42. The clock-input remediation attempt and what it narrowed to (2026-11-23)
+
+Applied the §41 topology fix on the full design and measured:
+
+| change | counter |
+|---|---|
+| baseline b200_80 | 3 |
+| + `IOB_COL_BANK_ACTIVE` (33 rows) | 3 |
+| + `OBUF_HP_BANK_GLUE` (IFCLK pad) | 3 |
+| - `MMCM_CLKINSEL` route (restore default) | 3 |
+| reference line moved `CK_IN10 <- CCIO0` -> `CK_IN0 <- CCIO0` (+`CCIO0_ACTIVE/_USED`, feedback line to `CK_IN2` as the vendor has it) | 3 |
+
+So none of these five changes revives PCLK. Comparing the remaining input tile
+(`RIOI_X95Y27`, the pad our tool binds AA17 to) shows the vendor uses it as a
+codec-data LVDS lane with ILOGIC/ISERDES/IDELAY config, while our design routes
+it through `RIOI_I2GCLK_TOP0 <- IOI_ILOGIC0_O`. That raises the last unverified
+assumption in this whole chain: **the package-pin -> site mapping our build uses
+for AA17.** The db shipped here has no package-pin table (part.yaml has no
+package_pins), so the mapping comes from the engine's chipdb and has never been
+cross-checked against the vendor's own placed design.
+
+That is the next check, and it is a facts-only check: obtain the vendor's
+placed-design pin map (Vivado report or a pad-level diff of the vendor image
+for that pin) and compare it with the engine's for AA17/AA18. If they differ,
+every design we build is clocked from the wrong physical pad and PCLK silence
+follows with no other defect needed. If they agree, the remaining candidate is
+the IOI->HCLK/CCIO input hop (RIOI I2GCLK vs the vendor's path), which is one
+tile to diff.
+
+No claim beyond this: DOD is not met, and the failure is now narrowed to the
+reference-clock input of the MMCM with two concrete, checkable hypotheses.
