@@ -1136,3 +1136,25 @@ Cumulative picture (all measured with the trustworthy instruments):
 - The FPGA-side GPIF path therefore never comes alive under our flow, and
   the difference is not in RTL logic design, pin mapping, IO config, or the
   specific clock source.
+
+## 47. Isolation completed: the failure is in OUR FABRIC, not clock infra, IO, or RTL (2026-11-24)
+
+Merged the vendor's COMPLETE clock infrastructure (every CLK_*, HCLK_*, CMT_*
+tile word-range; 699 tiles, 2077 words) into our built image - on top of the
+earlier vendor IO-column graft. The resulting image therefore contains:
+vendor clock distribution + vendor CMT/MMCM config + vendor IO/OLOGIC/IOB
+bits, and ONLY our fabric (CLB/BRAM/DSP placement + routing + our netlist).
+
+Measured: drain 1024 DEAD, control channel 0/20.
+
+Since the RTL netlist is the vendor's own (control core and GPIF engine are
+verbatim ports), and the surrounding infrastructure is now bit-identical to
+the working vendor image, the only remaining variable is the fabric
+implementation produced by our flow (placement + fabric routing bits).
+
+Conclusion: our flow's FABRIC connectivity is the blocker. Every hypothesis
+below the fabric level (RTL logic, pin mapping, IO config, bank glue, clock
+source, clock distribution, reset logic) has now been eliminated by
+measurement, each with a working vendor control image as the negative
+baseline. The next step is toolchain work on fabric routing (or an upstream
+fix), not more design permutations.
