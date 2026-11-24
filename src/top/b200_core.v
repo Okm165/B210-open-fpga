@@ -20,7 +20,8 @@ module b200_core
     parameter DEMUX_SID_MASK = 8'hf0,
     parameter EXTRA_BUFF_SIZE = 0,
     parameter RADIO_FIFO_SIZE = 11,
-    parameter SAMPLE_FIFO_SIZE = 11
+    parameter SAMPLE_FIFO_SIZE = 11,
+    parameter BUS_CLK_HZ = 100000000
 )
 (
     ////////////////////////////////////////////////////////////////////
@@ -58,11 +59,6 @@ module b200_core
     output [7:0]  sen, output sclk, output mosi, input miso,
     input [31:0]  rb_misc,
     output [31:0] misc_outs,
-    ////////////////////////////////////////////////////////////////////
-    // debug UART
-    ////////////////////////////////////////////////////////////////////
-    output debug_txd, input debug_rxd,
-    input debug_scl, input debug_sda,
 
     ////////////////////////////////////////////////////////////////////
     // fe lock signals
@@ -101,7 +97,7 @@ module b200_core
 
     // Generate an internal PPS signal
     wire int_pps;
-    pps_generator #(.CLK_FREQ(80000000)) pps_gen
+    pps_generator #(.CLK_FREQ(BUS_CLK_HZ)) pps_gen
     (.clk(bus_clk), .reset(1'b0), .pps(int_pps));
 
     // Flop PPS signals into radio clock domain
@@ -303,8 +299,7 @@ module b200_core
    radio_legacy #(
       .RADIO_FIFO_SIZE(RADIO_FIFO_SIZE),
       .SAMPLE_FIFO_SIZE(SAMPLE_FIFO_SIZE),
-      .FP_GPIO(1),
-      .USER_SETTINGS(0),
+      .FP_GPIO(1),
       .DEVICE("7SERIES")
    ) radio_0 (
       .radio_clk(radio_clk), .radio_rst(radio_rst),
@@ -322,7 +317,6 @@ module b200_core
     /*******************************************************************
      * Radio 1
      ******************************************************************/
-`ifdef TARGET_B210 // B210 Has two radio instances.
    assign      radio_st = 8'h2;
 
    wire [63:0] radio1_debug;
@@ -332,8 +326,7 @@ module b200_core
    radio_legacy #(
       .RADIO_FIFO_SIZE(RADIO_FIFO_SIZE),
       .SAMPLE_FIFO_SIZE(SAMPLE_FIFO_SIZE),
-      .FP_GPIO(0),
-      .USER_SETTINGS(0),
+      .FP_GPIO(0),
       .DEVICE("7SERIES")
    ) radio_1 (
       .radio_clk(radio_clk), .radio_rst(radio_rst),
@@ -346,73 +339,6 @@ module b200_core
       .ctrl_tdata(r1_ctrl_tdata), .ctrl_tlast(r1_ctrl_tlast),  .ctrl_tvalid(r1_ctrl_tvalid), .ctrl_tready(r1_ctrl_tready),
       .resp_tdata(r1_resp_tdata), .resp_tlast(r1_resp_tlast),  .resp_tvalid(r1_resp_tvalid), .resp_tready(r1_resp_tready),
       .debug(radio1_debug)
-   );
-`else
-    assign radio_st = 8'h1;
-
-    //assign undriven outputs
-    assign fe1_gpio_out = 32'b0; //Always assumed to be outputs
-    assign tx1 = 32'b0;
-
-    //unused control signals -- leave in loopback
-    assign r1_resp_tdata = r1_ctrl_tdata;
-    assign r1_resp_tlast = r1_ctrl_tlast;
-    assign r1_resp_tvalid = r1_ctrl_tvalid;
-    assign r1_ctrl_tready = r1_resp_tready;
-
-    //unused data signals -- leave in loopback
-    assign r1_rx_tdata = r1_tx_tdata;
-    assign r1_rx_tlast = r1_tx_tlast;
-    assign r1_rx_tvalid = r1_tx_tvalid;
-    assign r1_tx_tready = r1_tx_tready;
-
-`endif // !`ifdef TARGET_B210
-
-   /*******************************************************************
-    * Debug UART for FX3
-    ******************************************************************/
-
-   wire        debug_stb;
-   wire [31:0] debug_data;
-   wire [7:0]  debug_addr;
-   wire [31:0] debug_serial;
-
-
-   serial_to_settings serial_to_settings_i1
-     (
-      .clk(bus_clk),
-      .reset(bus_rst),
-      .scl(debug_scl),
-      .sda(debug_sda),
-      .set_stb(debug_stb),
-      .set_addr(debug_addr),
-      .set_data(debug_data),
-      .debug(debug_serial)
-      );
-
-   // Nasty Hack to convert settings to wishbone crudely.
-   reg    wb_stb;
-   wire   wb_ack_o;
-
-   always @(posedge bus_clk)
-     wb_stb <= debug_stb ? 1 : ((wb_ack_o) ? 0 : wb_stb);
-
-   simple_uart debug_uart
-   (
-      .clk_i(bus_clk),
-      .rst_i(bus_rst),
-      .we_i(wb_stb),
-      .stb_i(wb_stb),
-      .cyc_i(wb_stb),
-      .ack_o(wb_ack_o),
-      .adr_i(debug_addr[2:0]),
-      .dat_i(debug_data[31:0]),
-      .dat_o(),
-      .rx_int_o(),
-      .tx_int_o(),
-      .tx_o(debug_txd),
-      .rx_i(debug_rxd),
-      .baud_o()
    );
 
 endmodule // b200_core

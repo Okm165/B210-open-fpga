@@ -14,7 +14,6 @@ module radio_legacy
     parameter RADIO_FIFO_SIZE = 13,
     parameter SAMPLE_FIFO_SIZE = 11,
     parameter FP_GPIO = 0,
-    parameter USER_SETTINGS = 0,
     parameter DEVICE = "SPARTAN6"
   )
   (input radio_clk, input radio_rst,
@@ -27,8 +26,6 @@ module radio_legacy
    output [63:0] rx_tdata, output rx_tlast, output rx_tvalid, input rx_tready,
    input [63:0]  ctrl_tdata, input ctrl_tlast, input ctrl_tvalid, output ctrl_tready,
    output [63:0] resp_tdata, output resp_tlast, output resp_tvalid, input resp_tready,
-
-   output reg [63:0] vita_time_b,
 
    output [63:0] debug
    );
@@ -166,61 +163,6 @@ module radio_legacy
       .ready(1'b1), .readback(rb_data),
       .debug(debug_radio_ctrl_proc));
 
-   reg [63:0]     rb_data_user;
-generate
-   if (USER_SETTINGS == 1) begin
-      wire           set_stb_user;
-      wire [7:0]     set_addr_user;
-      wire [31:0]    set_data_user;
-      wire [7:0]     rb_addr_user;
-
-      user_settings #(.BASE(SR_USER_SR_BASE)) user_settings
-        (.clk(radio_clk), .rst(radio_rst),
-         .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
-         .set_stb_user(set_stb_user), .set_addr_user(set_addr_user), .set_data_user(set_data_user));
-
-      setting_reg #(.my_addr(SR_USER_RB_ADDR), .awidth(8), .width(8)) user_rb_addr
-        (.clk(radio_clk), .rst(radio_rst), .strobe(set_stb), .addr(set_addr), .in(set_data),
-         .out(rb_addr_user), .changed());
-
-      // ----------------------------------
-      // Enter user settings registers here
-      // ----------------------------------
-
-      // Example code for 32-bit settings registers and 64-bit readback registers
-      //
-      // To test this, modify the *_core.v file for your specific USRP and set
-      // USER_SETTINGS=1 for the parameters for the radio_legacy instantiation.
-      //
-      // You can then use the get_user_settings_iface() like this:
-      //
-      // auto usrp = multi_usrp::make("type=b200,enable_user_regs");
-      // auto regs = usrp->get_user_settings_iface(0);
-      // regs->poke32(0, 0xCAFE);
-      // regs->poke32(4, 0xBEEF);
-      // std::cout << boost::format("0x%016X") % regs->peek64(0) << std::endl;
-      wire [31:0] user_reg_0_value, user_reg_1_value;
-
-      setting_reg #(.my_addr(8'd0), .awidth(8), .width(32)) user_reg_0
-        (.clk(radio_clk), .rst(radio_rst), .strobe(set_stb_user), .addr(set_addr_user), .in(set_data_user),
-         .out(user_reg_0_value), .changed());
-
-      setting_reg #(.my_addr(8'd1), .awidth(8), .width(32)) user_reg_1
-        (.clk(radio_clk), .rst(radio_rst), .strobe(set_stb_user), .addr(set_addr_user), .in(set_data_user),
-         .out(user_reg_1_value), .changed());
-
-      always @* begin
-         case(rb_addr_user)
-            8'd0 : rb_data_user <= {user_reg_1_value, user_reg_0_value};
-            default : rb_data_user <= 64'd0;
-         endcase
-      end
-
-   end else begin    //for USER_SETTINGS == 1
-      always @* rb_data_user <= 64'd0;
-   end
-endgenerate
-
    always @*
      case(rb_addr)
        3'd0 : rb_data <= { 32'b0, test_readback };
@@ -230,24 +172,9 @@ endgenerate
        3'd4 : rb_data <= {54'h0,fp_gpio_readback};
        3'd5 : rb_data <= {59'h0,rx_flow_ctrl_busy,ibs_state[3:0]}; // Monitor state of RX state machine.
 //     3'd6 : rb_data <= <unused>;
-       3'd7 : rb_data <= rb_data_user;
+       3'd7 : rb_data <= 64'd0;
        default : rb_data <= 64'd0;
      endcase // case (rb_addr)
-
-   //
-   // Sample VITA_TIME into the bus_clk domain for use by instrumentation.
-   //
-   wire [63:0] vita_time_b_int;
-   wire        vita_time_b_valid;
-
-    axi_fifo_2clk #(.WIDTH(64), .SIZE(0)) vita_time_fifo
-     (.reset(radio_rst),
-      .i_aclk(radio_clk), .i_tvalid(1'b1), .i_tready(), .i_tdata(vita_time),
-      .o_aclk(bus_clk), .o_tvalid(vita_time_b_valid), .o_tready(1'b1), .o_tdata(vita_time_b_int));
-
-   always @(posedge bus_clk)
-     if (vita_time_b_valid)
-       vita_time_b <= vita_time_b_int;
 
    // Set this register to loop TX data directly to RX data.
    setting_reg #(.my_addr(SR_LOOPBACK), .awidth(8), .width(1)) sr_loopback

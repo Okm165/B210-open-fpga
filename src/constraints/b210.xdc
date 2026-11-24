@@ -1,68 +1,64 @@
 # B210 pin and clock constraints for nextpnr-himbaechel.
 #
-# Pin map derived from the original B210 board constraints.  The four vendor
-# false-path directives are asynchronous clock boundaries; they are not
-# representable in nextpnr's XDC subset and do not affect the bitstream.
+# Pin map from the board's original constraints.  nextpnr has no
+# set_input_delay / set_output_delay, so neither external interface is timed
+# by the tool; both are measured on the board instead (docs/STATUS.md):
 #
-# The original SLEW SLOW settings are nextpnr's default and are therefore not
-# repeated for every pin.  PULLTYPE PULLUP is not the default and is kept on
-# cat_ce exactly as in the original constraints.
+#   AD9361 sample port   scripts/eyescan.sh: the receive capture clock goes
+#                        pad -> one BUFG -> IDDR and lags the data by about
+#                        2.25 ns (HP banks have no ZHOLD delay); the fixed
+#                        IDELAYE2 on the 13 receive pins (b200_io.v) centres
+#                        the eye at UHD's fixed AD9361 delay setting.
+#   FX3 slave FIFO       scripts/bus_window.py: the boundary registers are
+#                        I/O-block registers (gpif2_slave_fifo32.v) and the
+#                        forwarded IFCLK has its own MMCM output, set to the
+#                        centre of the measured window (b200_clk_gen.v).
 #
-# IFCLK is the 100 MHz GPIF clock the FPGA forwards to the FX3.  It is an
-# OUTPUT (an ODDR driven by gpif_clk), so this declaration cannot constrain
-# anything: nextpnr derives timing domains from clock inputs, and the routed
-# design reports only rx_clk, rx_clk_bufr, radio_clk and bus_clk.  It is kept
-# to document the interface.
-#
-# F24 - GPIF I/O timing (documented, not enforceable here).
-# The pinned nextpnr-himbaechel SDC parser implements set_false_path but has
-# no set_input_delay/set_output_delay, so source-synchronous I/O is timed by
-# hand from Infineon AN65974 Table 3 (synchronous slave FIFO, 100 MHz):
-#   FX3 input setup tDS = 2 ns, hold tDH = 0 ns      (FPGA -> FX3 data)
-#   FX3 clock-to-out tCO = 7 ns (data), tCFLG = 8 ns (flags)
-# Budgets at tCYC = 10 ns, same-clock-source (FPGA ODDR) on both sides:
-#   FPGA->FX3: Kintex-7 LVCMOS18 ODDR clk-to-out ~4.5 ns worst + flight ~0.5 ns
-#     leaves ~3-4 ns setup margin against tDS=2 ns.  Comfortable.
-#   FX3->FPGA: tCO/tCFLG 7-8 ns + flight ~0.5 ns + FPGA setup ~1.5 ns
-#     leaves ~0-1 ns margin.  TIGHT - the flag inputs (GPIF_CTL) are the
-#     critical interface.  Tolerated in practice because flags are watermarked
-#     FIFO levels consumed by flow control with deep buffering, not per-word
-#     strobes; but any board with longer flight time must re-check this first.
-# If this design is ever taken through Vivado, set:
-#   set_output_delay -clock IFCLK -max 2.0 [get_ports {GPIF_D[*]}]
-#   set_output_delay -clock IFCLK -min 0.0 [get_ports {GPIF_D[*]}]
-#   set_input_delay  -clock IFCLK -max 8.0 [get_ports {GPIF_D[*] GPIF_CTL*}]
-#   set_input_delay  -clock IFCLK -min 2.0 [get_ports {GPIF_D[*]}]
-# The codec DDR interface needs board-level flight data (unknown offline) and
-# remains unconstrained by anyone.  See .context/19, finding F24.
-#
-# F24b - codec DDR interface budget, from AD9361 datasheet Rev. G Table 4
-# (CMOS DDR, VDD_INTERFACE = 2.5 V, tCP = 16.276 ns - our exact 61.44 MHz):
-#   RX (AD9361 is clock master): tDDRX DATA_CLK->data skew 0..1.2 ns,
-#     tDDDV DATA_CLK->RX_FRAME 0..1.0 ns.  FPGA captures with IDDR clocked by
-#     a BUFR on the input clock (b200_io.v:78) - correct source-synchronous
-#     topology.  Half-period 8.138 ns vs skew+setup ~2 ns => ~6 ns margin.
-#   TX (FPGA launches both): tSTX = 1 ns setup, tHTX = 0 ns hold at AD9361.
-#     Data and FB_CLK are launched from the SAME rx_clk_bufr through matched
-#     ODDRs (b200_io.v:120-133), so their skew is process-matched (~0.2 ns);
-#     clk-to-out ~4.5 ns vs 16.276 ns period => ~10 ns margin.  The AD9361
-#     requires FB_CLK = same freq/duty as DATA_CLK, no phase relation - the
-#     D1=1/D2=0 ODDR gives exactly 50 % duty.  Compliant.
-#   Unlike ADI reference designs (which sweep IO delays at 245.76 MHz LVDS),
-#   this fixed-timing design does not need tuning at 61.44 MHz CMOS: the
-#   capture window is ~4x wider than the entire source skew.  Caveat: flight
-#   times are estimates for a ~10 cm class PCB; the analysis bounds the risk,
-#   it does not measure the board.
-create_clock -period 12.500 [get_ports IFCLK]
-# codec_data_clk_p is the 61.44 MHz codec capture clock.
+# SLEW SLOW is nextpnr's default and is repeated only where the original
+# constraints make a point of it.  The clocks below are the two chip inputs
+# and the MMCM output the bus runs on (the forwarded clock is the second MMCM
+# output; nextpnr derives its period from the bus clock's).
+# codec_data_clk_p is the AD9361 DATA_CLK, 61.44 MHz at most.
 create_clock -period 16.276 [get_ports codec_data_clk_p]
 # 40 MHz codec main clock feeding the B200 MMCM.
 create_clock -period 25.000 [get_ports codec_main_clk_p]
-# bus_clk is an MMCM output, so it is not a port nextpnr can enumerate from the
-# MMCM parameters in this XDC subset; declare it by net name.  Without this
-# line nextpnr treats the domain as unconstrained and reports "PASS at 12 MHz",
-# which is its default assumption, not a real 100 MHz signoff.
-create_clock -period 12.500 [get_nets bus_clk]
+# bus_clk is an MMCM output; nextpnr does not derive it from the MMCM
+# parameters, so it is declared by net name.  Keep the period equal to
+# 1 / BUS_CLK_HZ of src/top/b200.v.
+create_clock -period 10.000 [get_nets bus_clk]
+
+# Radio clock buffers, on the two bottom-row sites the Vivado build of this
+# design uses.  codec_data_clk_p (clock-capable pad, bottom-right region)
+# reaches BUFGCTRL_X0Y1 through CCIO -> CK_IN -> the BUFG cascade, so the
+# capture clock passes exactly one global buffer, and the BUFR /2 output
+# reaches BUFGCTRL_X0Y0.I1 the same way.  Left to itself the placer put the
+# mux in the top BUFG row, which the BUFR cannot reach.
+#
+# X0Y0.I0 (the undivided clock into the mux) is routed by nextpnr through a
+# BUFH and the CMT column, not over the neighbour-feedback wire Vivado uses,
+# so radio_clk lags the capture clock by a few ns in 1R1T mode as well; the
+# hand-over between the two clocks in b200_io.v must not depend on that lag.
+set_property LOC BUFGCTRL_X0Y1 [get_cells b200_io_i0.bufr_rx_clk]
+set_property LOC BUFGCTRL_X0Y0 [get_cells b200_io_i0.BUFGCTRL_inst]
+
+# Clock-domain crossings.  nextpnr reports the longest path of every crossing
+# but cannot constrain one (it skips these lines with a warning), so
+# scripts/build.sh checks them against the routed result and fails the build
+# when a bound is exceeded or a crossing exists that is not listed here.
+#
+# Capture clock <-> radio_clk, T = 16.276 ns (b200_io.v).  radio_clk rises a
+# lag of a few ns after the capture clock.  Receive samples leave on the
+# capture clock's falling edge, so the path may take T/2 + lag; a path from
+# its rising edge would be a design error and is deliberately not listed.
+# Transmit samples and the mode bit are taken on the next capture rising
+# edge, T - lag after they change.
+set_max_delay -datapath_only -fall_from [get_clocks b200_io_i0.rx_clk_bufr] -to [get_clocks radio_clk] 5.000
+set_max_delay -datapath_only -from [get_clocks radio_clk] -to [get_clocks b200_io_i0.rx_clk_bufr] 6.000
+# bus_clk <-> radio_clk are asynchronous: gray-coded FIFO pointers and
+# settings into synchronizers.  The bits of one pointer must arrive within
+# one period of the faster clock (10 ns) of each other.
+set_max_delay -datapath_only -from [get_clocks bus_clk] -to [get_clocks radio_clk] 8.000
+set_max_delay -datapath_only -from [get_clocks radio_clk] -to [get_clocks bus_clk] 8.000
 
 set_property LOC G11 [get_ports PPS_IN_EXT]
 set_property IOSTANDARD LVCMOS33 [get_ports PPS_IN_EXT]
@@ -148,8 +144,8 @@ set_property LOC V1 [get_ports {GPIF_D[31]}]
 set_property IOSTANDARD LVCMOS18 [get_ports {GPIF_D[31]}]
 set_property LOC AD1 [get_ports IFCLK]
 set_property IOSTANDARD LVCMOS18 [get_ports IFCLK]
-# Genuine Ettus constraint: gentle edge into the FX3's PCLK input (DRIVE 8,
-# SLOW slew).  Prevents overshoot/ringing at the 1.8V P-port input.
+# The Ettus constraints for the clock into the FX3: DRIVE 8, SLOW slew.  The
+# bus timing window was measured with exactly these settings.
 set_property DRIVE 8 [get_ports IFCLK]
 set_property SLEW SLOW [get_ports IFCLK]
 # Same treatment for the GPIF control outputs (genuine design uses SLOW).
@@ -182,9 +178,9 @@ set_property IOSTANDARD LVCMOS18 [get_ports GPIF_CTL7]
 set_property LOC AC3 [get_ports GPIF_CTL8]
 set_property IOSTANDARD LVCMOS18 [get_ports GPIF_CTL8]
 set_property LOC AB1 [get_ports GPIF_CTL9]
-# Measured on this custom board (2026-11-20): with CTL9 as the only reset
-# source the MMCM does not lock (diag v3/v4), while it locks when the reset
-# is tied low (diag v2) - the pin reads high.  A pulldown keeps the reset
+# Measured on this board (2026-11-20): with CTL9 as the only reset source
+# the MMCM does not lock, while it locks when the reset is tied low - the pin
+# reads high.  A pulldown keeps the reset
 # functional if the FX3 actively drives it, and stops a floating pin from
 # holding the design in reset permanently.
 set_property PULLTYPE PULLDOWN [get_ports GPIF_CTL9]

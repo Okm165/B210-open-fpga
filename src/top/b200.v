@@ -96,9 +96,7 @@ module b200 (
    // Only present on Rev6 and later boards...these pins unused on Rev5 and earlier.
    // NOTE: These pins are allocated from complimentry pairs and could potentially be used
    // as differential style I/O.
-  `ifdef TARGET_B210
    inout [7:0] 	 fp_gpio,
-  `endif
    // Misc Hardware Control
    output 	 ref_sel,
    input 	 pll_lock,
@@ -137,21 +135,22 @@ module b200 (
     ///////////////////////////////////////////////////////////////////////
     // generate clocks from always on codec main clk
     ///////////////////////////////////////////////////////////////////////
-    wire bus_clk, gpif_clk, radio_clk;
+    // One clock for the bus logic and the GPIF; BUS_CLK_HZ also sets the
+    // IFCLK the FX3 is clocked with (b210.xdc carries the matching period).
+    localparam BUS_CLK_HZ = 100000000;
+    wire bus_clk, gpif_clk, ifclk, radio_clk, idelay_refclk;
     wire locked;
-    b200_clk_gen gen_clks
+    b200_clk_gen #(.BUS_DIVIDE(1200000000 / BUS_CLK_HZ)) gen_clks
     (
-        .clk_in1_p(codec_main_clk_p), 
+        .clk_in1_p(codec_main_clk_p),
         .clk_in1_n(codec_main_clk_n),
-        .CLK_OUT1_40_int(), 
-        .CLK_OUT2_100_gpif(gpif_clk), 
-        .CLK_OUT3_100_bus(),
-        .reset(reset_global), 
+        .bus_clk(gpif_clk),
+        .ifclk(ifclk),
+        .idelay_refclk(idelay_refclk),
+        .reset(reset_global),
         .locked(locked)
     );
-
-   // Bus Clock and GPIF Clock both same 100MHz clock.
-   assign bus_clk = gpif_clk;
+    assign bus_clk = gpif_clk;
 
 
     //hold-off logic for clocks ready
@@ -172,12 +171,6 @@ module b200 (
     ///////////////////////////////////////////////////////////////////////
     // drive output clocks
     ///////////////////////////////////////////////////////////////////////
-    wire [1:0] debug_clk_int;
-    //S6CLK2PIN S6CLK2PIN_dbg0 (.I(debug_clk_int[0]), .O(debug_clk[0]));
-    //S6CLK2PIN S6CLK2PIN_dbg1 (.I(debug_clk_int[1]), .O(debug_clk[1]));
-   //  assign      debug_clk[1:0] = 2'b0;
-   //  S6CLK2PIN S6CLK2PIN_gpif (.I(gpif_clk), .O(IFCLK));
-
     ///////////////////////////////////////////////////////////////////////
     // drive output clocks
     ///////////////////////////////////////////////////////////////////////
@@ -189,12 +182,10 @@ module b200 (
     ODDR_U
     (
         .Q(IFCLK),   // 1-bit DDR output data
-        .C(gpif_clk), // 1-bit clock input
+        .C(ifclk),      // 1-bit clock input
         .CE(1'b1),      // 1-bit clock enable input
-        // 0-degree IFCLK: D1=1 at the rising edge, D2=0 at the falling edge.
-        // The genuine Ettus/vendor design uses exactly this.  A previous
-        // "experiment" left D2=1'b1, which makes the ODDR output constant
-        // high: NO PCLK reaches the FX3 at all, and the whole GPIF is dead.
+        // D1=1 at the rising edge, D2=0 at the falling edge: IFCLK is a copy
+        // of its clock.  (D1 = D2 gives a constant pin and a dead bus.)
         .D1(1'b1),      // 1-bit data input (associated with C0)
         .D2(1'b0),      // 1-bit data input (associated with C1)
         .R(1'b0),       // 1-bit reset input
@@ -207,7 +198,10 @@ module b200 (
     wire gpif_rst, bus_rst, radio_rst;
     reset_sync gpif_sync(.clk(gpif_clk), .reset_in(!clocks_ready), .reset_out(gpif_rst));
     reset_sync bus_sync(.clk(bus_clk), .reset_in(!clocks_ready), .reset_out(bus_rst));
-    reset_sync radio_sync(.clk(radio_clk), .reset_in(!clocks_ready), .reset_out(radio_rst));
+    // The radio leaves reset only with calibrated receive input delays, so a
+    // lost calibration shows as a radio that does not answer.
+    wire idelay_rdy;
+    reset_sync radio_sync(.clk(radio_clk), .reset_in(!clocks_ready | !idelay_rdy), .reset_out(radio_rst));
 
     // radio_rst fans out to ~17k synchronous reset inputs.  A BUFG was tried
     // here and cannot be routed: nextpnr fails with
@@ -239,6 +233,11 @@ module b200 (
    b200_io b200_io_i0
      (
       .areset(reset_global),
+      .idelay_refclk(idelay_refclk),
+      // UG471: reset the delay calibration once its reference is stable.
+      // clocks_ready rises 65536 bus_clk cycles after the MMCM locks.
+      .idelay_rst(!clocks_ready),
+      .idelay_rdy(idelay_rdy),
       .mimo(mimo),
       
       // Baseband sample interface
@@ -335,7 +334,7 @@ module b200 (
    ///////////////////////////////////////////////////////////////////////
    wire [9:0] fp_gpio_in, fp_gpio_out, fp_gpio_ddr;
 
-   b200_core #(.EXTRA_BUFF_SIZE(12)) b200_core
+   b200_core #(.EXTRA_BUFF_SIZE(12), .BUS_CLK_HZ(BUS_CLK_HZ)) b200_core
    (
       .bus_clk(bus_clk), .bus_rst(bus_rst),
       .tx_tdata(tx_tdata), .tx_tlast(tx_tlast), .tx_tvalid(tx_tvalid), .tx_tready(tx_tready),
@@ -359,47 +358,21 @@ module b200 (
       .sclk(sclk), .sen(sen), .mosi(mosi), .miso(miso),
       .rb_misc({31'b0, pll_lock}), .misc_outs(misc_outs),
 
-      .debug_scl(GPIF_CTL8), .debug_sda(GPIF_CTL6),
-`ifdef DEBUG_UART
-      .debug_txd(FPGA_TXD0), .debug_rxd(FPGA_RXD0),
-`else
-      .debug_txd(), .debug_rxd(1'b0),
-`endif
-
       .lock_signals(codec_ctrl_out[7:6]),
       .debug()
    );
 
-`ifdef TARGET_B210
-   `ifdef DEBUG_UART
-      gpio_atr_io #(.WIDTH(8)) gpio_atr_io_inst (   // B210 with UART
-         .clk(radio_clk), .gpio_pins(fp_gpio),
-         .gpio_ddr(fp_gpio_ddr[7:0]), .gpio_out(fp_gpio_out[7:0]), .gpio_in(fp_gpio_in[7:0])
-      );
-      assign fp_gpio_in[9:8] = 2'b00;
-   `else
-      gpio_atr_io #(.WIDTH(10)) gpio_atr_io_inst (  // B210 no UART
-         .clk(radio_clk), .gpio_pins({FPGA_RXD0, FPGA_TXD0, fp_gpio}),
-         .gpio_ddr(fp_gpio_ddr), .gpio_out(fp_gpio_out), .gpio_in(fp_gpio_in)
-      );
-   `endif
-`else
-   `ifdef DEBUG_UART
-      assign fp_gpio_in = 10'h000;                  // B200 with UART
-   `else
-      gpio_atr_io #(.WIDTH(2)) gpio_atr_io_inst (   // B200 no UART
-         .clk(radio_clk), .gpio_pins({FPGA_RXD0, FPGA_TXD0}),
-         .gpio_ddr(fp_gpio_ddr[9:8]), .gpio_out(fp_gpio_out[9:8]), .gpio_in(fp_gpio_in[9:8])
-      );
-      assign fp_gpio_in[7:0] = 8'h00;
-   `endif
-`endif
+   // FPGA_RXD0/FPGA_TXD0 are the two upper front-panel GPIO bits.
+   gpio_atr_io #(.WIDTH(10)) gpio_atr_io_inst (
+      .clk(radio_clk), .gpio_pins({FPGA_RXD0, FPGA_TXD0, fp_gpio}),
+      .gpio_ddr(fp_gpio_ddr), .gpio_out(fp_gpio_out), .gpio_in(fp_gpio_in)
+   );
 
     ///////////////////////////////////////////////////////////////////////
     // GPIF2
     ///////////////////////////////////////////////////////////////////////
 
-   gpif2_slave_fifo32 #(.DATA_RX_FIFO_SIZE(13), .DATA_TX_FIFO_SIZE(13)) slave_fifo32
+   gpif2_slave_fifo32 #(.DATA_RX_FIFO_SIZE(14), .DATA_TX_FIFO_SIZE(14)) slave_fifo32
     (
         .gpif_clk(gpif_clk), .gpif_rst(gpif_rst), .gpif_enb(1'b1),
         .gpif_ctl({GPIF_CTL8, GPIF_CTL6, GPIF_CTL5, GPIF_CTL4}), .fifoadr({GPIF_CTL11,GPIF_CTL12}),
