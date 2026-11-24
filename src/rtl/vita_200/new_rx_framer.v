@@ -5,8 +5,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
 
-// Packet length (register BASE+0) is clamped to 2**SAMPLE_FIFO_SIZE samples,
-// i.e. half the sample FIFO.  See the MAXLEN_MAX declaration below.
 module new_rx_framer
   #(
     parameter BASE=0,
@@ -52,58 +50,16 @@ module new_rx_framer
 
    wire [15:0] 	  sample_space;
 
-   wire [15:0] 	  maxlen_reg;
-   // A packet is buffered in the whole-packet FIFO before it is handed on, so
-   // a packet longer than half that FIFO leaves no slack: the FIFO sits one
-   // word from full, the framing state machine falls into its "FIFO full"
-   // emergency exit - one sample per packet - and the stream collapses.
-   // Measured on this design (tests/tb_e2e_rx.v, 2^11-word FIFO): maxlen 512
-   // and 2048 deliver 246.6 / 242.1 MB/s with zero short packets; maxlen 4092
-   // - which UHD is allowed to request - collapsed to 61.4 MB/s with 9545
-   // short packets and repeated full events.  Clamping to half the FIFO in
-   // samples keeps every legal request robust and changes nothing below it.
-   localparam [15:0] MAXLEN_MAX = (16'd1 << SAMPLE_FIFO_SIZE);
-   wire [15:0] 	  maxlen = (maxlen_reg > MAXLEN_MAX) ? MAXLEN_MAX : maxlen_reg;
+   wire [15:0] 	  maxlen;
    reg [31:0] 	  holding;
 
 
    // FIXME need to handle case where hdr fifo is full (i.e. too many tiny packets)
    assign full = (sample_space == 16'd0) | (sample_space == 16'd1) | ~hdr_tready;
 
-   // ---------------------------------------------------------------------
-   // Overflow recovery.
-   //
-   // When the sample FIFO runs out of room the packet in progress is closed
-   // (that is what `full` does in eop).  If framing simply continued, every
-   // following packet would immediately hit `full` again and be closed after
-   // one or two samples, and the header overhead of those tiny packets drops
-   // the payload rate below the ADC rate - so the FIFO can never drain.  That
-   // is a self-sustaining collapse, not a transient: measured on the full
-   // chain, one 350 us host stall left every subsequent packet at four
-   // samples or fewer and the link at 0.15 words/clk (60 MB/s) for the rest
-   // of the run, with the producer still running at 0.6144.
-   //
-   // Instead, after an overflow the framer stops accepting samples until the
-   // FIFO has drained back to half full, then resumes full-length packets.
-   // The samples that arrive during that window are lost - they would be lost
-   // anyway, the FIFO is full - but the loss is bounded by the drain time and
-   // the link returns to full rate on its own.  Recovery takes about
-   // 2**(SAMPLE_FIFO_SIZE-1) clocks, i.e. 10 us with the shipped 2048-word
-   // FIFO, because the FIFO drains one word per clock.
-   wire fifo_full = (sample_space == 16'd0) | (sample_space == 16'd1);
-   localparam [15:0] DRAIN_LEVEL = (16'd1 << (SAMPLE_FIFO_SIZE-1));
-   reg draining;
-   always @(posedge clk)
-     if(reset | clear)
-       draining <= 1'b0;
-     else if(fifo_full)
-       draining <= 1'b1;
-     else if(sample_space >= DRAIN_LEVEL)
-       draining <= 1'b0;
-
    setting_reg #(.my_addr(BASE), .width(16)) sr_maxlen
      (.clk(clk),.rst(reset),.strobe(set_stb),.addr(set_addr),
-      .in(set_data),.out(maxlen_reg),.changed());
+      .in(set_data),.out(maxlen),.changed());
 
    wire sid_changed;
    setting_reg #(.my_addr(BASE+1), .width(32)) sr_sid
@@ -127,7 +83,7 @@ module new_rx_framer
 	  nearly_eop <= 0;
 
        end
-     else if (run & ~draining)
+     else if (run)
        case(instate)
 	 //
 	 // Start a new packet in this state
@@ -200,7 +156,7 @@ module new_rx_framer
      if(reset | clear)
        len <= 5;
      else
-       if(strobe && run && ~draining)
+       if(strobe && run)
 	 if(sample_tlast)
 	   len <= 5;
 	 else
@@ -219,7 +175,7 @@ module new_rx_framer
 
    wire [63:0] 	  sample_tdata = (instate == SECOND) ? {holding, sample} : {sample, 32'h0};
    assign sample_tlast = eop;
-   wire 	  sample_tvalid = run & strobe & ~draining & ( (instate == SECOND) | eop );
+   wire 	  sample_tvalid = run & strobe & ( (instate == SECOND) | eop );
    wire 	  sample_tready;
 
    wire [80:0] 	  hdr_tdata = {eob,len[13:0],2'b0,(instate == START) ? vita_time : hold_time};
