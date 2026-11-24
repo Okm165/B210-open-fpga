@@ -18,9 +18,14 @@ module axi_fifo_2clk #(
     output reg i_tready = 1'b0,
     input o_aclk,
     output [WIDTH-1:0] o_tdata,
-    output reg o_tvalid = 1'b0,
+    output o_tvalid,
     input o_tready
 );
+
+    // Read side of the memory, before the output register stage.
+    wire [WIDTH-1:0] r_tdata;
+    reg              r_tvalid = 1'b0;
+    wire             r_tready;
 
     localparam FIFOSIZE = (SIZE < 5) ? 5 : SIZE;
 
@@ -162,36 +167,46 @@ module axi_fifo_2clk #(
         if (o_rst_sync) begin
             rd_addr <= 'd0;
         end else begin
-            if (o_tvalid & o_tready) begin
+            if (r_tvalid & r_tready) begin
                 rd_addr <= rd_addr + 1'b1;
             end
         end
     end
 
-    assign o_tdata = mem[rd_addr];
+    assign r_tdata = mem[rd_addr];
+
+    // The memory maps onto a block RAM read without an output register
+    // (2.5 ns clock-to-out on Kintex-7).  A two-entry flop stage gives the
+    // consumer a registered interface, as PIPELINE = "OUT" does in the
+    // original implementation built on the vendor FIFO core.
+    axi_fifo_flop2 #(.WIDTH(WIDTH)) out_reg (
+        .clk(o_aclk), .reset(o_rst_sync), .clear(1'b0),
+        .i_tdata(r_tdata), .i_tvalid(r_tvalid), .i_tready(r_tready),
+        .o_tdata(o_tdata), .o_tvalid(o_tvalid), .o_tready(o_tready),
+        .space(), .occupied());
 
     // Read valid, full, empty, occupied signals
     always @(posedge o_aclk) begin
         if (o_rst_sync) begin
-            o_tvalid   <= 1'b0;
+            r_tvalid   <= 1'b0;
             o_full     <= 1'b0;
             o_empty    <= 1'b1;
             o_occupied <= 'd0;
             o_space    <= 'd0;
         end else begin
-            if ((rd_addr+1'b1 == wr_addr_sync) & o_tready & o_tvalid) begin
-                o_tvalid <= 1'b0;
+            if ((rd_addr+1'b1 == wr_addr_sync) & r_tready & r_tvalid) begin
+                r_tvalid <= 1'b0;
                 o_empty  <= 1'b1;
             end else if ((rd_addr != wr_addr_sync) & o_empty) begin
-                o_tvalid <= 1'b1;
+                r_tvalid <= 1'b1;
                 o_empty  <= 1'b0;
             end
-            if ((rd_addr == wr_addr_sync) & ~o_empty & ~o_tready) begin
+            if ((rd_addr == wr_addr_sync) & ~o_empty & ~r_tready) begin
                 o_full   <= 1'b1;
             end else begin
                 o_full   <= 1'b0;
             end
-            if (o_tready) begin
+            if (r_tready) begin
                 if (wr_addr_sync == rd_addr) begin
                     if (~o_empty) begin
                         o_occupied <= (1'b1 << FIFOSIZE) - 1'b1;
