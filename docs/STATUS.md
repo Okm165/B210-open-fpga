@@ -168,6 +168,13 @@ bits matches a plain-logic multiplier cycle for cycle.
   multiple of 1024 bytes; UHD's default frame size (8176 bytes) avoids it.
 - FX3 threads: 0 = host->FPGA data (EP2 OUT), 1 = FPGA->host data (EP6 IN),
   2 = control out (EP4 OUT), 3 = control in (EP8 IN). The FPGA supplies PCLK.
+- A capture's sample at index 9 is not part of the AD9361's pseudo-random
+  pattern on this board: measured with nothing skipped, three sessions on our
+  image and two on the vendor image all show exactly one sequence error there
+  and none anywhere else in 2.1 M samples. It is the test setup's own
+  transient (the pattern generator is enabled around the stream start), not
+  the FPGA; the sample checks therefore skip 64 samples, not 4096, and check
+  the rest of the capture.
 - UHD skips loading when the image hash matches the one the FX3 remembers.
   `fx3_raw_load.py` reboots the FX3 and stores no hash, so the next UHD
   session loads the image itself.

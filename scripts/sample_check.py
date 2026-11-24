@@ -44,7 +44,12 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UHD = os.path.join(ROOT, '.tools', 'uhd315')
-SKIP = 4096          # start-of-stream samples left out of every check
+# Start-of-stream samples left out of every check.  Measured with --skip 0 on
+# this board: the sample at index 9 of a capture is not part of the PRBS
+# pattern, on the vendor image exactly as on ours (the AD9361 test setup's
+# transient), and everything after it is; 64 leaves that a margin.  Every
+# other sample of the capture is checked.
+SKIP = 64
 GUARD = 6            # half width of the Blackman main lobe, in bins
 BIST_TONE, BIST_PRBS = '0x1B', '0x09'
 # The capture runs with real-time priority when the account may use it, as
@@ -227,6 +232,7 @@ def show(tag, a, summary, m, rel):
 
 
 def main():
+    global SKIP
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('image')
     ap.add_argument('--ref', help='reference image this one must match (the vendor image)')
@@ -239,10 +245,14 @@ def main():
     ap.add_argument('--chans', default='0,1')
     ap.add_argument('--otw', default='sc16')
     ap.add_argument('--samples', type=int, default=1 << 21)
+    ap.add_argument('--skip', type=int, default=SKIP,
+                    help='start-of-stream samples left out of every check '
+                         '(default %d; 0 checks that a new stream starts clean)' % SKIP)
     ap.add_argument('--min-sfdr', type=float, default=None,
                     help='absolute SFDR floor in dB (default: 60, or 50 with --ref)')
     a = ap.parse_args()
     a.mcr = a.mcr or a.rate
+    SKIP = a.skip
     if a.min_sfdr is None:
         # With a reference image the comparison with it does the real work, but
         # an absolute floor keeps a board fault that degrades both images from
