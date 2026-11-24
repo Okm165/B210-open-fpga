@@ -186,6 +186,24 @@ bits matches a plain-logic multiplier cycle for cycle.
 
 ## Known limitations
 
+- The FPGA cannot tell the two PPS sources apart.  `src/top/b200.v:351` feeds
+  both `pps_int` and `pps_ext` of `b200_core` from one net, the autoselecting
+  output of the board vendor's `pps_switch`, so UHD's time-source register
+  selects nothing.  UHD's default (internal) and `set_time` without a PPS
+  edge are unaffected, and every measurement here sets time synchronously;
+  GPSDO versus external PPS selection is untested and does not work.  The
+  fix is to wire `pps_int`/`pps_ext` to their own pins and let the mux in
+  `b200_core` choose.
+- A sample-rate or channel-count change while a stream is running is
+  untested.  UHD allows it and reprograms the AD9361, which stops and
+  restarts the data clock; the design has no reset for that event.  It is
+  outside what the gate covers (every mode sets the rate before streaming),
+  and the pseudo-random check cannot judge it directly, because changing the
+  decimation changes how fast the pattern advances per delivered sample.
+- What the transmitter's pins do when the FIFO runs dry in the middle of a
+  packet is unmeasured: the logic substitutes the idle word and raises an
+  underrun (counted by the throughput step), but no measurement here
+  captures the pins at that moment.
 - The dual-clock FIFO (`src/rtl/fifo/axi_fifo_2clk_sim.v`) has FIFOSIZE-bit
   pointers, so it cannot notice a full pointer wrap when one side outruns the
   other by 2^SIZE or more words between clock edges: such an instance stalls
