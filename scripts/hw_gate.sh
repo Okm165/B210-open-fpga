@@ -105,9 +105,12 @@ for clock in "'bus_clk': .* (PASS at 100.00 MHz)" "'radio_clk': .* (PASS at 61.4
              "'b200_io_i0.rx_clk_bufr': .* (PASS at 61.44 MHz)"; do
   grep -q "^timing   $clock" "$RECORD" || fail identity "build record lacks: $clock"
 done
-grep -q "^timing   crossing .*PASS" "$RECORD" || fail identity "build record has no checked clock-domain crossing"
+# The four crossings of this design (receive hand-over in both edge senses,
+# bus<->radio both ways).  Fewer means a bound no longer applies to anything.
+N_CROSS=$(grep -c "^timing   crossing .*PASS" "$RECORD" || true)
+[[ "${N_CROSS:-0}" -ge 4 ]] || fail identity "build record checked $N_CROSS clock-domain crossings, expected four"
 ! grep -q "^timing .*FAIL" "$RECORD" || fail identity "the build record shows a missed timing constraint"
-! grep -q "uncommitted" "$RECORD" || echo "  note: built from uncommitted sources"
+! grep -q "uncommitted" "$RECORD" || fail identity "built from uncommitted sources: commit them and rebuild"
 
 echo "== raw control and data path, no UHD =="
 python3 scripts/fx3_raw_load.py "$IMG" --peek 64 > "$OUT/01-raw.txt" 2>&1 \
@@ -149,8 +152,15 @@ scripts/eyescan.sh "$IMG" 61.44e6 > "$OUT/03-eye.txt" 2>&1 || true
 tail -5 "$OUT/03-eye.txt"
 grep -q '^RESULT: PASS' "$OUT/03-eye.txt" || fail eye "operating point is not clean, see $OUT/03-eye.txt"
 for side in rx tx; do
-  BELOW=$(sed -n "s/^  $side margin: \([0-9]*\) steps below.*/\1/p" "$OUT/03-eye.txt")
-  [[ "${BELOW:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${BELOW:-0} steps, need $EYE_MIN_STEPS"
+  LINE=$(grep "^  $side margin:" "$OUT/03-eye.txt" || true)
+  BELOW=$(sed -n 's/.*: \([0-9]*\) steps below.*/\1/p' <<<"$LINE")
+  ABOVE=$(sed -n 's/.*, \([0-9]*\) steps above.*/\1/p' <<<"$LINE")
+  [[ "${BELOW:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${BELOW:-0} steps below, need $EYE_MIN_STEPS"
+  # "above" may legitimately run past the end of the scan range, which the log
+  # says; anything short of it inside the range is a real margin.
+  if [[ "$LINE" != *"scan range ends there"* ]]; then
+    [[ "${ABOVE:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${ABOVE:-0} steps above, need $EYE_MIN_STEPS"
+  fi
 done
 
 echo "== known signals through the sample paths =="
@@ -239,15 +249,23 @@ run() {   # run <image> <log> <rx samples due> <tx samples due> <benchmark args.
   LD_LIBRARY_PATH=$PWD/.tools/uhd315/lib UHD_IMAGES_DIR=/usr/share/uhd/images \
     $RT timeout 120 "$BENCH" --args "type=b200,serial=${SERIAL},fpga=${image},${BUF}" --duration 10 "$@" > "$log" 2>&1 \
     || { echo "did not complete"; return; }
+  # Counters that mean data was lost, and counters that only mean the host
+  # waited for a metadata event: benchmark_rate reports two transmit metadata
+  # timeouts at the end of a full-duplex run on the vendor image too, so they
+  # are reported beside the verdict, never folded into it.
   awk -F: -v rx_due="$rx_due" -v tx_due="$tx_due" '
     /Num received samples/    {rx = $2}
     /Num transmitted samples/ {tx = $2}
-    /Num (dropped samples|overruns detected|sequence errors \(Tx\)|sequence errors \(Rx\)|underruns detected|late commands|timeouts \(Tx\)|timeouts \(Rx\))/ {loss += $2; counters++}
-    END { if (counters != 8)                              print "no result"
-          else if (loss)                                  print "lost " loss
-          else if (rx < 0.99 * rx_due || tx < 0.99 * tx_due) print "short: " rx + 0 " received, " tx + 0 " sent"
-          else                                            print "ok" }' "$log"
+    /Num (dropped samples|overruns detected|sequence errors \(Tx\)|sequence errors \(Rx\)|underruns detected)/ {loss += $2; counters++}
+    /Num (late commands|timeouts \(Tx\)|timeouts \(Rx\))/ {meta += $2}
+    END { if (counters != 5)          print "no result"
+          else if (loss)              print "lost " loss
+          else if (rx + 0 < rx_due || tx + 0 < tx_due)
+            printf "short: %d received of %d due, %d sent of %d due", rx + 0, rx_due, tx + 0, tx_due
+          else if (meta)              printf "ok (metadata events: %d)", meta
+          else                        print "ok" }' "$log"
 }
+ok() { [[ $1 == ok || $1 == "ok ("* ]]; }
 bench() {   # bench <name> <rx samples due> <tx samples due> <benchmark args...>
   local name=$1 rx_due=$2 tx_due=$3; shift 3
   local counted=0 try=0 before ours after
@@ -257,8 +275,8 @@ bench() {   # bench <name> <rx samples due> <tx samples due> <benchmark args...>
     ours=$(run "$IMG" "$OUT/07-$name-ours-$try.txt" "$rx_due" "$tx_due" "$@")
     after=$(run "$VENDOR" "$OUT/07-$name-vendor-$try.txt" "$rx_due" "$tx_due" "$@")
     echo "  $name run $try: vendor before: $before | this image: $ours | vendor after: $after"
-    if [[ $before == ok && $after == ok ]]; then
-      [[ $ours == ok ]] || fail throughput "$name: this image: $ours, between two clean runs of the vendor image"
+    if ok "$before" && ok "$after"; then
+      ok "$ours" || fail throughput "$name: this image: $ours, between two clean runs of the vendor image"
       counted=$((counted + 1))
     fi
     before=$after

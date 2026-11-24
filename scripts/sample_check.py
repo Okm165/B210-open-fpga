@@ -240,11 +240,14 @@ def main():
     ap.add_argument('--otw', default='sc16')
     ap.add_argument('--samples', type=int, default=1 << 21)
     ap.add_argument('--min-sfdr', type=float, default=None,
-                    help='absolute SFDR floor in dB (default: 60 without --ref, none with it)')
+                    help='absolute SFDR floor in dB (default: 60, or 50 with --ref)')
     a = ap.parse_args()
     a.mcr = a.mcr or a.rate
     if a.min_sfdr is None:
-        a.min_sfdr = -np.inf if a.ref else 60.0
+        # With a reference image the comparison with it does the real work, but
+        # an absolute floor keeps a board fault that degrades both images from
+        # passing: the worst healthy measurement recorded here is 69.8 dB.
+        a.min_sfdr = 50.0 if a.ref else 60.0
     if a.prbs and (a.mcr != a.rate or a.otw != 'sc16'):
         sys.exit('--prbs needs decimation 1 (mcr == rate) and the sc16 wire format')
 
@@ -270,6 +273,13 @@ def main():
         if a.prbs:
             if c['seq_errors'] != 0 or c['iq_errors'] != 0 or c['checked'] < a.samples // 2:
                 problems.append(f"ch{ch}: sequence not received intact")
+            # The decoded word only depends on the top 12 bits, so a sample
+            # path that is quiet but wrong in amplitude or offset still
+            # decodes: the residual is the check that the samples themselves
+            # sit on the PRBS levels to within half a 16-bit output code.
+            if not (c['residual'] < 8.0):
+                problems.append(f"ch{ch}: samples are {c['residual']:.1f} counts off the "
+                                f"PRBS levels, limit 8")
             if r and (c['sign'] != r['sign'] or abs(c['gain'] - r['gain']) > 2e-4):
                 problems.append(f"ch{ch}: polarity/gain {c['sign']:+d}/{c['gain']:.5f}, "
                                 f"reference {r['sign']:+d}/{r['gain']:.5f}")

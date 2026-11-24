@@ -82,6 +82,7 @@ def main():
             out = ['ASSEMBLE FAILED'] + out
         failed += not ok
         print('\n'.join('   ' + l for l in out), flush=True)
+        print('VERDICT %s %s' % (c['name'], 'PASS' if ok else 'FAIL'), flush=True)
     sys.exit(1 if failed else 0)
 
 

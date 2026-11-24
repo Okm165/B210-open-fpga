@@ -17,24 +17,37 @@ UHD_RX, UHD_TX = 15, 15
 
 
 def load(path):
-    cells = {}
+    """{(rx, tx): cell}, and the points where the two radio cores disagree.
+
+    Both radio cores of a B210 drive the same AD9361 interface, so the scan
+    covers every point twice.  A point that comes back differently the second
+    time is unstable, and averaging the two away would hide exactly that.
+    """
+    cells, conflicts = {}, []
     for line in open(path):
         if not line.startswith("EYE "):
             continue
         f = line.split()
         key = (int(f[1]), int(f[2]))
-        if key in cells:          # second radio core: same pins, keep the first
-            continue
         bits = f[3] + f[4]
         if "~" in bits:
-            cells[key] = "~"
+            cell = "~"
         elif set(bits) == {"."}:
-            cells[key] = "."
+            cell = "."
         elif set(bits) == {"x"}:
-            cells[key] = "x"
+            cell = "x"
         else:
-            cells[key] = "o"
-    return cells
+            cell = "o"
+        if key in cells:
+            # The two radio cores see the same interface, so a point measured
+            # twice with different results is unstable, not clean: keep it as
+            # "~" and let it shorten the margin like any other bad point.
+            if cells[key] != cell:
+                conflicts.append(key)
+                cells[key] = "~"
+            continue
+        cells[key] = cell
+    return cells, conflicts
 
 
 def run_length(cells, fixed, axis, start, step):
@@ -48,7 +61,7 @@ def run_length(cells, fixed, axis, start, step):
 
 
 def main():
-    cells = load(sys.argv[1])
+    cells, conflicts = load(sys.argv[1])
     if not cells:
         sys.exit("no EYE lines in " + sys.argv[1])
     rxs = sorted({k[0] for k in cells})
@@ -68,6 +81,10 @@ def main():
         hi, hi_seen = run_length(cells, fixed, axis, start, +1)
         print("  %s margin: %d steps below, %d steps above%s" % (
             axis, lo, hi, "" if hi_seen else " (scan range ends there)"))
+    if conflicts:
+        print("%d points came back differently in the two cores' scans and are "
+              "counted as unstable (first rx=%d tx=%d)"
+              % (len(conflicts), conflicts[0][0], conflicts[0][1]))
     print("RESULT: PASS")
 
 

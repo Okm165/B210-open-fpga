@@ -78,15 +78,18 @@ def main():
                          cwd=ROOT, capture_output=True, text=True).stdout
     open(os.path.join(ROOT, 'build/tmp', f'{tag}_window.txt'), 'w').write(out)
 
-    # a candidate passed when its last output line says so; one that could
-    # not be assembled was not measured
-    blocks = re.split(r'^== ', out, flags=re.M)[1:]
+    # fast_test prints one VERDICT per candidate from the measurement's exit
+    # status; a candidate that could not be assembled was not measured
     result = {}
-    for block in blocks:
-        name = block.split(':', 1)[0]
-        if 'ASSEMBLE FAILED' in block:
-            sys.exit(f'{name} could not be assembled, see build/tmp/{tag}_window.txt')
-        result[int(name[-2:])] = 'RESULT: PASS' in block.strip().splitlines()[-1]
+    for line in out.splitlines():
+        if line.startswith('ASSEMBLE FAILED'):
+            sys.exit(f'a candidate could not be assembled, see build/tmp/{tag}_window.txt')
+        m = re.match(r'^VERDICT (\S+_lag(\d\d)) (PASS|FAIL)$', line)
+        if m:
+            result[int(m.group(2))] = m.group(3) == 'PASS'
+    if sorted(result) != sorted(s for s in lags):
+        sys.exit(f'fast_test gave a verdict for {sorted(result)}, not for every '
+                 f'setting {sorted(lags)}; see build/tmp/{tag}_window.txt')
     print(f'design built with a lag of {built} steps ({built * STEP_PS / 1000:.2f} ns); '
           f'details in build/tmp/{tag}_window.txt')
     print('lag (steps): ' + ' '.join(f'{s:2d}' for s in lags))
