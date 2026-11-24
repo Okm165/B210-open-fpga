@@ -62,8 +62,6 @@ module tb_clkmux;
 
    // ---- the checks -------------------------------------------------------
    // timestamp every output transition; verify pulse widths
-   integer fdedge;
-   initial fdedge = $fopen("clkmux_edges.txt", "w");
 
    real t_last = 0;
    real min_pw = 1e9;
@@ -89,8 +87,6 @@ module tb_clkmux;
             $display("  runt %.3f ns at t=%0t", pw, $time);
          end
       end
-      if (fdedge && t_last > 0)
-        $fwrite(fdedge, "%0.3f %0.3f\n", $realtime, $realtime - t_last);
       t_last = $realtime;
       transitions = transitions + 1;
       // the switch is "done" at the first output transition after the
@@ -173,7 +169,6 @@ module tb_clkmux;
       else
         $display("CLKMUX: FAIL - edge rate %0d kHz after switching to MIMO",
                  $rtoi(freq_mimo/1e3));
-      $fclose(fdedge);
       $finish;
    end
 

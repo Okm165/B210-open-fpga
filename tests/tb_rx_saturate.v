@@ -1,16 +1,18 @@
-// tb_rx_saturate.v - the RX mixer's overload corner.
+// tb_rx_saturate.v - the RX chain's overload corner.
 //
 // The exhaustive transfer curve (tb_rx_codes) drives I only, so the complex
 // envelope never exceeds full scale.  But a strong blocker plus a signal can
 // exceed it: with the LO at 45 degrees and I = Q = full scale, the rotated
-// component is sqrt(2) x full scale and must SATURATE.  The code comment
-// records that a plain slice once wrapped there (a true 46340 came out as
-// 19199 with inverted sign); this bench pins the current behaviour.
+// component is sqrt(2) x full scale and must SATURATE.  The Ettus chain is
+// built for it - the CORDIC carries a guard bit, and the two clip stages
+// behind the CIC take the excess - and this bench pins that it holds with the
+// registers UHD writes (scale 39767, decimation 1).
 //
 // Cases (input I = Q = 2047, i.e. full-scale 12-bit):
-//   LO at DC   -> I = 32752, Q = 32752   (no saturation, exact 16x)
-//   LO at 45   -> I must read the POSITIVE rail 32767, Q = 0
-//   LO at -45  -> Q must read the POSITIVE rail, I = 0
+//   LO at DC   -> I = Q = 32727  (no saturation: 32752 x 0.99925, the CORDIC
+//                 gain 1.64676 against the 1.648 in UHD's scale)
+//   LO turning -> the rotated I must sit ON the positive rail 32767 for the
+//                 part of the turn where the ideal exceeds it
 // A wrap shows up immediately as a negative rail value.
 `timescale 1ns/1ps
 
@@ -25,12 +27,13 @@ module tb_rx_saturate;
    reg  [23:0] rx_i = 24'sd2047 << 12, rx_q = 24'sd2047 << 12;
    wire [31:0] sample;
    wire        strobe;
+   reg         run = 0;      // streaming starts after the rate is written, as in the radio
 
    ddc_chain #(.BASE(0), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) dut (
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(set_stb), .set_addr(set_addr), .set_data(set_data),
       .rx_fe_i(rx_i), .rx_fe_q(rx_q),
-      .sample(sample), .run(1'b1), .strobe(strobe), .debug());
+      .sample(sample), .run(run), .strobe(strobe), .debug());
 
    task wr(input [7:0] a, input [31:0] d);
       begin
@@ -58,16 +61,20 @@ module tb_rx_saturate;
    initial begin
       repeat (8) @(posedge clk);
       @(negedge clk); rst = 0;
+      wr(8'd1, 32'd39767);       // UHD scale for CIC rate 1
+      wr(8'd2, 32'h001);         // decimation 1, no halfband
       wr(8'd3, 32'h0);
 
       // LO at DC: no rotation, no saturation
       wr(8'd0, 32'd0);
+      run = 1;
       meas(si, sq);
-      $display("RX-SAT: LO 0 deg    I %0d Q %0d (expect 32752, 32752)", si, sq);
-      if (si < 32750 || si > 32754 || sq < 32750 || sq > 32754) errors = errors + 1;
+      $display("RX-SAT: LO 0 deg    I %0d Q %0d (expect 32727, 32727)", si, sq);
+      if (si < 32725 || si > 32729 || sq < 32725 || sq > 32729) errors = errors + 1;
 
       // Slow rotation (fs/64): the rotated I component reaches
-      // 2047*(cos+sin)*16 = 46 320 at its peak, well past the 16-bit rail, so
+      // 2047*(cos+sin)*16 = 46 320 at its peak (46 285 after the chain's
+      // 0.99925), well past the 16-bit rail, so
       // it must sit ON the rail for the samples where the ideal exceeds it.
       // A wrap would show up as nothing on the positive rail at all.
       wr(8'd0, 32'h0400_0000);

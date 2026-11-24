@@ -1,8 +1,6 @@
 // tb_tx_retune.v - what a settings write does to a running transmitter.
 //
-// The RX side has a "no register write may disturb the stream" proof
-// (tb_rx_static).  This is the TX mirror.  Two behaviours are measured, and
-// they are different on purpose:
+// Two behaviours are measured, and they are different on purpose:
 //
 //   1. Retuning the LO (BASE+0, the phase increment) changes the frequency
 //      without resetting the accumulator: after the change the tone is at the
@@ -53,12 +51,11 @@ module tb_tx_retune;
 
    // One clock of strobe, taken between measurement samples: the write must
    // not swallow output samples or the measurement would see a gap.
-   integer fd;
 
    task wr(input [7:0] a, input [31:0] d);
       begin set_stb=1; set_addr=a; set_data=d;
             @(negedge clk); set_stb=0;
-            if (fd) $fwrite(fd, "EVENT %0d %0d\n", a, d); end
+            end
    endtask
 
    localparam real AMP = 8000.0;
@@ -67,7 +64,6 @@ module tb_tx_retune;
    integer k = 0, si, sq;
    real ph;
 
-   initial fd = $fopen("retune_stream.txt", "w");
 
    always @(posedge clk) begin
       if (strobe) begin
@@ -90,7 +86,6 @@ module tb_tx_retune;
    task take_step;
       begin
          @(negedge clk); #1;
-         if (fd) $fwrite(fd, "%0d %0d %0d\n", $signed(tx_i), $signed(tx_q), samples);
 
          xi = $signed(tx_i); xq = $signed(tx_q);
          step = 0.0;
@@ -160,7 +155,7 @@ module tb_tx_retune;
 
    initial begin
       repeat (8) @(posedge clk); @(negedge clk); rst = 0;
-      wr(8'd1, 32'h0000_8000);                 // scale 0.5
+      wr(8'd1, 32'd39767);                     // the scale UHD writes
       wr(8'd2, 32'h0000_0001);                 // bypass, total rate 1
       wr(8'd0, 32'h2000_0000);                 // LO at fs/8
       repeat (400) @(posedge clk);
@@ -257,7 +252,6 @@ module tb_tx_retune;
         $display("RETUNE: PASS - steady stream clean, retune steps cleanly with a bounded transient, rate-write cost measured");
       else
         $display("RETUNE: FAIL - %0d checks wrong", errors);
-      $fclose(fd);
       $finish;
    end
 

@@ -3,14 +3,15 @@
 // Lossless receive path: CIC rate 1, both halfbands off.
 //
 // In that configuration there is no rate change, so the decimation filters
-// must not touch the signal.  The chain routes the mixer output straight to
-// the output formatter, and this bench proves the two properties that matter:
+// must not touch the signal: a CIC at rate 1 is the identity and the halfband
+// cores are bypassed.  This is what UHD programs when the sample rate equals
+// the master clock rate, and this bench proves the two properties that matter:
 //
 //   1. The transfer function is a pure constant gain: a tone at a quarter of
 //      the sample rate has the same amplitude as DC (any filtering would show
 //      up as droop -- the halfband path loses 4.2 dB at this frequency).
 //   2. No sample saturates: the output stays inside the 16-bit range with the
-//      default scale, so the clip stage is never reached.
+//      scale UHD writes, so the clip stages are never reached.
 //
 `timescale 1ns/1ps
 
@@ -105,10 +106,14 @@ module tb_ddc_lossless;
       rst <= 1'b0;
       repeat (4) @(posedge clk);
 
-      // CIC rate 1, halfbands off, scale ~1.0, no mixing
+      // CIC rate 1, halfbands off, the scale UHD writes, no mixing
       set_reg(8'd0, 32'h0000_0000);
-      set_reg(8'd1, 32'h0001_FFFF);
+      set_reg(8'd1, 32'd39767);
       set_reg(8'd2, 32'h0000_0001);
+      // The strobe generator loads the rate while the chain is idle, so the
+      // rate must be in place before streaming starts - as it is in the
+      // radio, where UHD writes it long before the first stream command.
+      repeat (4) @(posedge clk);
       run <= 1'b1;
 
       peak = 0;
@@ -126,9 +131,10 @@ module tb_ddc_lossless;
          errors = errors + 1;
          $display("FAIL: tone/DC gain ratio %.4f is not flat (path is filtering)", amp_tone / amp_dc);
       end
-      if (peak > 32767) begin
+      // a saturated sample reads exactly the rail, and the tone is 6000
+      if (peak >= 32767 || peak > 6100) begin
          errors = errors + 1;
-         $display("FAIL: output saturated at %0d", peak);
+         $display("FAIL: output saturated or overshot at %0d", peak);
       end
 
       if (errors == 0)

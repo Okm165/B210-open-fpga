@@ -5,17 +5,16 @@
 // drives them with the same samples and asserts
 //
 //   1. two receive chains programmed to the same LO produce byte-identical
-//      output, dither included, while a third receive chain programmed to a
-//      different LO is running alongside - so one channel cannot perturb
-//      another,
+//      output while a third receive chain programmed to a different LO is
+//      running alongside - so one channel cannot perturb another,
 //   2. neither receive channel hits the 16-bit rail on a full-scale quadrature
 //      input,
 //   3. the two transmit chains produce the same sample sequence from the same
 //      input (compared per-channel, because the interpolator strobe phase
 //      depends on when each channel's rate register was written).
 //
-// Both directions use the same oscillator (dds_lut) and the same exact-multiply
-// mixer, so one bench guards the RX and TX implementations at once.
+// Every chain is programmed the way UHD programs it (scale 39767; RX
+// decimation 1, TX interpolation 8).
 `timescale 1ns/1ps
 
 module tb_pair;
@@ -132,29 +131,18 @@ module tb_pair;
       rst <= 0;
       repeat (4) @(posedge clk);
 
-      // ---- prime both TX interpolators (recipe from tb_duc_chain) --------
-      seta(8'd64, 32'h0); seta(8'd65, 32'h1FFFF); seta(8'd66, (2'b11 << 8) | 8'd2);
-      seta(8'd96, 32'h0); seta(8'd97, 32'h1FFFF); seta(8'd98, (2'b11 << 8) | 8'd2);
-      run_tx <= 1;
-      repeat (300) @(posedge clk);
-      rst <= 1;
-      repeat (4) @(posedge clk);
-      rst <= 0;
-      repeat (4) @(posedge clk);
-      run_tx <= 0;
-
       // ---- A and the reference at fs/8, B at 2.5x fs/8 -------------------
-      seta(8'd0,   32'h1000_0000);
+      seta(8'd0,   32'h1000_0000); seta(8'd1,   32'd39767); seta(8'd2,   32'h001);
       seta(8'd3,   32'h0);
-      seta(8'd128, 32'h1000_0000);
+      seta(8'd128, 32'h1000_0000); seta(8'd129, 32'd39767); seta(8'd130, 32'h001);
       seta(8'd131, 32'h0);
-      seta(8'd32,  32'h2800_0000);
+      seta(8'd32,  32'h2800_0000); seta(8'd33,  32'd39767); seta(8'd34,  32'h001);
       seta(8'd35,  32'h0);
       run_rx <= 1;
 
       // ---- TX: both channels on the same DC input ------------------------
-      seta(8'd64, 32'h0); seta(8'd65, 32'h1FFFF); seta(8'd66, (2'b11 << 8) | 8'd2);
-      seta(8'd96, 32'h0); seta(8'd97, 32'h1FFFF); seta(8'd98, (2'b11 << 8) | 8'd2);
+      seta(8'd64, 32'h0); seta(8'd65, 32'd39767); seta(8'd66, (2'b11 << 8) | 8'd2);
+      seta(8'd96, 32'h0); seta(8'd97, 32'd39767); seta(8'd98, (2'b11 << 8) | 8'd2);
       run_tx <= 1;
       tx_sample <= {16'sd4096, 16'sd1024};
 

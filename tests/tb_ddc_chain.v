@@ -11,12 +11,12 @@
 //  2. The I and Q datapaths were once tied together, turning the complex
 //     DDC into a real (mono) datapath.
 //
-// The receive chain now performs no rate change and no filtering (CIC,
-// compensator and halfbands were removed), so this bench also asserts that
-// the output runs at exactly one sample per clock and that the rate / halfband
-// setting registers no longer influence the datapath.
+// The chain is programmed the way UHD's rx_dsp_core_3000 programs a B200
+// (scale 39767 = 2^16 / 1.648, which cancels the CORDIC gain; decimation word
+// with its halfband bits), and the bench also asserts that the output rate
+// follows that word: one strobe per `decimation` clocks.
 //
-// Requires tests/sim/xilinx_prim_sim.v (SRLC32E / DSP48E1 behaviour).
+// Requires tests/sim/xilinx_prim_sim.v.
 `timescale 1ns/1ps
 
 module tb_ddc_chain;
@@ -43,6 +43,8 @@ module tb_ddc_chain;
    integer            r;
    integer            expected_strobes;
    integer            measured;
+   integer            total;
+   reg [9:0]          rate_word;
 
    reg signed [15:0]  got_i, got_q;
    reg signed [15:0]  i_only, q_only, minus_i;
@@ -125,10 +127,9 @@ module tb_ddc_chain;
       rst <= 1'b0;
       repeat (4) @(posedge clk);
 
-      // Scale and rate/halfband registers are no longer decoded; the writes
-      // below are kept to prove the datapath ignores them.
-      set_reg(8'd1, 32'h0000_0001);                    // would be scale ~0 if used
-      set_reg(8'd2, 32'h0000_0000 | (2'b11 << 8) | 8'd8); // would be decim 16 if used
+      set_reg(8'd0, 32'h0000_0000);   // CORDIC parked
+      set_reg(8'd1, 32'd39767);       // UHD scale for CIC rate 1
+      set_reg(8'd2, 32'h0000_0001);   // decimation 1, no halfband
       set_reg(8'd3, 32'h0000_0000);   // no inversion, complex, no swap
       run <= 1'b1;
 
@@ -150,24 +151,27 @@ module tb_ddc_chain;
 
       check(strobes > 0,             "chain emits output strobes");
       check(i_only !== 16'sd0,       "I-only input produces an I sample");
-      // The output quantiser is dithered with +-1 LSB (triangular), so a
-      // zero-valued channel legitimately reads -1, 0 or +1: leakage-free means
-      // "no signal-dependent component", not "bit-zero".
-      check(got_q >= -16'sd1 && got_q <= 16'sd1, "I-only input leaves Q at zero (+-1 LSB dither)");
-      check(got_i >= -16'sd1 && got_i <= 16'sd1, "Q-only input leaves I at zero (+-1 LSB dither)");
+      // The CORDIC truncates in each of its 20 stages and the output rounder
+      // is a first-order sigma-delta, so a zero-valued channel reads within a
+      // count of zero, not bit-zero.
+      check(got_q >= -16'sd1 && got_q <= 16'sd1, "I-only input leaves Q at zero (+-1 LSB)");
+      check(got_i >= -16'sd1 && got_i <= 16'sd1, "Q-only input leaves I at zero (+-1 LSB)");
       check(q_only !== 16'sd0,       "Q-only input produces a Q sample");
-      // The output rounder is dithered, so a single sample carries +-1 LSB of
-      // legitimate rounding noise: the symmetry check must allow it.
+      // A single sample carries +-1 LSB of rounding from the sigma-delta.
       check(minus_i >= -i_only - 1 && minus_i <= -i_only + 1,
-            "negative input gives the negative sample (+-1 LSB dither)");
+            "negative input gives the negative sample (+-1 LSB)");
+      // 16 ADC counts in, gain 0.99925 (CORDIC 1.64676 against UHD's 1.648)
+      check(i_only >= 16'sd15 && i_only <= 16'sd16, "unity gain at the scale UHD writes");
+      check(q_only >= 16'sd15 && q_only <= 16'sd16, "unity gain on Q at the scale UHD writes");
       check(i_only > 0,              "sign of the I sample follows the input");
 
-      // ---- rotation direction: down-conversion, not up-conversion -------
-      // LO = fs/8, DC input of 512 ADC counts.  The output must be
-      // 512*cos(-k*45deg), 512*sin(-k*45deg) -- i.e. the Q channel must lead
-      // with the opposite sign to the I channel's sine term.  With +i*sin in
-      // the Q path the rotation runs backwards (sideband at f_in+f_lo instead
-      // of f_in-f_lo), which a DC test with LO parked at zero cannot detect.
+      // ---- rotation direction ---------------------------------------------
+      // The Ettus CORDIC multiplies by exp(+j*theta): a positive frequency
+      // word moves the spectrum up, and UHD's sign conventions are built on
+      // that.  LO = fs/8, DC input of 512 ADC counts: the output must be
+      // 511.6*cos(+k*45deg), 511.6*sin(+k*45deg).  A mixer turning the other
+      // way matches none of the eight start phases, and a DC test with the LO
+      // parked at zero cannot tell the two apart.
       set_reg(8'd0, 32'h2000_0000);
       rx_i = 24'sd131072;   // 512 counts in the top 16 bits
       rx_q = 24'sd0;
@@ -188,27 +192,27 @@ module tb_ddc_chain;
          end
          // The absolute phase at capture time is wherever the accumulator
          // happens to be; try every 45-degree start and require ONE of them to
-         // match exactly.  Up-conversion (the opposite rotation) matches none.
+         // match.  The opposite rotation matches none.
          best_errs = 99;
          for (k0 = 0; k0 < 8; k0 = k0 + 1) begin
             errs = 0;
             for (k = 0; k < 8; k = k + 1) begin
-               ex_i = 512.0 * $cos(-(k + k0) * 0.7853981633974483);
-               ex_q = 512.0 * $sin(-(k + k0) * 0.7853981633974483);
+               ex_i = 511.6 * $cos((k + k0) * 0.7853981633974483);
+               ex_q = 511.6 * $sin((k + k0) * 0.7853981633974483);
                if (sq_i[k] - ex_i >  2.0 || sq_i[k] - ex_i < -2.0) errs = errs + 1;
                if (sq_q[k] - ex_q >  2.0 || sq_q[k] - ex_q < -2.0) errs = errs + 1;
             end
             if (errs < best_errs) best_errs = errs;
          end
-         $display("  rotation at fs/8: first samples I=%0d,%0d Q=%0d,%0d (down-conversion: best match %0d errors)",
+         $display("  rotation at fs/8: first samples I=%0d,%0d Q=%0d,%0d (exp(+j theta): best match %0d errors)",
                   sq_i[0],sq_i[1],sq_q[0],sq_q[1],best_errs);
-         check(best_errs == 0, "mixer down-converts (Q rotation sign) at fs/8");
+         check(best_errs == 0, "mixer turns counter-clockwise for a positive frequency word");
       end
       // ---- range: full-scale I and Q (complex envelope > full scale) -----
       // A quadrature signal never does this, but independent channels can
-      // (blocker plus signal, clipped noise).  The output must saturate at the
-      // rail, never wrap: before the saturator this produced 19199 where the
-      // true value is 46340, with inverted sign.
+      // (blocker plus signal, clipped noise).  The CORDIC has a guard bit for
+      // it and the two clip stages behind the CIC take the excess: the output
+      // must sit at the rail, never wrap.
       rx_i = 24'sd32767 << 8;
       rx_q = 24'sd32767 << 8;
       repeat (40) @(posedge clk);
@@ -228,7 +232,7 @@ module tb_ddc_chain;
          for (k0 = 0; k0 < 8; k0 = k0 + 1) begin
             errs = 0;
             for (k = 0; k < 8; k = k + 1) begin
-               ex = 46340.0 * $cos(-(k + k0) * 0.7853981633974483);
+               ex = 46305.0 * $cos((k + k0) * 0.7853981633974483);
                if (ex >  32767.0) ex =  32767.0;   // saturate, as the RTL does
                if (ex < -32768.0) ex = -32768.0;
                v = sq[k];
@@ -243,20 +247,29 @@ module tb_ddc_chain;
       rx_i = 24'sd0; rx_q = 24'sd0;
       set_reg(8'd0, 32'h0000_0000);
 
-      // ---- full rate, independent of the (ignored) rate register ---------
-      // One sample per clock is the defining property of the lossless path.
-      for (r = 2; r <= 8; r = r * 2) begin
-         set_reg(8'd2, (2'b11 << 8) | r[7:0]);
-         repeat (200) @(posedge clk);
-         measure_rate(4000, measured);
-         expected_strobes = 4000;
-         $display("  rate register %0d: %0d strobes in 4000 cycles, expected %0d",
-                  r, measured, expected_strobes);
-         check(measured >= expected_strobes - 2 && measured <= expected_strobes,
-               "output stays at one sample per clock (rate register ignored)");
+      // ---- output rate follows the decimation word --------------------------
+      // UHD: decimation 2 = small halfband only (bit 9), 4 = both halfbands,
+      // 8 = both over CIC rate 2, 3 = CIC only.
+      for (r = 0; r < 5; r = r + 1) begin
+         case (r)
+           0: begin rate_word = 10'h001; total = 1; end
+           1: begin rate_word = 10'h201; total = 2; end
+           2: begin rate_word = 10'h003; total = 3; end
+           3: begin rate_word = 10'h301; total = 4; end
+           default: begin rate_word = 10'h302; total = 8; end
+         endcase
+         run <= 1'b0;
+         set_reg(8'd2, rate_word);
+         run <= 1'b1;
+         repeat (800) @(posedge clk);        // past the halfbands' start-up flush
+         measure_rate(4800, measured);
+         expected_strobes = 4800 / total;
+         $display("  decimation %0d (word 0x%03x): %0d strobes in 4800 cycles, expected %0d",
+                  total, rate_word, measured, expected_strobes);
+         check(measured == expected_strobes, "output rate is the clock rate over the decimation");
       end
 
-      if (errors == 0) $display("PASS: ddc_chain sample path, I/Q independence, full-rate output (17 checks)");
+      if (errors == 0) $display("PASS: ddc_chain sample path, I/Q independence, rotation, saturation, decimation (21 checks)");
       else             $display("FAIL: %0d errors", errors);
       $finish;
    end

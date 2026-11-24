@@ -21,8 +21,10 @@
 // against the clean input.
 //
 // Forward sink = RX host word (16-bit), A = AMP.
-// Reverse sink = TX pin word (24-bit),  A = AMP*256; the rx->tx composite gain
-// is exactly 1 (rx /256, tx *256), so the pins must reproduce the channel.
+// Reverse sink = TX pin word (24-bit),  A = AMP*256.  Both chains carry the
+// scale word UHD writes, so the composite gain of the two is 0.9985 in either
+// direction (each chain 0.99925, the CORDIC's 1.64676 against UHD's 1.648),
+// and the sink must reproduce the channel at that level.
 `timescale 1ns/1ps
 
 module tb_airloop;
@@ -77,6 +79,9 @@ module tb_airloop;
       .tx_fe_i(tx1_i), .tx_fe_q(tx1_q),
       .sample(tx1_sample), .run(1'b1), .strobe(tx1_strobe), .debug(tx1_debug));
 
+   // the receivers start streaming after their rate is written, as in the radio
+   reg rx_run = 0;
+
    // ---- air model ----
    integer beta_den  = 8;
    integer alpha_den = 1000000;   // coupling off until case 2
@@ -120,13 +125,13 @@ module tb_airloop;
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(r0_stb), .set_addr(r0_addr), .set_data(r0_data),
       .rx_fe_i(r0i), .rx_fe_q(r0q),
-      .sample(rx0_sample), .run(1'b1), .strobe(rx0_strobe), .debug());
+      .sample(rx0_sample), .run(rx_run), .strobe(rx0_strobe), .debug());
 
    ddc_chain #(.BASE(0), .DSPNO(0), .WIDTH(24), .DEVICE("7SERIES")) rx1 (
       .clk(clk), .rst(rst), .clr(1'b0),
       .set_stb(r1_stb), .set_addr(r1_addr), .set_data(r1_data),
       .rx_fe_i(r1i), .rx_fe_q(r1q),
-      .sample(rx1_sample), .run(1'b1), .strobe(rx1_strobe), .debug());
+      .sample(rx1_sample), .run(rx_run), .strobe(rx1_strobe), .debug());
 
    // ---- register writes ----
    task twr(input integer ch, input [7:0] a, input [31:0] d);
@@ -200,10 +205,11 @@ module tb_airloop;
       repeat (8) @(posedge clk);
       @(negedge clk); rst = 0;
 
-      twr(0,8'd0,0); twr(0,8'd1,32'h8000); twr(0,8'd2,1);
-      twr(1,8'd0,0); twr(1,8'd1,32'h8000); twr(1,8'd2,1);
-      rwr(0,8'd0,0); rwr(0,8'd3,0);
-      rwr(1,8'd0,0); rwr(1,8'd3,0);
+      twr(0,8'd0,0); twr(0,8'd1,32'd39767); twr(0,8'd2,1);
+      twr(1,8'd0,0); twr(1,8'd1,32'd39767); twr(1,8'd2,1);
+      rwr(0,8'd0,0); rwr(0,8'd1,32'd39767); rwr(0,8'd2,1); rwr(0,8'd3,0);
+      rwr(1,8'd0,0); rwr(1,8'd1,32'd39767); rwr(1,8'd2,1); rwr(1,8'd3,0);
+      rx_run = 1'b1;
       repeat (400) @(posedge clk);
 
 `ifdef REVERSE
@@ -225,9 +231,9 @@ module tb_airloop;
       alpha_den = 1000000; noise_m = 0;
       repeat (200) @(posedge clk);
       meas(0, K0, amp_out, evm_db);
-      g = amp_out / (exp_amp * hmag);
-      $display("AIR:   noise 0    amp %.2f (model %.2f) EVM %.1f dB", amp_out, exp_amp*hmag, evm_db);
-      if (g < 0.995 || g > 1.005) begin errors=errors+1; $display("AIR: FAIL gain vs model"); end
+      g = amp_out / (exp_amp * hmag * 0.9985);     // 0.9985: the two chains
+      $display("AIR:   noise 0    amp %.2f (model %.2f) EVM %.1f dB", amp_out, exp_amp*hmag*0.9985, evm_db);
+      if (g < 0.998 || g > 1.002) begin errors=errors+1; $display("AIR: FAIL gain vs model"); end
       if (evm_db > -70.0) begin errors=errors+1; $display("AIR: FAIL EVM floor too high"); end
 
       noise_m = 2048;
@@ -250,7 +256,7 @@ module tb_airloop;
 
       if (errors == 0) begin
 `ifdef REVERSE
-         $display("AIR-REV: PASS - antenna->RX->TX on both channels through the model: gain 1, coupling linear, noise tracked");
+         $display("AIR-REV: PASS - antenna->RX->TX on both channels through the model: stock gain, coupling linear, noise tracked");
 `else
          $display("AIR-FWD: PASS - host->TX->RX on both channels through the model: tracks H, coupling linear, noise tracked");
 `endif

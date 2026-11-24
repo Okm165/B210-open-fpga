@@ -7,10 +7,9 @@
 // direction: a transmitter that emits zeros, or a complex upconverter that
 // emits a real signal.
 //
-// It also pins the clip_reg contract that made the RX defect possible: both
-// instances here leave `reset` open and tie `strobe_in` high.  That is safe
-// only because nothing consumes their strobe_out; this bench proves the data
-// path still updates in that configuration.
+// The chain is programmed the way UHD's tx_dsp_core_3000 programs it for an
+// interpolation of 8: both halfbands, CIC rate 2, scale 39767 = 2^16 / 1.648,
+// which cancels the CORDIC gain.
 //
 // Requires tests/sim/xilinx_prim_sim.v.
 `timescale 1ns/1ps
@@ -104,39 +103,26 @@ module tb_duc_chain;
       rst <= 1'b0;
       repeat (4) @(posedge clk);
 
-      // Prime and reset the chain: the CIC interpolator's integrators must
-      // start from a known-zero state.  hb47_poly resets its sample pipeline;
-      // the prime sequence clears the CIC, and rst also clears the setting
-      // registers, so they are programmed again below.  Silicon powers up 0;
-      // this is a simulation-only precaution.
-      set_reg(8'd0, 32'h0000_0000);
-      set_reg(8'd1, 32'h0001_FFFF);
-      set_reg(8'd2, (2'b11 << 8) | 8'd2);
-      run <= 1'b1;
-      repeat (300) @(posedge clk);
-      rst <= 1'b1;
-      repeat (4) @(posedge clk);
-      rst <= 1'b0;
-      repeat (4) @(posedge clk);
-      run <= 1'b0;
-
-      // phase increment 0 (DC), scale ~1.0 in Q17, both halfbands on,
-      // interpolation rate 2 - the same shape radio_legacy programs.
-      set_reg(8'd0, 32'h0000_0000);
-      set_reg(8'd1, 32'h0001_FFFF);
-      set_reg(8'd2, (2'b11 << 8) | 8'd2);
+      // No priming: the chain must come out of reset defined.  (The halfband
+      // interpolator has registers without reset; they carry power-up values
+      // so that the CIC integrators behind them never see an X.)
+      set_reg(8'd0, 32'h0000_0000);            // CORDIC parked
+      set_reg(8'd1, 32'd39767);                // UHD scale for CIC rate 2
+      set_reg(8'd2, (2'b11 << 8) | 8'd2);      // interpolation 8
       run <= 1'b1;
 
       settle( 16'sd0,     16'sd0,    zero_i, zero_q);
 
-      // I/Q leakage offset: with Q-only input the I output must be exactly
-      // zero on every strobe, not just at one sampling instant.  The CORDIC
-      // returned a constant -1 LSB on I, which the 18-bit multiplier
-      // narrowing amplified to -256 (a spur at DC in the passband).
+      // I/Q leakage: with Q-only input the I output must stay at its idle
+      // value on every strobe, not just at one sampling instant.  The idle
+      // value is not zero: the Ettus CORDIC truncates in each stage, which
+      // leaves a constant offset of one count of the 16-bit word (the pin
+      // quantiser in radio_legacy rounds it away).
       sample = {16'sd0, 16'sd1000};
       repeat (2000) begin
          @(posedge clk);
-         if (strobe && ($signed(tx_i[WIDTH-1:WIDTH-16]) !== 16'sd0))
+         if (strobe && ($signed(tx_i[WIDTH-1:WIDTH-16]) < -16'sd1 ||
+                        $signed(tx_i[WIDTH-1:WIDTH-16]) >  16'sd0))
            zero_bad = zero_bad + 1;
       end
       settle( 16'sd1000,  16'sd0,    i_only, got_q);
@@ -155,16 +141,19 @@ module tb_duc_chain;
 
       check(strobes > 0,          "TX chain emits strobes");
       check(i_only !== 16'sd0,    "I-only input produces an I output");
-      check(zero_bad === 0,       "Q-only input leaves I at zero on every strobe (no leakage offset)");
-      check(zero_i === 16'sd0,    "zero input leaves I at zero (no idle offset)");
-      check(zero_q === 16'sd0,    "zero input leaves Q at zero (no idle offset)");
-      check(got_q === 16'sd0,     "I-only input leaves Q at zero");
-      check(got_i === 16'sd0,     "Q-only input leaves I at zero");
+      check(zero_bad === 0,       "Q-only input leaves I at its idle value on every strobe");
+      check(zero_i >= -16'sd1 && zero_i <= 16'sd0, "zero input leaves I within the CORDIC's one count");
+      check(zero_q >= -16'sd1 && zero_q <= 16'sd0, "zero input leaves Q within the CORDIC's one count");
+      check(got_q >= -16'sd1 && got_q <= 16'sd0,   "I-only input leaves Q at its idle value");
+      check(got_i >= -16'sd1 && got_i <= 16'sd0,   "Q-only input leaves I at its idle value");
+      // 1000 in, gain 0.99925 (CORDIC 1.64676 against UHD's 1.648)
+      check(i_only >= 16'sd998 && i_only <= 16'sd1000, "unity gain at the scale UHD writes");
+      check(q_only >= 16'sd998 && q_only <= 16'sd1000, "unity gain on Q at the scale UHD writes");
       check(q_only !== 16'sd0,    "Q-only input produces a Q output");
       check(minus_i < 0,          "negative input gives a negative output");
       check(i_only > 0,           "sign of the I output follows the input");
 
-      if (errors == 0) $display("PASS: duc_chain output path and I/Q independence (12 checks)");
+      if (errors == 0) $display("PASS: duc_chain output path, I/Q independence and unity gain (17 checks)");
       else             $display("FAIL: %0d errors", errors);
       $finish;
    end

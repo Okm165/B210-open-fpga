@@ -74,7 +74,7 @@ module tb_phase;
          @(negedge clk); rst = 0;
          repeat (8) @(posedge clk);
          wr(8'd0, 32'd0);                       // LO at DC
-         wr(8'd1, 32'h0000_8000);               // scale unity
+         wr(8'd1, 32'd39767);                   // the scale UHD writes (CIC rates 1, 2, 4)
          wr(8'd2, ({2'b00, hb} << 8) | rate);   // {hb1,hb2,rate}
          sample = 0; run = 0;
          repeat (200) @(posedge clk);
