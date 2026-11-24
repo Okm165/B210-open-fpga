@@ -944,3 +944,56 @@ tile to diff.
 
 No claim beyond this: DOD is not met, and the failure is now narrowed to the
 reference-clock input of the MMCM with two concrete, checkable hypotheses.
+
+## 43. INSTRUMENT CORRECTION: GET_COUNTERS byte 24 is NOT a liveness indicator (2026-11-23)
+
+Measured today with a clean negative control:
+
+    vendor image:      CTR 5 5 -> 6 6 -> 7 7 -> 8 8   (increments ~1/s)
+    our dead b200_80:  CTR 3 3 -> 4 4 -> 5 5          (increments identically)
+
+GET_COUNTERS byte 24/52 is a free-running timer that increments on EVERY
+configured image.  Section 31's claim ("vendor=5 alive, ours=3 static,
+validated 5->3 by disabling the IFCLK OLOGIC") is wrong - the 5-vs-3 values
+were just readings taken at different times after configuration.  Every
+"counter stayed 3 = PCLK static" verdict in sections 41 and 42 and in today's
+row-level experiments is therefore UNSUPPORTED by that instrument; only the
+drain column of those experiments stands:
+
+    | image                          | drain          |
+    |--------------------------------|----------------|
+    | vendor_ref.bin                 | 8 MB @ 12.8 MB/s ALIVE |
+    | b200_80 baseline               | 1024 B stall DEAD |
+    | + 33x IOB_COL_BANK_ACTIVE      | 1024 DEAD |
+    | + OBUF_HP_BANK_GLUE            | 1024 DEAD |
+    | - MMCM CLKINSEL route          | 1024 DEAD |
+    | CK_IN10 -> CK_IN0 (+ACTIVE/USED)| 1024 DEAD |
+    | - MMCM_RST route               | 1024 DEAD |
+    | - bogus CLKFBIN route          | 1024 DEAD |
+    | vendor MMCME2_ADV params grafted | 1024 DEAD |
+    | vendor IO+CMT column frames grafted (96 frames) | 1024 DEAD |
+
+The last row is the strongest: grafting the vendor's ENTIRE right IO/clock
+column frame block (all 42 frames incl. every GPIF pin tile, the IFCLK
+OLOGIC, the AA17 IBUFDS tile) plus the CMT column (MMCM + its parameter bits)
+into our design's frames leaves the drain dead.  The handshake failure is
+therefore NOT localized to the IO column, the CMT, or their glue rows - it is
+consistent with the FPGA-side GPIF logic never engaging (fabric clock/reset
+domain, cf. the section-32 long-line routing defect), or with tiles outside
+the grafted columns.
+
+Also verified today (facts that stand regardless of the counter):
+- Package-pin mapping AA17 -> die pad X236Y335 -> fabric RIOB18_X95Y27 is
+  CORRECT (chipdb string table agrees with tilegrid grid coords, and the
+  vendor's only IBUFDS/IBUFDS_BANK_GLUE tile is exactly there).  The section-42
+  "wrong pad" hypothesis is dead.
+- vendor.fasm is INCOMPLETE for the CMT: the vendor's MMCM-output pips are
+  set bits with no feature name in the open DB (127 unmapped bit diffs in the
+  CMT tile).  Row-level comparison against the vendor is unreliable inside the
+  CMT; frame-level comparison is required (done above).
+- GET_LOG (0x23) is readable and shows fw stop/start + DMA config per load;
+  it does not record drain abort reasons.
+
+Instruments that remain valid: drain throughput (deterministic: vendor drains,
+every design of ours stalls at exactly 1024 B), the loader's own drain report,
+GET_LOG, and frame-level grafting with knockout controls.
