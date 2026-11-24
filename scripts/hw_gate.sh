@@ -55,8 +55,13 @@
 #               lost nothing either.  Two counted runs per mode pass it.  If
 #               the host never stays quiet long enough the gate stops as
 #               inconclusive (exit 3), which is not a pass.  WAIT_QUIET=<s>
-#               waits up to that long for the host's load average to drop
-#               below QUIET_LOAD (4) before this step starts.
+#               waits up to that long for the host to be quiet before this
+#               step starts: quiet means the kernel's pressure stall
+#               information for CPU (/proc/pressure/cpu, "some") is below
+#               QUIET_PSI (10) percent of the time over the last 10 s, which
+#               is what a real-time USB reader is exposed to; with no PSI in
+#               the kernel it falls back to a load average below QUIET_LOAD
+#               (4), which is scale-dependent and counts blocked I/O.
 #
 #               Every run, the vendor's included, uses UHD's deep USB buffer
 #               pool (num_recv_frames / num_send_frames, see BUF16/BUF12):
@@ -212,10 +217,16 @@ sed 's/^/  /' "$OUT/06-bus-margin.txt"
 
 echo "== throughput, each run between two runs of the vendor image =="
 [[ -x $BENCH ]] || fail throughput "no $BENCH (run scripts/toolchain.sh uhd)"
-quiet() { awk -v max="${QUIET_LOAD:-4}" '{exit !($1 < max)}' /proc/loadavg; }
+quiet() {
+  if [[ -r /proc/pressure/cpu ]]; then
+    awk -v max="${QUIET_PSI:-10}" '/^some/ {split($2,a,"="); exit !(a[2] < max)}' /proc/pressure/cpu
+  else
+    awk -v max="${QUIET_LOAD:-4}" '{exit !($1 < max)}' /proc/loadavg
+  fi
+}
 DEADLINE=$((SECONDS + ${WAIT_QUIET:-0}))
 until quiet || (( SECONDS >= DEADLINE )); do sleep 20; done
-echo "  host load average $(cut -d' ' -f1 /proc/loadavg)"
+echo "  host load average $(cut -d' ' -f1 /proc/loadavg), CPU pressure $(sed -n 's/^some avg10=\([0-9.]*\) .*/\1 %/p' /proc/pressure/cpu 2>/dev/null || echo unknown)"
 # 512 x 16360 B = 8.4 MB receive and 256 x 16360 B = 4.2 MB transmit of
 # queued USB buffers (UHD's limit is 16360 B per frame; usbfs allows 16 MB).
 # 16360 / 4 = 4090 samples per packet for 16-bit data and 12264 / 3 = 4088 for
