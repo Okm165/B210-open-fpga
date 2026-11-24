@@ -879,3 +879,36 @@ Verified: the consolidated script reproduces the last diag_ring13 build
 byte-identically (fasm diff 0 lines). The deleted scripts remain in git
 history; the experiments they record are documented in §1-§39 above, and the
 designs themselves (src/top/diag_*.v) are kept as the evidence artifacts.
+
+## 41. The PCLK silence is a clock-input routing defect in the flow (row-level evidence)
+
+Our full 2R2T design (b200_80) configures but PCLK stays static (counter 3,
+drain 1024), while its IFCLK OLOGIC rows are structurally the vendor's
+(ODDR + IS_D2_INVERTED + D1/D2 muxes). This round eliminated the downstream
+suspects and found the input-side defect by comparing rows with the vendor:
+
+| check | ours | vendor | verdict |
+|---|---|---|---|
+| GCLK spine ENABLE rows for the used clock | present on every segment (above+below) | subset | ours is a superset -> not the cause |
+| HCLK_CMT `BUFHCLK<n>_USED` markers | set | absent | not the cause |
+| `IOB_COL_BANK_ACTIVE` (33 rows on INT_R_X95*) | **missing** | present | added; **no change** (measured) |
+| `OBUF_HP_BANK_GLUE` on the IFCLK pad | **missing** | present | added; **no change** (measured) |
+| MMCM CLKINSEL route | routed from `CMT_TOP_IMUX0_2` | absent (default) | removed; **no change** (measured) |
+| CMT reference input (`HCLK_CMT_L_X228Y26`) | `CK_IN10 <- CCIO0`, `CK_IN0 <- MUX_CLK_MMCM11`, no `CCIO*_ACTIVE/_USED` | `CK_IN0 <- CCIO0`, `CK_IN2 <- MUX_CLK_MMCM11`, `CCIO0/1_ACTIVE+_USED` | **different topology** |
+| clock-capable input region (HCLK_IOI_X235Y26) | `ONLY_DIFF_IN_USE`, IGCLK0 <- BUFHCLK0 | `BUFR_Y1.IN_USE` (D2), `RCLK0` + IGCLK11 <- BUFHCLK11 | **different topology** |
+
+Both designs are the same RTL, same MMCM tile (CMT_TOP_L_LOWER_B_X228Y9),
+same pin (AA17, confirmed by the vendor's own LVDS rows at RIOB18_X95Y27).
+The vendor's reference arrives on CMT clock-input line 0 (CCIO0) with the
+CCIO active/used markers set; our engine routes it on line 10 without those
+markers, and uses a different HCLK_IOI region topology (no BUFR).
+
+Conclusion: the board silence is consistent with the MMCM never receiving its
+40 MHz reference - a clock-input *routing* defect in our flow, not a config
+value. It explains every "configures but never answers" measurement in §3,
+and it is the same class cavearr fixed upstream for the spine (#222).
+
+Next: either a fixed nextpnr build with the CMT input routing corrected, or a
+Vivado golden diff of this exact net (the file to compare is
+HCLK_CMT_L_X228Y26 + CMT_TOP_L_LOWER_B_X228Y9). Everything else in the design
+is now measured as matching the vendor where it matters.
