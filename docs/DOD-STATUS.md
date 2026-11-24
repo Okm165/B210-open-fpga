@@ -1196,3 +1196,76 @@ fix), not more design permutations.
 2. Apply Dotncom's RIOI_X95Y109/RIOB18_X95Y27 FASM edits to our build.
 3. If either revives IFCLK (control channel answers), then evaluate CTL/DQ
    timing per kingjamez before declaring victory.
+
+## 49. ROOT CAUSES FOUND: two tool defects on the HP bank; first working images from our flow (2026-11-24)
+
+Everything our flow ever produced was dead on the GPIF for two independent
+reasons, both in the tools, both on bank 34 (HP, 1.8 V, RIOB18/RIOI tiles),
+neither in the RTL, the clock spine, the DB, or the FX3.
+
+### Defect 1 - nextpnr: tristate sense inverted on HP-bank pads
+`himbaechel/uarch/xilinx/fasm.cc`: without `OLOGIC_Y<n>.ZINV_T1` the OLOGIC
+inverts T.  The rule that writes it when the pad's tristate is driven through
+the OLOGIC (keyed on the pad-side pip, needed with router2) exists only for
+`LIOI3/RIOI3` (HR banks); the `RIOI` (HP) block never got it.  Evidence:
+vendor image sets ZINV_T1 on 42 of 42 pads with a routed T; ours set it on 0
+while routing T on 34-42 pads.  Effect: an OBUFT with T=0 is tri-stated, and
+every bidirectional pad (GPIF_D[31:0]) drives exactly when it must release.
+Fix: one pseudo-pip entry for RIOI, `container/patches/nextpnr-rioi-zinv-t1.patch`
+(applies to openXC7/nextpnr main be38ec6).  Not reported upstream by us.
+
+### Defect 2 - our fasm2frames: injected "HP bank glue" bypasses every ODDR
+The image's fasm2frames adds `RIOB18.IOB_Y<n>.OBUF_HP_BANK_GLUE` to every
+HP-bank pad with a DRIVE feature.  Those three bits are the neighbouring
+OLOGIC's OQUSED, DATA_RATE_TQ.BUF and OMUX.D1 (openXC7/nextpnr#79).  On a pad
+whose OLOGIC holds an ODDR, OMUX.D1 selects the combinational bypass: the pad
+outputs the constant on D1, not the register.  The forwarded IFCLK is an ODDR,
+so PCLK was static in every MMCM/BUFG->ODDR build - the original symptom of
+upstream #222.  Found by a bit-level diff of one tile against the true vendor
+frames, then by assembling the tile's fasm lines one at a time.
+Fix: `scripts/assemble.sh` disables that injection (nextpnr already writes
+those bits itself for a plain output).  Also note: the image's prjxray is not
+what `container/prjxray.Dockerfile` pins (f4pga ed3331c has no glue code) -
+the image has drifted from its recipe.
+
+### Measured (fx3_raw_load: full FX3 reboot per image; host bulk OUT on EP 0x02)
+`src/top/diag_rd.v`: one protocol-legal reader (thread 0, one word per 8 PCLK
+while the FX3 ready flag is high), three clock paths.
+
+| image | fixes | drained |
+|---|---|---|
+| vendor_ref | - | 8 MB @ 12.7 MB/s |
+| diag_rd MODE=0 (BUFG, IFCLK=~clk through fabric) | none needed | **8 MB @ 12.6 MB/s** |
+| diag_rd MODE=1 (IFCLK = ODDR from the BUFG) | none | 1024 B (dead) |
+| same + 7 fasm variants (SR off, full spine ACTIVE, vendor-shaped ODDR, vendor clock line 11/leaf 5, BUFR bypass) | none | 1024 B each |
+| diag_rd MODE=1 | defect 2 fixed | **8 MB @ 11.8 MB/s** |
+| diag_rd MODE=2 (MMCM 100 MHz, reader gated by `locked`, ODDR IFCLK) | defect 2 fixed | **8 MB @ 11.9 MB/s** |
+| diag_drain40 / diag_drain_t (pads via OBUFT T=0) | none | 1024 B, FX3 silent |
+| same | ZINV_T1 added in fasm | FX3 flooded, drops off USB (pads now drive) |
+
+So on silicon, from our flow: IBUFDS, BUFG, spine (with NO extra ACTIVE rows),
+BUFHCE, HCLK_IOI leaf, ODDR, MMCM lock, fabric FFs, HP-bank inputs and outputs
+all work.  The crossed-row GCLK ACTIVE bit (upstream #226 / PR #228) is not
+needed on this board for this path.
+
+### New instruments (stock firmware, nothing modified)
+- `scripts/fx3_diag.py`: GET_LOG + GET_COUNTERS decoded from b200_main.c.
+  Every PIB/GPIF error interrupt is a log line, and only a clocked GPIF can
+  raise one.  It also explains the old "liveness counter": byte 24 is
+  dma_to_host.ABORTED, bumped by each set_configuration() of the probe itself.
+- `scripts/ctrl_peek.py`: raw VRT register peek (EP4 / EP 0x88).
+- `scripts/fast_test.py`: fasm patch -> bin -> board, no PnR.
+- `scripts/build_diag.sh` + `scripts/assemble.sh`: one build path (29 s for a
+  ladder rung), used for the full design too.
+
+### Earlier conclusions that are VOID (and why)
+| section | claim | why it is void |
+|---|---|---|
+| 31, 44 | plain OBUF leaves T high-Z; use OBUFT(T=0) | backwards: plain OBUF is correct (matches Vivado); OBUFT(T=0) is what defect 1 tri-states.  Workaround removed from b200_80.v |
+| 31 | counter byte 24: 5 = alive, 3 = static | it counts the probe's own reconfigurations |
+| 32 | long-line network unroutable | LH6/LV9 are mid-taps; fabric routing works (MODE=0 proves it) |
+| 38 | fabric->pad arrival proven by ring13 graft | graft only replaced a vendor source with an undriven wire |
+| 43, 47 | vendor IO/CMT/clock tiles grafted onto our fabric still dead => fault is in our fabric | dead by construction (vendor muxes select wires our fabric does not drive); also used frames re-assembled from an incomplete fasm |
+| 44 | 22 dangling pad-input muxes | scan bug: IMUX*_1 comes from the INT tile one row up; an unrouted OLOGIC input is a legal constant |
+| 44, 48 | atomic drain designs all dead => not clock-related | all drove IFCLK or strobes through OBUFT(T=0) (defect 1), read the wrong thread, or (diag_drain) never built |
+| 45-46 | spine ACTIVE patch tested, insufficient | tested only on images already dead from defects 1+2 |

@@ -1,0 +1,20 @@
+diff --git a/himbaechel/uarch/xilinx/fasm.cc b/himbaechel/uarch/xilinx/fasm.cc
+index 58fec30..f369433 100644
+--- a/himbaechel/uarch/xilinx/fasm.cc
++++ b/himbaechel/uarch/xilinx/fasm.cc
+@@ -153,6 +153,15 @@ void xlnx_build_pseudo_pip_config(Context *ctx, dict<PseudoPipKey, std::vector<s
+             }
+             pp_config[{ctx->id("RIOI" + s2), ctx->id("RIOI_OLOGIC" + i + "_TQ"),
+                        ctx->id("IOI_OLOGIC" + i + "_T1")}] = {"OLOGIC_Y" + i + ".ZINV_T1"};
++            // Same rule as the IOI3 block above, for the 1.8V (HP) column: with
++            // router2 the T1->TQ transit is internal to the bel, so the entry
++            // above never fires and the pad's output enable comes out inverted
++            // (a T tied low tri-states the pad; a real tristate drives exactly
++            // when it should release).  The pad-side pip is present precisely
++            // when OLOGIC drives the pad's tristate.  Vivado sets ZINV_T1 on
++            // every such pad of an HP bank (B210 bank 34: 42 of 42).
++            pp_config[{ctx->id("RIOI" + s2), ctx->id("RIOI_T" + i),
++                       ctx->id("RIOI_OLOGIC" + i + "_TQ")}] = {"OLOGIC_Y" + i + ".ZINV_T1"};
+             pp_config[{ctx->id("RIOI" + s2), ctx->id("RIOI_OLOGIC" + i + "_OFB"),
+                        ctx->id("RIOI_ODELAY" + i + "_ODATAIN")}] = {"OLOGIC_Y" + i + ".ZINV_ODATAIN"};
+             if (i == "0") {
