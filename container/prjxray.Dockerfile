@@ -8,17 +8,21 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG JOBS=32
-# Pinned validated revision.
-ARG PRJXRAY_REV=ed3331c6200f421164101388759fc2860b0f5634
+# openXC7's fork: it carries the HP-bank (1.8 V) I/O handling the Kintex-7
+# flow needs, and from 658b304 on it no longer forces the OLOGIC bypass on a
+# pad whose OLOGIC holds a register (which kept every ODDR output static).
+ARG PRJXRAY_REV=6dabf706681c604ce7cc4f6f8e99fe8a15c0a91d
 
-RUN git init prjxray \
+# The network steps are retried: a dropped connection to the source host
+# must not decide whether the image builds.
+RUN retry() { for n in 1 2 3 4 5 6; do "$@" && return 0; sleep $((n * 15)); done; return 1; } \
+ && git init prjxray \
  && cd prjxray \
- && git remote add origin https://github.com/f4pga/prjxray.git \
- && git fetch --depth 1 origin "${PRJXRAY_REV}" \
+ && git remote add origin https://github.com/openXC7/prjxray.git \
+ && retry git fetch --depth 1 origin "${PRJXRAY_REV}" \
  && git checkout --detach FETCH_HEAD \
- && git submodule update --init --depth 1 \
+ && retry git submodule update --init --depth 1 \
       third_party/abseil-cpp \
-      third_party/cctz \
       third_party/gflags \
       third_party/googletest \
       third_party/yaml-cpp \
@@ -31,10 +35,14 @@ RUN git init prjxray \
  && cmake --build build --parallel "${JOBS}" \
  && cmake --install build
 
-RUN python3 -m venv "${FPGA_HOME}/venv" \
- && "${FPGA_HOME}/venv/bin/pip" install \
+# pip retries by itself; a build dependency it fetches in a sub-process
+# (cython, for fasm) does not inherit that, hence the outer retry as well.
+ENV PIP_RETRIES=8 PIP_DEFAULT_TIMEOUT=60
+RUN retry() { for n in 1 2 3 4 5 6; do "$@" && return 0; sleep $((n * 15)); done; return 1; } \
+ && python3 -m venv "${FPGA_HOME}/venv" \
+ && retry "${FPGA_HOME}/venv/bin/pip" install \
       pip==26.3 setuptools==84.2.1 wheel==0.48.0 \
- && "${FPGA_HOME}/venv/bin/pip" install \
+ && retry "${FPGA_HOME}/venv/bin/pip" install \
       fasm==0.0.2.post88 \
       intervaltree==3.2.1 \
       numpy==2.5.5 \
@@ -45,7 +53,6 @@ RUN python3 -m venv "${FPGA_HOME}/venv" \
       sortedcontainers==2.4.0 \
       textx==4.4.0 \
  && cd /src/prjxray \
- && sed -i "s/packages=\['prjxray'\]/packages=['prjxray', 'utils']/" setup.py \
  && "${FPGA_HOME}/venv/bin/pip" install --no-deps . \
  && "${FPGA_HOME}/venv/bin/fasm2frames" --help >/dev/null \
  && rm -rf /src/prjxray

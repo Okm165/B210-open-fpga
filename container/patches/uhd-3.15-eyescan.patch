@@ -1,0 +1,793 @@
+UHD 3.15 (ea137aa3) as the measuring instrument of scripts/eyescan.sh and
+scripts/sample_check.py.
+
+  * Build fixes for a current compiler and boost (asio and rpclib API use).
+  * UHD_AD936X_EYESCAN: ad936x_manager::loopback_self_test runs the codec
+    loopback over every clock/data delay of AD9361 registers 0x006/0x007
+    and prints one EYE line per setting.
+  * UHD_AD936X_BIST=<value>: written to the AD9361 BIST register 0x3F4
+    whenever the active chains are set (0x1B: digital test tone at fs/32,
+    -6 dBFS, on the receive data port; 0x09: pseudo-random sequence there).
+  * UHD_AD936X_LOOPBACK: digital loopback of the transmit data port onto
+    the receive data port (register 0x3F5).
+Without these variables the library behaves as stock.
+
+Applied and built by `scripts/toolchain.sh uhd`.
+
+diff --git a/host/examples/network_relay.cpp b/host/examples/network_relay.cpp
+index 9a9f56e..98c0c15 100644
+--- a/host/examples/network_relay.cpp
++++ b/host/examples/network_relay.cpp
+@@ -79,8 +79,8 @@ public:
+     {
+         {
+             asio::ip::udp::resolver resolver(_io_service);
+-            asio::ip::udp::resolver::query query(asio::ip::udp::v4(), server_addr, port);
+-            asio::ip::udp::endpoint endpoint = *resolver.resolve(query);
++            auto query = resolver.resolve(asio::ip::udp::v4(), server_addr, port);
++            asio::ip::udp::endpoint endpoint = *query.begin();
+ 
+             _server_socket = boost::shared_ptr<asio::ip::udp::socket>(
+                 new asio::ip::udp::socket(_io_service, endpoint));
+@@ -88,8 +88,8 @@ public:
+         }
+         {
+             asio::ip::udp::resolver resolver(_io_service);
+-            asio::ip::udp::resolver::query query(asio::ip::udp::v4(), client_addr, port);
+-            asio::ip::udp::endpoint endpoint = *resolver.resolve(query);
++            auto query = resolver.resolve(asio::ip::udp::v4(), client_addr, port);
++            asio::ip::udp::endpoint endpoint = *query.begin();
+ 
+             _client_socket = boost::shared_ptr<asio::ip::udp::socket>(
+                 new asio::ip::udp::socket(_io_service));
+@@ -173,7 +173,7 @@ private:
+ 
+     const std::string _port;
+     boost::thread_group _thread_group;
+-    asio::io_service _io_service;
++    asio::io_context _io_service;
+     asio::ip::udp::endpoint _endpoint;
+     boost::mutex _endpoint_mutex;
+     socket_type _server_socket, _client_socket;
+diff --git a/host/include/uhd/transport/nirio/rpc/rpc_client.hpp b/host/include/uhd/transport/nirio/rpc/rpc_client.hpp
+index 80ba203..f146dd5 100644
+--- a/host/include/uhd/transport/nirio/rpc/rpc_client.hpp
++++ b/host/include/uhd/transport/nirio/rpc/rpc_client.hpp
+@@ -67,7 +67,7 @@ private:
+     }
+ 
+     // Services
+-    boost::asio::io_service _io_service;
++    boost::asio::io_context _io_service;
+     boost::scoped_ptr<boost::thread> _io_service_thread;
+     boost::asio::ip::tcp::socket _socket;
+     // Handshake info
+diff --git a/host/lib/CMakeLists.txt b/host/lib/CMakeLists.txt
+index 073fffa..cb433dd 100644
+--- a/host/lib/CMakeLists.txt
++++ b/host/lib/CMakeLists.txt
+@@ -71,11 +71,11 @@ LIBUHD_REGISTER_COMPONENT("USRP1" ENABLE_USRP1 ON "ENABLE_LIBUHD;ENABLE_USB" OFF
+ LIBUHD_REGISTER_COMPONENT("USRP2" ENABLE_USRP2 ON "ENABLE_LIBUHD" OFF OFF)
+ LIBUHD_REGISTER_COMPONENT("X300" ENABLE_X300 ON "ENABLE_LIBUHD" OFF OFF)
+ LIBUHD_REGISTER_COMPONENT("N230" ENABLE_N230 ON "ENABLE_LIBUHD" OFF OFF)
+-LIBUHD_REGISTER_COMPONENT("MPMD" ENABLE_MPMD ON "ENABLE_LIBUHD" OFF OFF)
+-LIBUHD_REGISTER_COMPONENT("N300" ENABLE_N300 ON "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
+-LIBUHD_REGISTER_COMPONENT("N320" ENABLE_N320 ON "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
+-LIBUHD_REGISTER_COMPONENT("E320" ENABLE_E320 ON "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
+-LIBUHD_REGISTER_COMPONENT("E300" ENABLE_E300 ON "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
++LIBUHD_REGISTER_COMPONENT("MPMD" ENABLE_MPMD OFF "ENABLE_LIBUHD" OFF OFF)
++LIBUHD_REGISTER_COMPONENT("N300" ENABLE_N300 OFF "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
++LIBUHD_REGISTER_COMPONENT("N320" ENABLE_N320 OFF "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
++LIBUHD_REGISTER_COMPONENT("E320" ENABLE_E320 OFF "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
++LIBUHD_REGISTER_COMPONENT("E300" ENABLE_E300 OFF "ENABLE_LIBUHD;ENABLE_MPMD" OFF OFF)
+ LIBUHD_REGISTER_COMPONENT("OctoClock" ENABLE_OCTOCLOCK ON "ENABLE_LIBUHD" OFF OFF)
+ LIBUHD_REGISTER_COMPONENT("DPDK" ENABLE_DPDK ON "ENABLE_MPMD;DPDK_FOUND" OFF OFF)
+ 
+diff --git a/host/lib/deps/0002-rpclib-use-the-real-boost-asio-namespace.patch b/host/lib/deps/0002-rpclib-use-the-real-boost-asio-namespace.patch
+index 01577ab..eb540bf 100644
+--- a/host/lib/deps/0002-rpclib-use-the-real-boost-asio-namespace.patch
++++ b/host/lib/deps/0002-rpclib-use-the-real-boost-asio-namespace.patch
+@@ -31,7 +31,7 @@ index c3ecb02..a44cd29 100644
+  public:
+ -    async_writer(RPCLIB_ASIO::io_service *io,
+ -                 RPCLIB_ASIO::ip::tcp::socket socket)
+-+    async_writer(boost::asio::io_service *io,
+++    async_writer(boost::asio::io_context *io,
+ +                 boost::asio::ip::tcp::socket socket)
+          : socket_(std::move(socket)), write_strand_(*io), exit_(false) {}
+  
+@@ -86,7 +86,7 @@ index 3b96d7d..963b082 100644
+  public:
+ -    server_session(server *srv, RPCLIB_ASIO::io_service *io,
+ -                   RPCLIB_ASIO::ip::tcp::socket socket,
+-+    server_session(server *srv, boost::asio::io_service *io,
+++    server_session(server *srv, boost::asio::io_context *io,
+ +                   boost::asio::ip::tcp::socket socket,
+                     std::shared_ptr<dispatcher> disp, bool suppress_exceptions);
+      void start();
+@@ -97,7 +97,7 @@ index 3b96d7d..963b082 100644
+      server* parent_;
+ -    RPCLIB_ASIO::io_service *io_;
+ -    RPCLIB_ASIO::strand read_strand_;
+-+    boost::asio::io_service *io_;
+++    boost::asio::io_context *io_;
+ +    boost::asio::strand read_strand_;
+      std::shared_ptr<dispatcher> disp_;
+      RPCLIB_MSGPACK::unpacker pac_;
+@@ -170,7 +170,7 @@ index e5d0117..ef9048b 100644
+      client *parent_;
+ -    RPCLIB_ASIO::io_service io_;
+ -    RPCLIB_ASIO::strand strand_;
+-+    boost::asio::io_service io_;
+++    boost::asio::io_context io_;
+ +    boost::asio::strand strand_;
+      std::atomic<int> call_idx_; /// The index of the last call made
+      std::unordered_map<uint32_t, call_t> ongoing_calls_;
+@@ -185,7 +185,7 @@ index 15239da..79cfd09 100644
+  
+ -server_session::server_session(server *srv, RPCLIB_ASIO::io_service *io,
+ -                               RPCLIB_ASIO::ip::tcp::socket socket,
+-+server_session::server_session(server *srv, boost::asio::io_service *io,
+++server_session::server_session(server *srv, boost::asio::io_context *io,
+ +                               boost::asio::ip::tcp::socket socket,
+                                 std::shared_ptr<dispatcher> disp,
+                                 bool suppress_exceptions)
+diff --git a/host/lib/deps/import_rpclib.py b/host/lib/deps/import_rpclib.py
+index e30b167..3b626d5 100755
+--- a/host/lib/deps/import_rpclib.py
++++ b/host/lib/deps/import_rpclib.py
+@@ -30,7 +30,7 @@ REPLACE_EXPR = [
+     ("RPCLIB_ASIO", "boost::asio"),
+     ("\"asio.hpp\"", "<boost/asio.hpp>"),
+     ("std::error_code", "boost::system::error_code"),
+-    ("boost::asio::strand", "boost::asio::io_service::strand"),
++    ("boost::asio::strand", "boost::asio::io_context::strand"),
+ ]
+ 
+ 
+diff --git a/host/lib/deps/rpclib/include/rpc/detail/async_writer.h b/host/lib/deps/rpclib/include/rpc/detail/async_writer.h
+index 1e17f12..c162fb9 100644
+--- a/host/lib/deps/rpclib/include/rpc/detail/async_writer.h
++++ b/host/lib/deps/rpclib/include/rpc/detail/async_writer.h
+@@ -19,7 +19,7 @@ namespace detail {
+ //! \brief Common logic for classes that have a write queue with async writing.
+ class async_writer : public std::enable_shared_from_this<async_writer> {
+ public:
+-    async_writer(boost::asio::io_service *io,
++    async_writer(boost::asio::io_context *io,
+                  boost::asio::ip::tcp::socket socket)
+         : socket_(std::move(socket)), write_strand_(*io), exit_(false) {}
+ 
+@@ -69,7 +69,7 @@ public:
+ 
+ protected:
+     boost::asio::ip::tcp::socket socket_;
+-    boost::asio::io_service::strand write_strand_;
++    boost::asio::io_context::strand write_strand_;
+     std::atomic_bool exit_{false};
+     bool exited_ = false;
+     std::mutex m_exit_;
+diff --git a/host/lib/deps/rpclib/include/rpc/detail/server_session.h b/host/lib/deps/rpclib/include/rpc/detail/server_session.h
+index 754c087..513da3d 100644
+--- a/host/lib/deps/rpclib/include/rpc/detail/server_session.h
++++ b/host/lib/deps/rpclib/include/rpc/detail/server_session.h
+@@ -22,7 +22,7 @@ namespace detail {
+ 
+ class server_session : public async_writer {
+ public:
+-    server_session(server *srv, boost::asio::io_service *io,
++    server_session(server *srv, boost::asio::io_context *io,
+                    boost::asio::ip::tcp::socket socket,
+                    std::shared_ptr<dispatcher> disp, bool suppress_exceptions);
+     void start();
+@@ -34,8 +34,8 @@ private:
+ 
+ private:
+     server* parent_;
+-    boost::asio::io_service *io_;
+-    boost::asio::io_service::strand read_strand_;
++    boost::asio::io_context *io_;
++    boost::asio::io_context::strand read_strand_;
+     std::shared_ptr<dispatcher> disp_;
+     RPCLIB_MSGPACK::unpacker pac_;
+     RPCLIB_MSGPACK::sbuffer output_buf_;
+diff --git a/host/lib/deps/rpclib/lib/rpc/client.cc b/host/lib/deps/rpclib/lib/rpc/client.cc
+index 1b366e4..6daa83b 100644
+--- a/host/lib/deps/rpclib/lib/rpc/client.cc
++++ b/host/lib/deps/rpclib/lib/rpc/client.cc
+@@ -41,11 +41,11 @@ struct client::impl {
+         pac_.reserve_buffer(default_buffer_size);
+     }
+ 
+-    void do_connect(tcp::resolver::iterator endpoint_iterator) {
++    void do_connect(tcp::resolver::results_type endpoints) {
+         LOG_INFO("Initiating connection.");
+         boost::asio::async_connect(
+-            writer_->socket_, endpoint_iterator,
+-            [this](boost::system::error_code ec, tcp::resolver::iterator) {
++            writer_->socket_, endpoints,
++            [this](boost::system::error_code ec, tcp::endpoint) {
+                 std::unique_lock<std::mutex> lock(mut_connection_finished_);
+                 if (!ec) {
+                     LOG_INFO("Client connected to {}:{}", addr_, port_);
+@@ -92,7 +92,7 @@ struct client::impl {
+                             std::get<1>(current_call)
+                                 .set_exception(std::current_exception());
+                         }
+-                        strand_.post(
++                        boost::asio::post(strand_, 
+                             [this, id]() { ongoing_calls_.erase(id); });
+                     }
+ 
+@@ -135,8 +135,8 @@ struct client::impl {
+         std::pair<std::string, std::promise<RPCLIB_MSGPACK::object_handle>>;
+ 
+     client *parent_;
+-    boost::asio::io_service io_;
+-    boost::asio::io_service::strand strand_;
++    boost::asio::io_context io_;
++    boost::asio::io_context::strand strand_;
+     std::atomic<int> call_idx_; /// The index of the last call made
+     std::unordered_map<uint32_t, call_t> ongoing_calls_;
+     std::string addr_;
+@@ -156,7 +156,7 @@ client::client(std::string const &addr, uint16_t port)
+     : pimpl(new client::impl(this, addr, port)) {
+     tcp::resolver resolver(pimpl->io_);
+     auto endpoint_it =
+-        resolver.resolve({pimpl->addr_, std::to_string(pimpl->port_)});
++        resolver.resolve(pimpl->addr_, std::to_string(pimpl->port_));
+     pimpl->do_connect(endpoint_it);
+     std::thread io_thread([this]() {
+         RPCLIB_CREATE_LOG_CHANNEL(client)
+@@ -181,7 +181,7 @@ int client::get_next_call_idx() {
+ void client::post(std::shared_ptr<RPCLIB_MSGPACK::sbuffer> buffer, int idx,
+                   std::string const &func_name,
+                   std::shared_ptr<rsp_promise> p) {
+-    pimpl->strand_.post([=]() {
++    boost::asio::post(pimpl->strand_, [=]() {
+         pimpl->ongoing_calls_.insert(
+             std::make_pair(idx, std::make_pair(func_name, std::move(*p))));
+         pimpl->write(std::move(*buffer));
+@@ -189,7 +189,7 @@ void client::post(std::shared_ptr<RPCLIB_MSGPACK::sbuffer> buffer, int idx,
+ }
+ 
+ void client::post(RPCLIB_MSGPACK::sbuffer *buffer) {
+-    pimpl->strand_.post([=]() {
++    boost::asio::post(pimpl->strand_, [=]() {
+         pimpl->write(std::move(*buffer));
+         delete buffer;
+     });
+diff --git a/host/lib/deps/rpclib/lib/rpc/detail/server_session.cc b/host/lib/deps/rpclib/lib/rpc/detail/server_session.cc
+index 3f1ed48..fd986e3 100644
+--- a/host/lib/deps/rpclib/lib/rpc/detail/server_session.cc
++++ b/host/lib/deps/rpclib/lib/rpc/detail/server_session.cc
+@@ -13,7 +13,7 @@ namespace detail {
+ 
+ static constexpr std::size_t default_buffer_size = rpc::constants::DEFAULT_BUFFER_SIZE;
+ 
+-server_session::server_session(server *srv, boost::asio::io_service *io,
++server_session::server_session(server *srv, boost::asio::io_context *io,
+                                boost::asio::ip::tcp::socket socket,
+                                std::shared_ptr<dispatcher> disp,
+                                bool suppress_exceptions)
+@@ -33,7 +33,7 @@ void server_session::start() { do_read(); }
+ void server_session::close() {
+     LOG_INFO("Closing session.");
+     exit_ = true;
+-    write_strand_.post([this]() { socket_.close(); });
++    boost::asio::post(write_strand_, [this]() { socket_.close(); });
+ }
+ 
+ void server_session::do_read() {
+@@ -54,7 +54,7 @@ void server_session::do_read() {
+ 
+                     // any worker thread can take this call
+                     auto z = std::shared_ptr<RPCLIB_MSGPACK::zone>(result.zone().release());
+-                    io_->post([
++                    boost::asio::post(*io_, [
+                         this, msg, z
+                     ]() {
+                         this_handler().clear();
+@@ -87,10 +87,10 @@ void server_session::do_read() {
+                         if (!resp.is_empty()) {
+ #ifdef _MSC_VER
+                             // doesn't compile otherwise.
+-                            write_strand_.post(
++                            boost::asio::post(write_strand_, 
+                                 [=]() { write(resp.get_data()); });
+ #else
+-                            write_strand_.post(
++                            boost::asio::post(write_strand_, 
+                                 [this, resp, z]() { write(resp.get_data()); });
+ #endif
+                         }
+@@ -99,14 +99,14 @@ void server_session::do_read() {
+                             LOG_WARN("Session exit requested from a handler.");
+                             // posting through the strand so this comes after
+                             // the previous write
+-                            write_strand_.post([this]() { exit_ = true; });
++                            boost::asio::post(write_strand_, [this]() { exit_ = true; });
+                         }
+ 
+                         if (this_server().stopping_) {
+                             LOG_WARN("Server exit requested from a handler.");
+                             // posting through the strand so this comes after
+                             // the previous write
+-                            write_strand_.post(
++                            boost::asio::post(write_strand_, 
+                                 [this]() { parent_->close_sessions(); });
+                         }
+                     });
+diff --git a/host/lib/deps/rpclib/lib/rpc/server.cc b/host/lib/deps/rpclib/lib/rpc/server.cc
+index 4facb93..d0638cb 100644
+--- a/host/lib/deps/rpclib/lib/rpc/server.cc
++++ b/host/lib/deps/rpclib/lib/rpc/server.cc
+@@ -25,7 +25,7 @@ struct server::impl {
+         : parent_(parent),
+           io_(),
+           acceptor_(io_,
+-                    tcp::endpoint(ip::address::from_string(address), port)),
++                    tcp::endpoint(ip::make_address(address), port)),
+           socket_(io_),
+           suppress_exceptions_(false) {}
+ 
+@@ -66,7 +66,7 @@ struct server::impl {
+     }
+ 
+     server *parent_;
+-    io_service io_;
++    io_context io_;
+     ip::tcp::acceptor acceptor_;
+     ip::tcp::socket socket_;
+     rpc::detail::thread_group loop_workers_;
+diff --git a/host/lib/include/uhdlib/usrp/common/ad9361_ctrl.hpp b/host/lib/include/uhdlib/usrp/common/ad9361_ctrl.hpp
+index e9da414..9100a59 100644
+--- a/host/lib/include/uhdlib/usrp/common/ad9361_ctrl.hpp
++++ b/host/lib/include/uhdlib/usrp/common/ad9361_ctrl.hpp
+@@ -140,6 +140,12 @@ public:
+     //! turn on/off Catalina's data port loopback
+     virtual void data_port_loopback(const bool on) = 0;
+ 
++    //! diagnostic: raw write of the digital interface delay registers 0x006/0x007
++    virtual void set_interface_delays(const uint8_t, const uint8_t)
++    {
++        throw uhd::runtime_error("set_interface_delays not supported");
++    }
++
+     //! read internal RSSI sensor
+     virtual sensor_value_t get_rssi(const std::string& which) = 0;
+ 
+diff --git a/host/lib/transport/if_addrs.cpp b/host/lib/transport/if_addrs.cpp
+index a1cb690..4c43c95 100644
+--- a/host/lib/transport/if_addrs.cpp
++++ b/host/lib/transport/if_addrs.cpp
+@@ -50,8 +50,8 @@ std::vector<uhd::transport::if_addrs_t> uhd::transport::get_if_addrs(void)
+                        == boost::asio::ip::address_v4(0)) {
+                 // manually calculate broadcast address
+                 // https://svn.boost.org/trac/boost/ticket/5198
+-                const uint32_t addr  = sockaddr_to_ip_addr(iter->ifa_addr).to_ulong();
+-                const uint32_t mask  = sockaddr_to_ip_addr(iter->ifa_netmask).to_ulong();
++                const uint32_t addr  = sockaddr_to_ip_addr(iter->ifa_addr).to_uint();
++                const uint32_t mask  = sockaddr_to_ip_addr(iter->ifa_netmask).to_uint();
+                 const uint32_t bcast = (addr & mask) | ~mask;
+                 if_addr.bcast        = boost::asio::ip::address_v4(bcast).to_string();
+             }
+diff --git a/host/lib/transport/nirio/rpc/rpc_client.cpp b/host/lib/transport/nirio/rpc/rpc_client.cpp
+index 3454e87..4590c41 100644
+--- a/host/lib/transport/nirio/rpc/rpc_client.cpp
++++ b/host/lib/transport/nirio/rpc/rpc_client.cpp
+@@ -75,7 +75,7 @@ rpc_client::rpc_client(const std::string& server,
+                 // Spawn a thread for the io_service callback handler. This thread will
+                 // run until rpc_client is destroyed.
+                 _io_service_thread.reset(new boost::thread(
+-                    boost::bind(&boost::asio::io_service::run, &_io_service)));
++                    boost::bind(&boost::asio::io_context::run, &_io_service)));
+             } else {
+                 UHD_LOGGER_DEBUG("NIRIO") << "rpc_client handshake failed.";
+                 _exec_err.assign(boost::asio::error::connection_refused,
+diff --git a/host/lib/transport/tcp_zero_copy.cpp b/host/lib/transport/tcp_zero_copy.cpp
+index 5cb7134..be0f74f 100644
+--- a/host/lib/transport/tcp_zero_copy.cpp
++++ b/host/lib/transport/tcp_zero_copy.cpp
+@@ -154,8 +154,8 @@ public:
+ 
+         // resolve the address
+         asio::ip::tcp::resolver resolver(_io_service);
+-        asio::ip::tcp::resolver::query query(asio::ip::tcp::v4(), addr, port);
+-        asio::ip::tcp::endpoint receiver_endpoint = *resolver.resolve(query);
++        auto query = resolver.resolve(asio::ip::tcp::v4(), addr, port);
++        asio::ip::tcp::endpoint receiver_endpoint = *query.begin();
+ 
+         // create, open, and connect the socket
+         _socket.reset(new asio::ip::tcp::socket(_io_service));
+@@ -229,7 +229,7 @@ private:
+     size_t _next_recv_buff_index, _next_send_buff_index;
+ 
+     // asio guts -> socket and service
+-    asio::io_service _io_service;
++    asio::io_context _io_service;
+     boost::shared_ptr<asio::ip::tcp::socket> _socket;
+     int _sock_fd;
+ };
+diff --git a/host/lib/transport/udp_simple.cpp b/host/lib/transport/udp_simple.cpp
+index 48d7b50..6884e23 100644
+--- a/host/lib/transport/udp_simple.cpp
++++ b/host/lib/transport/udp_simple.cpp
+@@ -28,9 +28,9 @@ public:
+ 
+         // resolve the address
+         asio::ip::udp::resolver resolver(_io_service);
+-        asio::ip::udp::resolver::query query(
+-            asio::ip::udp::v4(), addr, port, asio::ip::resolver_query_base::all_matching);
+-        _send_endpoint = *resolver.resolve(query);
++        auto query = resolver.resolve(asio::ip::udp::v4(), addr, port,
++            asio::ip::resolver_query_base::all_matching);
++        _send_endpoint = *query.begin();
+ 
+         // create and open the socket
+         _socket = socket_sptr(new asio::ip::udp::socket(_io_service));
+@@ -70,7 +70,7 @@ public:
+ 
+ private:
+     bool _connected;
+-    asio::io_service _io_service;
++    asio::io_context _io_service;
+     socket_sptr _socket;
+     asio::ip::udp::endpoint _send_endpoint;
+     asio::ip::udp::endpoint _recv_endpoint;
+diff --git a/host/lib/transport/udp_wsa_zero_copy.cpp b/host/lib/transport/udp_wsa_zero_copy.cpp
+index c3d9976..aecb87a 100644
+--- a/host/lib/transport/udp_wsa_zero_copy.cpp
++++ b/host/lib/transport/udp_wsa_zero_copy.cpp
+@@ -216,7 +216,7 @@ public:
+         UHD_ASSERT_THROW(_num_send_frames <= WSA_MAXIMUM_WAIT_EVENTS);
+ 
+         // resolve the address
+-        asio::io_service io_service;
++        asio::io_context io_service;
+         asio::ip::udp::resolver resolver(io_service);
+         asio::ip::udp::resolver::query query(asio::ip::udp::v4(), addr, port);
+         asio::ip::udp::endpoint receiver_endpoint = *resolver.resolve(query);
+diff --git a/host/lib/transport/udp_zero_copy.cpp b/host/lib/transport/udp_zero_copy.cpp
+index 8099033..b5829a0 100644
+--- a/host/lib/transport/udp_zero_copy.cpp
++++ b/host/lib/transport/udp_zero_copy.cpp
+@@ -195,8 +195,8 @@ public:
+ 
+         // resolve the address
+         asio::ip::udp::resolver resolver(_io_service);
+-        asio::ip::udp::resolver::query query(asio::ip::udp::v4(), addr, port);
+-        asio::ip::udp::endpoint receiver_endpoint = *resolver.resolve(query);
++        auto query = resolver.resolve(asio::ip::udp::v4(), addr, port);
++        asio::ip::udp::endpoint receiver_endpoint = *query.begin();
+ 
+         // create, open, and connect the socket
+         _socket = socket_sptr(new asio::ip::udp::socket(_io_service));
+@@ -302,7 +302,7 @@ private:
+     size_t _next_recv_buff_index, _next_send_buff_index;
+ 
+     // asio guts -> socket and service
+-    asio::io_service _io_service;
++    asio::io_context _io_service;
+     socket_sptr _socket;
+     int _sock_fd;
+ };
+diff --git a/host/lib/transport/zero_copy_flow_ctrl.cpp b/host/lib/transport/zero_copy_flow_ctrl.cpp
+index 7d1ddd7..973e744 100644
+--- a/host/lib/transport/zero_copy_flow_ctrl.cpp
++++ b/host/lib/transport/zero_copy_flow_ctrl.cpp
+@@ -128,7 +128,7 @@ public:
+      * Receive implementation:
+      * Pop the receive buffer pointer from the underlying transport
+      ******************************************************************/
+-    UHD_INLINE managed_recv_buffer::sptr get_recv_buff(double timeout)
++    managed_recv_buffer::sptr get_recv_buff(double timeout)
+     {
+         managed_recv_buffer::sptr ptr;
+         managed_recv_buffer::sptr buff = _transport->get_recv_buff(timeout);
+@@ -141,12 +141,12 @@ public:
+         return ptr;
+     }
+ 
+-    UHD_INLINE size_t get_num_recv_frames() const
++    size_t get_num_recv_frames() const
+     {
+         return _transport->get_num_recv_frames();
+     }
+ 
+-    UHD_INLINE size_t get_recv_frame_size() const
++    size_t get_recv_frame_size() const
+     {
+         return _transport->get_recv_frame_size();
+     }
+@@ -168,12 +168,12 @@ public:
+         return ptr;
+     }
+ 
+-    UHD_INLINE size_t get_num_send_frames() const
++    size_t get_num_send_frames() const
+     {
+         return _transport->get_num_send_frames();
+     }
+ 
+-    UHD_INLINE size_t get_send_frame_size() const
++    size_t get_send_frame_size() const
+     {
+         return _transport->get_send_frame_size();
+     }
+diff --git a/host/lib/usrp/common/ad9361_ctrl.cpp b/host/lib/usrp/common/ad9361_ctrl.cpp
+index b89ec2d..a94a5b1 100644
+--- a/host/lib/usrp/common/ad9361_ctrl.cpp
++++ b/host/lib/usrp/common/ad9361_ctrl.cpp
+@@ -198,6 +198,12 @@ public:
+         _device.data_port_loopback(on);
+     }
+ 
++    void set_interface_delays(const uint8_t rx, const uint8_t tx)
++    {
++        std::lock_guard<std::mutex> lock(_mutex);
++        _device.set_interface_delays(rx, tx);
++    }
++
+     //! read internal RSSI sensor
+     sensor_value_t get_rssi(const std::string& which)
+     {
+diff --git a/host/lib/usrp/common/ad9361_driver/ad9361_device.cpp b/host/lib/usrp/common/ad9361_driver/ad9361_device.cpp
+index 7397fdd..44758c8 100644
+--- a/host/lib/usrp/common/ad9361_driver/ad9361_device.cpp
++++ b/host/lib/usrp/common/ad9361_driver/ad9361_device.cpp
+@@ -5,6 +5,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ //
+ 
++#include <cstdlib>
+ #include "ad9361_device.h"
+ #include "ad9361_client.h"
+ #include "ad9361_filter_taps.h"
+@@ -2038,6 +2039,19 @@ void ad9361_device_t::set_active_chains(bool tx1, bool tx2, bool rx1, bool rx2)
+     /* Put back into FDD state if necessary */
+     if (set_back_to_fdd)
+         _io_iface->poke8(0x014, 0x21);
++
++    /* Diagnostic: BIST configuration (register 0x3F4) applied whenever the
++     * active chains are set, i.e. when a streamer is created.  0x0B injects
++     * the full-scale digital test tone at fs/32 into the receive data port,
++     * 0x1B the same at -6 dBFS: a known signal for checking received
++     * samples end to end. */
++    if (const char* bist = std::getenv("UHD_AD936X_BIST"))
++        _io_iface->poke8(0x3F4, uint8_t(std::strtoul(bist, nullptr, 0)));
++    /* Diagnostic: digital loopback of the transmit data port onto the
++     * receive data port (register 0x3F5), so a transmitted waveform comes
++     * back through the receive path without any RF. */
++    if (std::getenv("UHD_AD936X_LOOPBACK"))
++        _io_iface->poke8(0x3F5, 0x01);
+ }
+ 
+ /* Setup Timing mode depending on active channels.
+@@ -2253,6 +2267,13 @@ void ad9361_device_t::data_port_loopback(const bool loopback_enabled)
+     _io_iface->poke8(0x3F5, (loopback_enabled ? 0x01 : 0x00));
+ }
+ 
++void ad9361_device_t::set_interface_delays(const uint8_t rx, const uint8_t tx)
++{
++    std::lock_guard<std::recursive_mutex> lock(_mutex);
++    _io_iface->poke8(0x006, rx);
++    _io_iface->poke8(0x007, tx);
++}
++
+ /* Read back the internal RSSI measurement data. The result is in dB
+  * but not in absolute units. If absolute units are required
+  * a bench calibration should be done.
+diff --git a/host/lib/usrp/common/ad9361_driver/ad9361_device.h b/host/lib/usrp/common/ad9361_driver/ad9361_device.h
+index 96a1054..21c2fdd 100644
+--- a/host/lib/usrp/common/ad9361_driver/ad9361_device.h
++++ b/host/lib/usrp/common/ad9361_driver/ad9361_device.h
+@@ -214,6 +214,7 @@ public:
+ 
+     /* Turn on/off AD9361's TX port --> RX port loopback. */
+     void data_port_loopback(const bool loopback_enabled);
++    void set_interface_delays(const uint8_t rx, const uint8_t tx);
+ 
+     /* Read back the internal RSSI measurement data. */
+     double get_rssi(chain_t chain);
+diff --git a/host/lib/usrp/common/ad936x_manager.cpp b/host/lib/usrp/common/ad936x_manager.cpp
+index 5c4cb51..e50af2a 100644
+--- a/host/lib/usrp/common/ad936x_manager.cpp
++++ b/host/lib/usrp/common/ad936x_manager.cpp
+@@ -11,6 +11,9 @@
+ #include <boost/make_shared.hpp>
+ #include <chrono>
+ #include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <string>
+ #include <thread>
+ 
+ using namespace uhd;
+@@ -101,6 +104,10 @@ public:
+         // Sleeping 1ms is far more than enough.
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+ 
++        if (std::getenv("UHD_AD936X_EYESCAN")) {
++            eyescan(poker_functor, peeker_functor);
++        }
++
+         constexpr size_t NUM_LOOPBACK_ITERS = 100;
+         for (size_t i = 0; i < NUM_LOOPBACK_ITERS; i++) {
+             // Create test word
+@@ -135,6 +142,71 @@ public:
+     }
+ 
+ 
++    // Diagnostic eye scan of the FPGA<->AD936x sample interface.  For every
++    // relative clock/data delay on the RX side (reg 0x006) and on the TX side
++    // (reg 0x007) it loops complementary I/Q patterns through the codec and
++    // reports, per data bit, whether the word came back in the right phase.
++    // Delay index d in [-15,15]: d>=0 -> data delayed d steps, d<0 -> clock
++    // delayed -d steps.  Output lines: EYE <rxd> <txd> <U> <L>, one char per
++    // bit 11..0: '.' right phase, 'x' other phase, '~' unstable.
++    void eyescan(std::function<void(uint32_t)> poker_functor,
++        std::function<uint64_t()> peeker_functor)
++    {
++        const char* rate_env = std::getenv("UHD_AD936X_EYESCAN_RATE");
++        if (rate_env) {
++            const double r = _codec_ctrl->set_clock_rate(std::atof(rate_env));
++            std::printf("EYERATE %.6f\n", r);
++            _codec_ctrl->data_port_loopback(true);
++            std::this_thread::sleep_for(std::chrono::milliseconds(5));
++        }
++        static const uint32_t pat[] = {0xAAA, 0x555, 0xFFF, 0x000, 0xF0F, 0x0F0};
++        const size_t npat = sizeof(pat) / sizeof(pat[0]);
++        const int reads   = 2;
++        auto reg = [](int d) -> uint8_t {
++            return d >= 0 ? uint8_t(d & 0xF) : uint8_t(((-d) & 0xF) << 4);
++        };
++        const char* only = std::getenv("UHD_AD936X_EYESCAN"); // "2d" or "cross"
++        const bool full  = only && std::string(only) == "2d";
++        for (int rxd = -15; rxd <= 15; rxd++) {
++            for (int txd = -15; txd <= 15; txd++) {
++                if (!full && rxd != 15 && txd != 15)
++                    continue;
++                _codec_ctrl->set_interface_delays(reg(rxd), reg(txd));
++                std::this_thread::sleep_for(std::chrono::microseconds(200));
++                int okU[12] = {0}, okL[12] = {0};
++                bool txbad = false;
++                for (size_t p = 0; p < npat; p++) {
++                    const uint32_t i12 = pat[p], q12 = (~pat[p]) & 0xFFF;
++                    const uint32_t w = (i12 << 20) | (q12 << 4);
++                    poker_functor(w);
++                    for (int k = 0; k < reads; k++) {
++                        const uint64_t rb = peeker_functor();
++                        if (uint32_t(rb >> 32) != w)
++                            txbad = true;
++                        const uint32_t rx = uint32_t(rb & 0xffffffff);
++                        const uint32_t u = (rx >> 20) & 0xFFF, l = (rx >> 4) & 0xFFF;
++                        for (int b = 0; b < 12; b++) {
++                            okU[b] += (((u ^ i12) >> b) & 1) ? 0 : 1;
++                            okL[b] += (((l ^ q12) >> b) & 1) ? 0 : 1;
++                        }
++                    }
++                }
++                const int tot = int(npat) * reads;
++                char su[13], sl[13];
++                for (int b = 0; b < 12; b++) {
++                    su[11 - b] = okU[b] == tot ? '.' : (okU[b] == 0 ? 'x' : '~');
++                    sl[11 - b] = okL[b] == tot ? '.' : (okL[b] == 0 ? 'x' : '~');
++                }
++                su[12] = sl[12] = 0;
++                std::printf("EYE %3d %3d %s %s%s\n", rxd, txd, su, sl,
++                    txbad ? " TXRB_BAD" : "");
++            }
++        }
++        std::fflush(stdout);
++        _codec_ctrl->set_interface_delays(0x0F, 0x0F);
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++
+     double get_auto_tick_rate(const double lcm_rate, size_t num_chans)
+     {
+         UHD_ASSERT_THROW(num_chans >= 1 and num_chans <= _n_frontends);
+diff --git a/host/lib/usrp/n230/n230_eeprom_manager.cpp b/host/lib/usrp/n230/n230_eeprom_manager.cpp
+index 6e054b4..a66c7ee 100644
+--- a/host/lib/usrp/n230/n230_eeprom_manager.cpp
++++ b/host/lib/usrp/n230/n230_eeprom_manager.cpp
+@@ -139,19 +139,19 @@ void n230_eeprom_manager::write_mb_eeprom(const mboard_eeprom_t& eeprom)
+     // Push ethernet info
+     if (_mb_eeprom.has_key("gateway")) {
+         map.gateway = uhd::htonx<uint32_t>(
+-            boost::asio::ip::address_v4::from_string(_mb_eeprom["gateway"]).to_ulong());
++            boost::asio::ip::make_address_v4(_mb_eeprom["gateway"]).to_uint());
+     }
+     for (size_t i = 0; i < N230_MAX_NUM_ETH_PORTS; i++) {
+         const std::string n(1, i + '0');
+         if (_mb_eeprom.has_key("ip-addr" + n)) {
+             map.eth_info[i].ip_addr = uhd::htonx<uint32_t>(
+-                boost::asio::ip::address_v4::from_string(_mb_eeprom["ip-addr" + n])
+-                    .to_ulong());
++                boost::asio::ip::make_address_v4(_mb_eeprom["ip-addr" + n])
++                    .to_uint());
+         }
+         if (_mb_eeprom.has_key("subnet" + n)) {
+             map.eth_info[i].subnet = uhd::htonx<uint32_t>(
+-                boost::asio::ip::address_v4::from_string(_mb_eeprom["subnet" + n])
+-                    .to_ulong());
++                boost::asio::ip::make_address_v4(_mb_eeprom["subnet" + n])
++                    .to_uint());
+         }
+         if (_mb_eeprom.has_key("mac-addr" + n)) {
+             byte_vector_t mac_addr =
+diff --git a/host/lib/usrp/usrp2/io_impl.cpp b/host/lib/usrp/usrp2/io_impl.cpp
+index 01d5bed..e920fcf 100644
+--- a/host/lib/usrp/usrp2/io_impl.cpp
++++ b/host/lib/usrp/usrp2/io_impl.cpp
+@@ -421,7 +421,7 @@ void usrp2_impl::program_stream_dest(
+                              "IPv4 Address: %s, UDP Port: %s")
+                    % args.args["addr"] % args.args["port"];
+ 
+-        asio::io_service io_service;
++        asio::io_context io_service;
+         asio::ip::udp::resolver resolver(io_service);
+         asio::ip::udp::resolver::query query(
+             asio::ip::udp::v4(), args.args["addr"], args.args["port"]);
+diff --git a/host/lib/usrp/usrp2/mb_eeprom.cpp b/host/lib/usrp/usrp2/mb_eeprom.cpp
+index 7bfe615..71564c7 100644
+--- a/host/lib/usrp/usrp2/mb_eeprom.cpp
++++ b/host/lib/usrp/usrp2/mb_eeprom.cpp
+@@ -142,7 +142,7 @@ void usrp2_impl::set_mb_eeprom(const std::string& mb, const mboard_eeprom_t& mb_
+     if (mb_eeprom.has_key("ip-addr")) {
+         byte_vector_t ip_addr_bytes(4);
+         byte_copy(
+-            boost::asio::ip::address_v4::from_string(mb_eeprom["ip-addr"]).to_bytes(),
++            boost::asio::ip::make_address_v4(mb_eeprom["ip-addr"]).to_bytes(),
+             ip_addr_bytes);
+         iface->write_eeprom(
+             N200_EEPROM_ADDR, offsetof(n200_eeprom_map, ip_addr), ip_addr_bytes);
+@@ -151,7 +151,7 @@ void usrp2_impl::set_mb_eeprom(const std::string& mb, const mboard_eeprom_t& mb_
+     if (mb_eeprom.has_key("subnet")) {
+         byte_vector_t ip_addr_bytes(4);
+         byte_copy(
+-            boost::asio::ip::address_v4::from_string(mb_eeprom["subnet"]).to_bytes(),
++            boost::asio::ip::make_address_v4(mb_eeprom["subnet"]).to_bytes(),
+             ip_addr_bytes);
+         iface->write_eeprom(
+             N200_EEPROM_ADDR, offsetof(n200_eeprom_map, subnet), ip_addr_bytes);
+@@ -160,7 +160,7 @@ void usrp2_impl::set_mb_eeprom(const std::string& mb, const mboard_eeprom_t& mb_
+     if (mb_eeprom.has_key("gateway")) {
+         byte_vector_t ip_addr_bytes(4);
+         byte_copy(
+-            boost::asio::ip::address_v4::from_string(mb_eeprom["gateway"]).to_bytes(),
++            boost::asio::ip::make_address_v4(mb_eeprom["gateway"]).to_bytes(),
+             ip_addr_bytes);
+         iface->write_eeprom(
+             N200_EEPROM_ADDR, offsetof(n200_eeprom_map, gateway), ip_addr_bytes);
+diff --git a/host/lib/usrp/x300/x300_mb_eeprom.cpp b/host/lib/usrp/x300/x300_mb_eeprom.cpp
+index 54505a4..dd02265 100644
+--- a/host/lib/usrp/x300/x300_mb_eeprom.cpp
++++ b/host/lib/usrp/x300/x300_mb_eeprom.cpp
+@@ -161,7 +161,7 @@ void uhd::usrp::x300::set_mb_eeprom(
+     byte_vector_t ip_addr_bytes(4);
+     if (mb_eeprom.has_key("gateway")) {
+         byte_copy(
+-            boost::asio::ip::address_v4::from_string(mb_eeprom["gateway"]).to_bytes(),
++            boost::asio::ip::make_address_v4(mb_eeprom["gateway"]).to_bytes(),
+             ip_addr_bytes);
+         iface->write_eeprom(
+             X300_EEPROM_ADDR, offsetof(x300_eeprom_map, gateway), ip_addr_bytes);
+@@ -169,7 +169,7 @@ void uhd::usrp::x300::set_mb_eeprom(
+     for (size_t i = 0; i < 4; i++) {
+         const std::string n(1, char(i) + '0');
+         if (mb_eeprom.has_key("ip-addr" + n)) {
+-            byte_copy(boost::asio::ip::address_v4::from_string(mb_eeprom["ip-addr" + n])
++            byte_copy(boost::asio::ip::make_address_v4(mb_eeprom["ip-addr" + n])
+                           .to_bytes(),
+                 ip_addr_bytes);
+             iface->write_eeprom(X300_EEPROM_ADDR,
+@@ -178,7 +178,7 @@ void uhd::usrp::x300::set_mb_eeprom(
+         }
+ 
+         if (mb_eeprom.has_key("subnet" + n)) {
+-            byte_copy(boost::asio::ip::address_v4::from_string(mb_eeprom["subnet" + n])
++            byte_copy(boost::asio::ip::make_address_v4(mb_eeprom["subnet" + n])
+                           .to_bytes(),
+                 ip_addr_bytes);
+             iface->write_eeprom(X300_EEPROM_ADDR,
