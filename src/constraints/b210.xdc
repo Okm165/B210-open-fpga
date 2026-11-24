@@ -53,7 +53,7 @@
 #   capture window is ~4x wider than the entire source skew.  Caveat: flight
 #   times are estimates for a ~10 cm class PCB; the analysis bounds the risk,
 #   it does not measure the board.
-create_clock -period 10.000 [get_ports IFCLK]
+create_clock -period 12.500 [get_ports IFCLK]
 # codec_data_clk_p is the 61.44 MHz codec capture clock.
 create_clock -period 16.276 [get_ports codec_data_clk_p]
 # 40 MHz codec main clock feeding the B200 MMCM.
@@ -62,7 +62,7 @@ create_clock -period 25.000 [get_ports codec_main_clk_p]
 # MMCM parameters in this XDC subset; declare it by net name.  Without this
 # line nextpnr treats the domain as unconstrained and reports "PASS at 12 MHz",
 # which is its default assumption, not a real 100 MHz signoff.
-create_clock -period 10.000 [get_nets bus_clk]
+create_clock -period 12.500 [get_nets bus_clk]
 
 set_property LOC G11 [get_ports PPS_IN_EXT]
 set_property IOSTANDARD LVCMOS33 [get_ports PPS_IN_EXT]

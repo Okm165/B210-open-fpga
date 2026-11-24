@@ -101,7 +101,7 @@ module b200_core
 
     // Generate an internal PPS signal
     wire int_pps;
-    pps_generator #(.CLK_FREQ(100000000)) pps_gen
+    pps_generator #(.CLK_FREQ(80000000)) pps_gen
     (.clk(bus_clk), .reset(1'b0), .pps(int_pps));
 
     // Flop PPS signals into radio clock domain

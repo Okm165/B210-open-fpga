@@ -1062,3 +1062,55 @@ still unproven for every source), and whether the minimal flag protocol
 matches the FX3 firmware's expectations.  The next discriminating
 experiment must establish IFCLK liveness at the pad itself, independent of
 the GPIF protocol.
+
+## 45. Upstream research digest + codebase audit; engine rebuilt from openXC7/nextpnr main (2026-11-24)
+
+### GH issue research (read-only; openXC7/nextpnr-xilinx was archived Sep 2026 - development continues at openXC7/nextpnr, where OUR issues #222/#226 live)
+- cavearr's A/B on #222: the route SHAPE matches Vivado; the one-bit difference is
+  `CLK_HROW_R_CK_GCLK<n>_ACTIVE` in every crossed row. Himbaechel fix NOT yet merged
+  (promised with goldens). Our builds already carry those bits (superset) - §41.
+- Debunked by cavearr (stop chasing): LH6/LV9 "missing drivers" (by design; use
+  LH0/LH12 at line ends), HCLK_CMT_CK_BUFHCLK<n>_USED (artix runs without),
+  plain-OBUF T-tie "bug" (couldn't reproduce), "undocumented bits everywhere"
+  (an artifact of decoding a COMPRESSED bitstream linearly - use bitread).
+- Issue #79: RIOB18 `OBUF/IBUF_HP_BANK_GLUE` rows are ALIASES of OLOGIC bits
+  (OQUSED/OMUX.D1/DATA_RATE_TQ.BUF) - explains our confusing glue-row experiments.
+- Merged after our 8d6d112 build: #216 (IOLOGIC clock inverter folding -
+  our IFCLK ODDR path), #225 (ISERDES open-input ties), #215, #217.
+- Open #227: Zynq HP-bank ODDR packing hang - same code path family, watch it.
+
+### Codebase audit (agents; concrete defects found and FIXED)
+1. b200_clk_gen80 = VCO 1200 MHz, gpif/bus = 80 MHz, but b210.xdc constrained
+   100 MHz -> pnr timing FAIL (bus_clk 93.52 < 100). FIXED: create_clock 12.5 ns.
+2. pps_generator CLK_FREQ(100000000) on an 80 MHz bus_clk. FIXED: 80000000.
+3. reset_sync maps to SRL16E INIT=0 -> powers up DEASSERTED; a dead clock leaves
+   gpif_rst=0 (looks "not in reset"). Probing gpif_rst is NOT proof of liveness.
+4. codec_reset holds the AD9361 (and radio_clk) until UHD writes a setting -
+   radio domain is dead at power-up by design; GPIF domain is independent.
+5. OBUFT insertion is the only functional RTL delta vs the last image; the
+   pre-OBUFT image was also dead, so it is not the root cause (kept: guards the
+   engine's dangling-T defect).
+
+### Toolchain refreshed from upstream main
+- nextpnr-himbaechel rebuilt from openXC7/nextpnr main (post #216/#225/#215/#217)
+  + fresh chipdb + FULL openXC7 prjxray-db (kintex7 now complete; our
+  segbits_riob18 DRIVE patch no longer needed - fasm2frames clean without it).
+- Rebuild b200_80t with new engine: pnr PASSES timing (bus_clk 86.16 > 80).
+- Hardware result: drain 1024 DEAD, control channel 0/20 responses. Unchanged.
+
+### Invalidated conclusion (correction to section 38)
+The ring13 "fabric->pad arrival" proof is CONFOUNDED: LOGIC_OUTS9 at
+INT_R_X95Y115 belongs to the CLB column ADJACENT to the IO column; the ring
+lives in CLBLM_R_X37Y119 - a different column - so the tap cannot physically
+drive that wire. Both the ring graft AND a const-0 graft kill the control
+channel identically: the graft simply replaced the vendor's D1 source with an
+undriven wire. No pad arrival was ever proven. The control-channel instrument
+(ctrl_peek2: raw VRT peek over EP4/EP0x88, protocol decoded from UHD
+radio_ctrl_core_3000) is the new reliable host-readable observable: vendor
+image answers 20/20 deterministically; every design of ours answers 0/20.
+
+### Standing
+DOD not met. The control channel gives us, for the first time, a
+protocol-level observable; every image of ours is silent on it, which localizes
+the failure to the FPGA-side GPIF/control data path (clock domain or the
+long-line routing defect), not to USB/FX3 mechanics.
