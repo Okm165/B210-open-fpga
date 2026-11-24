@@ -1,138 +1,79 @@
-# B210 Open FPGA
+# B210 open FPGA
 
-Source-first, terminal-only FPGA build for the B210 Kintex-7 firmware. The
-design is the B200/B210 Verilog RTL, rebuilt with open tools. No vendor IDE,
-license, Nix, or GUI is required.
+The USRP B200/B210 FPGA design (2 RX + 2 TX, AD9361, Cypress FX3) for the
+OpenSourceSDRLab B210 board (Kintex-7 `xc7k325t-ffg676`), built from Verilog
+with open tools only: Yosys, nextpnr-himbaechel and Project X-Ray. No vendor
+IDE, licence or prebuilt image is involved in what gets loaded on the board.
+
+`docs/STATUS.md` holds what is measured to be true today and what is open.
+
+## Flow
 
 ```text
-Yosys v0.69            Verilog synthesis
-nextpnr f745549        placement and routing (himbaechel/Xilinx)
-Project X-Ray          FASM -> frames -> .bit
+scripts/toolchain.sh   place-and-route engine and device database, from pinned
+                       upstream sources plus the fixes in container/patches
+scripts/build.sh       Verilog -> build/fpga/usrp_b200.bin (+ a build record)
+scripts/hw_gate.sh     acceptance of that image on the board
 ```
 
-The result is an independent open-flow image, not a vendor-supplied image.
-
-[AUDIT.md](AUDIT.md) records the measured receive-path claims: the distortion
-budget, the throughput at every stage, and the test that guards each one.
-
-## Design
-
-| Item | Value |
-| --- | --- |
-| FPGA | `xc7k325tffg676-1` (Kintex-7 325T, FFG676; device IDCODE `0x3651093`) |
-| Top module | `b200` |
-| HDL | Verilog-2001 |
-| Constraints | `src/constraints/b210.xdc` |
-| Clocking | `src/top/b200_clk_gen.v` (`MMCME2_ADV`, 40 MHz in, 40/100/100 MHz out) |
-| Halfband filters | `src/ip/hbdec.v` (49-tap, `src/ip/hb47.coe`) |
-| Device data | `third_party/prjxray-db` (Project X-Ray, CC0) |
-
-## Toolchain
-
-All tools are built from source in atomic container images:
-
-| Image | Dockerfile | Contents |
+| Step | Tool | Where it runs |
 | --- | --- | --- |
-| `b210-open-fpga-base` | `container/base.Dockerfile` | Ubuntu 24.04 build environment |
-| `b210-open-fpga-yosys` | `container/yosys.Dockerfile` | Yosys `v0.69` |
-| `b210-open-fpga-nextpnr` | `container/nextpnr.Dockerfile` | nextpnr `f745549`, Xilinx himbaechel, xc7k325t chipdb |
-| `b210-open-fpga-prjxray` | `container/prjxray.Dockerfile` | Project X-Ray `ed3331c` frame tools |
-| `b210-open-fpga` | `container/toolchain.Dockerfile` | composed final image |
+| synthesis | Yosys v0.69 | container `b210-open-fpga` (`make tools`) |
+| place and route | openXC7 nextpnr-himbaechel `be38ec6` + two patches | host, `.tools/` |
+| FASM -> frames -> bit -> bin | openXC7 Project X-Ray `6dabf70` | container |
+| device database | openXC7 prjxray-db `0c3504f` + patch | `third_party/prjxray-db-openxc7` |
 
-Repositories and official documentation are listed under
-[References](#references).
+```sh
+make tools        # container image: yosys + Project X-Ray tools
+make toolchain    # .tools/: nextpnr, chipdb, and the measuring UHD
+make build        # build/fpga/usrp_b200.bin
+make gate         # hardware acceptance on the connected board
+make test         # simulation benches, constraint check, elaboration
+```
 
-The host needs Podman or Docker, GNU Make, Git, Python 3, and Icarus Verilog
-(`iverilog`, `vvp`) for the host tests.
+Host requirements: podman, git, cmake, a C++20 compiler, boost, eigen3,
+python3 with pyusb/numpy/matplotlib, Icarus Verilog, and UHD (the stock host
+driver the image is validated against).
 
 ## Layout
 
 ```text
-src/                 RTL, constraints, and portable IP
-tests/               self-checking host tests
-scripts/             source manifest and small Python helpers
-container/           atomic toolchain images
-third_party/         Project X-Ray xc7k325t data (CC0)
-Makefile             build interface
-README.md            this file
-AUDIT.md             measured receive-path claims and their tests
-build/               generated output; ignored by Git
+src/top/           b200.v (top), b200_io.v (AD9361 interface), b200_core.v,
+                   b200_clk_gen.v, diag_echo.v (the FX3 bus alone)
+src/rtl/           radio, DSP, FIFO, GPIF and control RTL (Ettus, LGPL)
+src/constraints/   b210.xdc: pins, clocks, buffer sites, crossing bounds
+scripts/           the flow and the hardware instruments
+container/         container image definitions and upstream patches
+tests/             simulation benches (make test)
+build/             generated output, ignored by git
 ```
 
-## Commands
+## Hardware instruments
 
-```sh
-make tools       # build the atomic images and the final toolchain
-make build       # synthesize, place, route, and write the bitstream
-make synth       # Yosys synthesis only
-make pnr         # place and route only (requires make synth)
-make bitstream   # FASM -> frames -> .bit/.bin (requires make pnr)
-make analyze     # Yosys netlist analysis
-make timing      # nextpnr timing/utilization summary
-make test        # every bench, the constraint check, and whole-design elaboration
-make elab        # elaborate the complete design against the primitive models
-make hello       # compile the hello world through the whole toolchain
-make doctor      # check host tools and the toolchain image
-make verify      # check the committed source state
-make release-check # verify + image identity + every bench (the signoff gate)
-make plots       # the loop pages: whole-radio spectra, ends, losses
-make plots-levels # converter utilisation and transmitter headroom
-make plots-extra # band edge, rates, MIMO match, dense probe, retune
-make deploy      # assemble build/deploy: image + provenance + checklist
-make shell       # interactive shell in the toolchain image
-make clean       # remove only this repository's build/ directory
-make image-clean # remove all toolchain images
-```
+| Script | What it measures |
+| --- | --- |
+| `scripts/hw_gate.sh <bin>` | the full acceptance, in order: build identity, raw FX3 path, stock UHD init and streaming, interface eye, sample content, throughput. Where a number depends on the board or the host it is measured on the vendor image in the same run |
+| `scripts/fx3_raw_load.py <bin> --peek N` | FX3 reboot, FPGA load, raw control transactions and an 8 MB drain, without UHD |
+| `scripts/eyescan.sh <bin> [rate]` | the AD9361 interface eye: UHD's codec loopback over every clock/data delay, with the margin at UHD's fixed operating point |
+| `scripts/sample_check.py <bin> --prbs` | receive path, bit exact: every sample of the AD9361's pseudo-random test sequence is checked, on both channels and for their alignment |
+| `scripts/sample_check.py <bin> --tone` / `--loopback F` | receive and transmit paths, spectral: level, SFDR, SINAD, DC and channel phase relation of a known tone, optionally against a reference image (`--ref`) |
+| `scripts/dsp_exact.py rx\|loop <capture>` | the DSP chains on the board against the repository's RTL: every captured sample compared with the Icarus simulation of the same input |
+| `scripts/bus_window.py <routed.fasm>` | the FX3 bus timing window: the forwarded clock moved through its range in the bitstream, a bit-exact bus loopback at each setting |
+| `scripts/fx3_raw_load.py <bin> --echo N` | both directions of the FX3 bus, bit exact, on the bus-only design `src/top/diag_echo.v` |
+| `scripts/rx_capture.py` | a capture through the stock UHD Python API with spectrum graphs (antenna signal) |
+| `scripts/fast_test.py` | a FASM-level patch assembled and measured without re-running place and route |
 
-Overrides:
+UHD only tests the image named in `fpga=<path>` of its device arguments; a
+plain UHD call loads the vendor image from `/usr/share/uhd/images`.
 
-```sh
-make build CONTAINER_ENGINE=docker
-make build FPGA_PART=xc7k325tffg676-1
-make build FPGA_ALLOW_TIMING_FAIL=1   # bring-up only; not timing signoff
-```
+Streaming measurements at 245 MB/s need the host: the tools ask for
+real-time priority (`chrt`) when the account may use it, and the gate
+reports "inconclusive" rather than a verdict when even the vendor image
+loses samples.
 
-## Outputs
+## Licence
 
-```text
-build/fpga/synth/b200.json                  Yosys netlist
-build/fpga/pnr/b200.fasm                    nextpnr FASM
-build/fpga/pnr/b200.frames                  Project X-Ray frames
-build/fpga/bitstream/b200.bit               TLV bitstream
-build/fpga/bitstream/b200.bin               raw payload (FX3 format)
-build/fpga/bitstream/usrp_b210_fpga.bin     copy with the UHD filename
-build/fpga/logs/                            tool logs
-build/fpga/reports/                         timing and utilization reports
-```
-
-The `.bin` is the exact `e` payload of the `.bit`, including the 7-series
-bus-width/sync preamble. The `.bit` wrapper records the build time, so its
-hash varies; the raw `.bin` is reproducible.
-
-## Validation
-
-`make release-check` is the signoff gate: it refuses a dirty tree, checks the
-image against its recorded sha256 and against a digest of the RTL/source
-list/XDC/defines, and runs every bench.  Current state: **122 benches pass**.
-
-- Yosys synthesis completes; place and route reports 0 errors; every clock
-  passes with at least 5 % margin; the raw image carries IDCODE `0x3651093`.
-- A fresh checkout reproduces the raw `.bin` byte-for-byte
-  (`c1cc09ddf4ca668b66c8d086d9e7c508f4ca79d4740a0a5f5215042424865253`).
-- The whole-radio loop is measured in simulation, in both directions, both
-  channels, at every shipping rate: `plots/` pages are byte-reproducible and
-  the numbers behind them are in `docs/FINAL-REPORT.md`.
-
-Detailed reports are written under `build/fpga/reports/`.
-
-## References
-
-- Yosys: <https://github.com/YosysHQ/yosys>
-- Yosys `synth_xilinx`:
-  <https://yosyshq.readthedocs.io/projects/yosys/en/latest/cmd/synth_xilinx.html>
-- nextpnr: <https://github.com/YosysHQ/nextpnr>
-- nextpnr Himbächel:
-  <https://github.com/YosysHQ/nextpnr/blob/main/docs/himbaechel.md>
-- Project X-Ray: <https://github.com/F4PGA/prjxray>
-- Project X-Ray database: <https://github.com/F4PGA/prjxray-db>
-- F4PGA: <https://f4pga.org/>
+The RTL under `src/rtl` and `src/top` derives from Ettus Research's USRP FPGA
+sources (LGPL-3.0-or-later), except `src/rtl/control/pps_switch.v` and
+`src/rtl/control/edge_detect.v`, which come from the board vendor's project.
+Everything else in this repository is GPL-3.0; see `LICENSE`.
