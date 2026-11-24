@@ -997,3 +997,57 @@ Also verified today (facts that stand regardless of the counter):
 Instruments that remain valid: drain throughput (deterministic: vendor drains,
 every design of ours stalls at exactly 1024 B), the loader's own drain report,
 GET_LOG, and frame-level grafting with knockout controls.
+
+## 44. Instrument hygiene + dangling pad-mux defect; all IO-level hypotheses eliminated (2026-11-23)
+
+### Instruments
+- `drain1.py` (load onto RUNNING firmware) is CONFOUNDED: after any prior
+  config it reports 1024 B even for the vendor image.  `fx3_raw_load.py`
+  (full FX3 reboot + firmware re-download each time) is the trustworthy
+  drain instrument: vendor = 8 MB @ 12.3 MB/s, reproducible.
+- All of this section's results are measured with the trustworthy instrument.
+
+### New atomic tests (all 1024 B stall = DEAD)
+| design | clock for IFCLK | result |
+|---|---|---|
+| diag_drain   | MMCM 100 MHz (vendor-identical clk gen) | DEAD |
+| diag_drain40 | codec 40 MHz IBUFDS->BUFG->OBUFT, no MMCM | DEAD |
+| diag_ringdrain   | 36-inv fabric ring, flags-gated SLRD | DEAD |
+| diag_ringdrainu  | same, unconditional SLRD | DEAD |
+| diag_ringdrain_t | same, all pads OBUFT(T=0) | DEAD |
+The MMCM is therefore NOT the discriminator: even a design with no MMCM and
+no state machine, driving the GPIF read strobes, cannot make the FX3 drain.
+
+### New flow defect found and measured: dangling pad-input muxes
+The engine selects IMUX inputs of IO-column pad logic but frequently emits
+NO driver row for the selected IMUX (or ties VCC where the RTL value is a
+constant - including driving VCC for a constant-0!).  Scan of b200_80
+(seed 2): 22 dangling pad muxes, among them
+- GPIF_CTL11 (fifoadr[1]) D1: no driver -> FX3 thread address undefined
+- GPIF_CTL3/1/7 (SLRD/SLWR/PKTEND) T1: no driver -> tristate undefined
+- IFCLK OCE + D2: no driver -> output clock-enable/edge undefined
+- GPIF_D[26], GPIF_D[13] D1: no driver -> data bits stuck
+Vendor avoids all of it: control pads are driven via the direct
+`IOB_COL_OBUF_CASCADE` path with NO OLOGIC rows at all; our engine cannot
+express that path and then fails to route the OLOGIC side-muxes it creates.
+
+### Fixes applied and re-measured
+- b200_80.v: all GPIF control outputs + IFCLK now go through explicit
+  OBUFT(T=0).  This eliminates the T1 hangs (verified in fasm).
+- Frame-level grafts with correct DB rows (IMUX29.VCC_WIRE for OCE,
+  GFAN0.GND_WIRE + IMUX<n>.GFAN0 for constant-0 D1/D2 inputs) repaired the
+  remaining IFCLK OCE/D2, CTL11 D1, GPIF_D[26]/[13] D1.
+- Result: b200_80t + grafts still 1024 B DEAD.
+
+### Where this leaves the search
+With pin mapping verified, control routing (CTL3) vendor-identical, every
+pad mux driven, and every clock source tried, the only surviving hypothesis
+chain is: the design's own clock/reset domain never comes alive -
+`gpif_rst` is released only when MMCM `locked` asserts (b200_80.v
+clocks_ready logic), and our engine's MMCM/clock-distribution output has
+never been proven functional (sections 41-42 row differences + the vendor
+CMT pips being undecodable in the open DB).  Next decisive step: make
+`locked` irrelevant - build a b200_80 variant where gpif_rst/clocks_ready
+bypass the MMCM lock (reset from CTL9 only) and clocks run from the codec
+reference directly; if it drains, the MMCM lock path is confirmed as the
+blocker and can be worked around for RX.

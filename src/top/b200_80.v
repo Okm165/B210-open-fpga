@@ -61,7 +61,11 @@ module b200_80 (
    // output [31:0] debug,
    // output [1:0]  debug_clk,
 
-   // GPIF, FX3 Slave FIFO
+   // GPIF, FX3 Slave FIFO.  The control outputs go through explicit
+   // OBUFTs with T tied low: the engine emits an OBUF whose tristate input
+   // mux (T1 <- IMUX15) it then fails to drive, leaving the pad undefined.
+   // OBUFT-with-T=0 produces the legal GFAN/GND tie instead (see DOD-STATUS
+   // sections 31 and 44).
    output 	 IFCLK, // pclk
    input 	 FX3_EXTINT,
    output 	 GPIF_CTL0, // n_slcs
@@ -188,7 +192,7 @@ module b200_80 (
     )
     ODDR_U
     (
-        .Q(IFCLK),   // 1-bit DDR output data
+        .Q(ifclk_o),   // 1-bit DDR output data
         .C(gpif_clk), // 1-bit clock input
         .CE(1'b1),      // 1-bit clock enable input
         // 0-degree IFCLK: D1=1 at the rising edge, D2=0 at the falling edge.
@@ -399,11 +403,23 @@ module b200_80 (
     // GPIF2
     ///////////////////////////////////////////////////////////////////////
 
+   // internal pre-buffer nets for the GPIF pads
+   wire ifclk_o, ctl0_o, ctl1_o, ctl2_o, ctl3_o, ctl7_o, ctl11_o, ctl12_o;
+
+   OBUFT obuft_ifclk  (.O(IFCLK),      .I(ifclk_o),  .T(1'b0));
+   OBUFT obuft_ctl0   (.O(GPIF_CTL0),  .I(ctl0_o),   .T(1'b0));
+   OBUFT obuft_ctl1   (.O(GPIF_CTL1),  .I(ctl1_o),   .T(1'b0));
+   OBUFT obuft_ctl2   (.O(GPIF_CTL2),  .I(ctl2_o),   .T(1'b0));
+   OBUFT obuft_ctl3   (.O(GPIF_CTL3),  .I(ctl3_o),   .T(1'b0));
+   OBUFT obuft_ctl7   (.O(GPIF_CTL7),  .I(ctl7_o),   .T(1'b0));
+   OBUFT obuft_ctl11  (.O(GPIF_CTL11), .I(ctl11_o),  .T(1'b0));
+   OBUFT obuft_ctl12  (.O(GPIF_CTL12), .I(ctl12_o),  .T(1'b0));
+
    gpif2_slave_fifo32 #(.DATA_RX_FIFO_SIZE(13), .DATA_TX_FIFO_SIZE(13)) slave_fifo32
     (
         .gpif_clk(gpif_clk), .gpif_rst(gpif_rst), .gpif_enb(1'b1),
-        .gpif_ctl({GPIF_CTL8, GPIF_CTL6, GPIF_CTL5, GPIF_CTL4}), .fifoadr({GPIF_CTL11,GPIF_CTL12}),
-        .slwr(GPIF_CTL1), .sloe(GPIF_CTL2), .slcs(GPIF_CTL0), .slrd(GPIF_CTL3), .pktend(GPIF_CTL7),
+        .gpif_ctl({GPIF_CTL8, GPIF_CTL6, GPIF_CTL5, GPIF_CTL4}), .fifoadr({ctl11_o,ctl12_o}),
+        .slwr(ctl1_o), .sloe(ctl2_o), .slcs(ctl0_o), .slrd(ctl3_o), .pktend(ctl7_o),
         .gpif_d(GPIF_D),
 
         .fifo_clk(bus_clk), .fifo_rst(bus_rst),
