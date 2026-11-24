@@ -1114,3 +1114,25 @@ DOD not met. The control channel gives us, for the first time, a
 protocol-level observable; every image of ours is silent on it, which localizes
 the failure to the FPGA-side GPIF/control data path (clock domain or the
 long-line routing defect), not to USB/FX3 mechanics.
+
+## 46. Full-lane spine-ACTIVE patch tested on the current image (2026-11-24)
+
+Upstream's fix shape ("mark CLK_HROW_R_CK_GCLK<n>_ACTIVE in every crossed
+row, not just rows with a load") applied exhaustively to b200_80t: all 6 used
+GCLKs (0,3,5,6,16,21) marked ACTIVE in all 7 CLK_HROW rows of the column
+(Y26/78/130/182/234/286/338; 22 new rows). Rebuilt with the current engine
+and full prjxray-db.
+
+Measured: drain 1024 DEAD, control channel 0/20. No change.
+So the crossed-row ACTIVE bits (even the exhaustive form) are not sufficient
+for this design on this DB/engine - consistent with upstream #226's caveat
+that the bit is not yet board-confirmed to be the cause on kintex7.
+
+Cumulative picture (all measured with the trustworthy instruments):
+- 9 clock-source topologies, 3 engine versions, full/full-lane spine
+  patching, vendor IO+CMT column grafts, pad-mux repairs: every image of
+  ours is silent on drain AND control.
+- Every vendor image: alive on both.
+- The FPGA-side GPIF path therefore never comes alive under our flow, and
+  the difference is not in RTL logic design, pin mapping, IO config, or the
+  specific clock source.
