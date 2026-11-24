@@ -267,7 +267,6 @@ module tb_e2e_rx;
       .rxd(1'b1), .txd(),
       .sen(), .sclk(), .mosi(), .miso(1'b0),
       .rb_misc(32'h0), .misc_outs(),
-      .debug_txd(), .debug_rxd(1'b0), .debug_scl(1'b1), .debug_sda(1'b1),
       .lock_signals(2'b00), .debug(), .pps());
 
    // ---- GPIF + FX3 model --------------------------------------------------

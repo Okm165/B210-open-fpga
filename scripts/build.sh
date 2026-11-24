@@ -15,6 +15,8 @@
 #   ALLOW_TIMING_FAIL=1  still produce the image when a clock misses its
 #            constraint; the build record says so and scripts/hw_gate.sh
 #            refuses such an image.  For measurements only.
+#   PNR_EXTRA="..."  extra nextpnr arguments, e.g. PNR_EXTRA="-o timing-opt=15"
+#            (the timing-driven placement refinement).  Recorded in usrp_$NAME.txt.
 #
 # Outputs of an earlier run under the same NAME are removed before anything
 # is built, so a .bin that exists afterwards came from this run; what it was
@@ -53,7 +55,7 @@ podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -w /work -e HOME=/work/bu
 # result is a function of this number and must not follow the host.
 TFAIL=""; [[ "${ALLOW_TIMING_FAIL:-0}" == 1 ]] && TFAIL="--timing-allow-fail"
 "$NEXTPNR" --device $PART --chipdb "$CHIPDB" --json $OUT/synth/$NAME.json --threads 16 \
-  -o xdc=$XDC -o fasm=$OUT/pnr/$NAME.fasm $LOOPS $TFAIL > $LOGS/$NAME-pnr.log 2>&1 \
+  -o xdc=$XDC -o fasm=$OUT/pnr/$NAME.fasm $TFAIL ${PNR_EXTRA:-} > $LOGS/$NAME-pnr.log 2>&1 \
   || { grep -E "^ERROR|FAIL at" $LOGS/$NAME-pnr.log | tail -10; exit 1; }
 # the routed result: the last report of each clock in the log
 TIMING=$(grep -E "Max frequency for clock" $LOGS/$NAME-pnr.log | sed -E "s/^[A-Za-z]+: Max frequency for clock +//" \
@@ -95,6 +97,7 @@ scripts/assemble.sh $OUT/pnr/$NAME.fasm $OUT/usrp_$NAME.bin
   echo "source   $(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src scripts container)" ]] || echo ' + uncommitted changes')"
   echo "nextpnr  $(sha256sum "$NEXTPNR" | cut -c1-16) chipdb $(sha256sum "$CHIPDB" | cut -c1-16)"
   echo "tools    ${FPGA_IMAGE:-b210-open-fpga:0.2.0}"
+  [[ -z "${PNR_EXTRA:-}" ]] || echo "pnr opts $PNR_EXTRA"
   echo "$TIMING"
   echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > $OUT/usrp_$NAME.txt
