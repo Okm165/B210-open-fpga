@@ -30,6 +30,8 @@ struct Cli {
 enum Cmd {
     /// Load an FPGA image and start the bus
     Load { image: std::path::PathBuf },
+    /// The FX3 firmware's state (1 ready for an image, 2 configuring, 4 running)
+    State,
     /// Read a register (hex 0x.. or decimal address)
     Read { addr: String },
     /// Write a register
@@ -112,6 +114,7 @@ fn main() -> Result<()> {
                 bail!("id {id:08x}, expected {:08x}", regs::ID_VALUE);
             }
         }
+        Cmd::State => println!("{}", usb.ctrl.fx3_state()?),
         Cmd::Read { addr } => println!("{:08x}", usb.ctrl.read(number(&addr)? as u16)?),
         Cmd::Write { addr, value } => usb.ctrl.write(number(&addr)? as u16, number(&value)?)?,
         Cmd::RxTest(a) => rx_test(&mut usb, &a)?,
@@ -250,6 +253,15 @@ fn check_packet(p: &[u8], s: Shape, expect: &impl Fn(u64) -> [i16; 4], values: &
         let e = expect(time);
         for v in 0..nv {
             if values[k * nv + v] != e[first + v] {
+                if t.bad_values == 0 {
+                    // the first bad packet, raw: header and the first payload words
+                    let words: Vec<String> = p[..p.len().min(proto::HEADER + 48)].as_chunks::<4>().0.iter()
+                        .map(|w| format!("{:08x}", u32::from_le_bytes(*w))).collect();
+                    eprintln!("first bad packet ({} bytes): {}", p.len(), words.join(" "));
+                    if let Ok(path) = std::env::var("B210_DUMP") {
+                        let _ = std::fs::write(path, p);
+                    }
+                }
                 if t.bad_values < 5 {
                     eprintln!("time {time} value {v}: {}, expected {}", values[k * nv + v], e[first + v]);
                 }

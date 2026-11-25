@@ -125,7 +125,7 @@ impl Ctrl {
     }
 
     /// Load an FPGA image (the .bin the build writes) and start the bus.
-    pub fn load_fpga(&self, image: &[u8]) -> Result<()> {
+    pub fn load_fpga(&mut self, image: &[u8]) -> Result<()> {
         self.vendor_out(VREQ_FPGA_CONFIG, &[0])?;
         self.wait_state(STATE_FPGA_READY, Duration::from_secs(5))?;
         self.vendor_out(VREQ_FPGA_START, &[0])?;
@@ -134,7 +134,16 @@ impl Ctrl {
             self.vendor_out(VREQ_FPGA_DATA, chunk)?;
         }
         self.wait_state(STATE_RUNNING, Duration::from_secs(5))?;
-        self.gpif_reset()
+        self.gpif_reset()?;
+        // The FPGA answers once its clocks have locked and left reset; a
+        // command sent earlier is lost. Ask every 100 ms, for up to 2 s.
+        for _ in 0..20 {
+            match self.exec_within(&[Op::Read { addr: crate::regs::ID }], Duration::from_millis(100)) {
+                Err(Error::Timeout(..)) => continue,
+                r => return r.map(|_| ()),
+            }
+        }
+        Err(Error::Timeout(self.sequence, Duration::from_secs(2)))
     }
 
     /// Restart the firmware's GPIF state machine (needed after every load).
@@ -145,12 +154,6 @@ impl Ctrl {
     /// Run operations in one command packet; their results, in order.
     /// Event packets arriving meanwhile are kept in `self.events`.
     pub fn exec(&mut self, ops: &[Op]) -> Result<Vec<Reply>> {
-        let sequence = self.sequence;
-        self.sequence = self.sequence.wrapping_add(1);
-        let packet = proto::command(sequence, ops).map_err(Error::Proto)?;
-        let mut buf = Buffer::new(packet.len());
-        buf.extend_from_slice(&packet);
-        self.cmd.transfer_blocking(buf, Duration::from_secs(1)).into_result()?;
         // a WAIT or POLL may run for seconds: the limit follows the operations
         let limit = Duration::from_secs(1)
             + ops.iter().map(|op| match *op {
@@ -158,12 +161,27 @@ impl Ctrl {
                 Op::Poll { ms, .. } => Duration::from_millis(ms as u64),
                 _ => Duration::ZERO,
             }).sum::<Duration>();
+        self.exec_within(ops, limit)
+    }
+
+    /// `exec`, waiting at most `limit` for the result.
+    fn exec_within(&mut self, ops: &[Op], limit: Duration) -> Result<Vec<Reply>> {
+        let sequence = self.sequence;
+        self.sequence = self.sequence.wrapping_add(1);
+        let packet = proto::command(sequence, ops).map_err(Error::Proto)?;
+        let mut buf = Buffer::new(packet.len());
+        buf.extend_from_slice(&packet);
+        self.cmd.transfer_blocking(buf, Duration::from_secs(1)).into_result()?;
         let start = Instant::now();
         loop {
             let left = limit.checked_sub(start.elapsed()).ok_or(Error::Timeout(sequence, limit))?;
             let c = self.rsp.transfer_blocking(Buffer::new(proto::CONTROL_BUFFER), left);
             let actual = c.actual_len;
-            let buf = c.into_result()?;
+            // nusb cancels a blocking transfer at its timeout
+            let buf = c.into_result().map_err(|e| match e {
+                TransferError::Cancelled => Error::Timeout(sequence, limit),
+                e => Error::Transfer(e),
+            })?;
             let h = Header::decode(&buf[..actual]).map_err(Error::Proto)?;
             let body = &buf[proto::HEADER..(h.length as usize).min(actual)];
             match h.kind {
