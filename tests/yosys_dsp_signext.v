@@ -24,7 +24,7 @@
 //
 // tests/tb_yosys_dsp_signext.v compares each module with its netlist;
 // tests/postsyn.sh runs yosys' own `check` right after the DSP mapping, which
-// reports the dangling net.  `make test` requires the two to agree, so the
+// reports the dangling net.  `just test` requires the two to agree, so the
 // same check can be trusted on the whole design.
 `default_nettype none
 

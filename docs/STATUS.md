@@ -1,16 +1,17 @@
 # Status
 
 Only what has been measured on the board (serial 31B92DD) or verified in the
-sources. Numbers come from the instruments in `scripts/`. The vendor image
-(`/usr/share/uhd/images/usrp_b210_fpga.bin`) is the reference device under
-test, never something we ship.
+sources. Numbers come from the instruments in `scripts/`. Where the vendor
+image (the board maker's `usrp_b210_fpga.bin`) appears below, it was measured
+as a point of comparison while the instruments were validated; the gate no
+longer uses it.
 
 ## Target
 
-Our own build of the full 2 RX + 2 TX design, accepted against the vendor
-image on the same board and host by `scripts/hw_gate.sh`:
+Our own build of the full 2 RX + 2 TX design, accepted on the board by
+`scripts/hw_gate.sh` against absolute requirements:
 
-- stock UHD initialises both radio cores and streams from our image;
+- UHD initialises both radio cores and streams from our image;
 - FX3 bus at 100 MHz, as the vendor design, with a measured timing window;
 - AD9361 interface eye at UHD's fixed operating point with real margin;
 - stock UHD behaviour of the DSP chain, bit-exact against the RTL on the board;
@@ -31,7 +32,7 @@ PPS inputs wired as UHD expects, multipliers timed), gate run
 | Routed timing, radio clock (required 61.44 MHz), multipliers included | 75.6 MHz | |
 | Clock-domain crossings (bounds 5 / 6 / 8 / 8 ns) | 1.8 / 3.0 / 3.8 / 4.0 ns | declared exclusive, unchecked |
 | Control path without UHD: FPGA registers written and read back, AD9361 product ID over SPI | right | same answers |
-| Stock UHD 4.9 init | image loaded, register loopback on both radio cores, codec loopback | same |
+| UHD init (4.9 at the time; the gate now uses 3.15 built from source) | image loaded, register loopback on both radio cores, codec loopback | same |
 | Receive eye margin at UHD's operating point (AD9361 delay steps of 0.24 ns) | 11 | 2 to 3 |
 | Transmit eye margin | 14 | 14 |
 | Receive test tone, 2 x 30.72 and 1 x 61.44 MS/s | -3.7 dBFS, SFDR 73.4 dB, SINAD 62.5 dB | identical |
@@ -56,9 +57,11 @@ rate: in 12 alternating runs of each at 2 RX x 30.72 MS/s (245 MB/s, deep
 USB buffers, CPU pressure 1 to 65 %) each image lost samples in 6.  In the
 gate run of image `0479bb71` our image was clean in 4 of 5 runs and the
 vendor's in 6 of 10; the only run in which ours lost samples had vendor
-losses on both sides.  The gate's rule (two runs of ours, each between two
-clean vendor runs) was met once of the two times needed, so its verdict is
-"inconclusive", not a pass.  Nothing in the FPGA limits this: the bus logic
+losses on both sides.  The gate's rule of that time (two runs of ours, each
+between two clean vendor runs) was met once of the two times needed, so its
+verdict was "inconclusive", not a pass.  The gate now counts a run only when
+the host was quiet through it (CPU pressure below 1 % over the run and over
+its last 10 s), and every counted run must be clean.  Nothing in the FPGA limits this: the bus logic
 is cycle-for-cycle the vendor's, the FIFOs are as deep, and the loss tracks
 the host's load on both images.  What remains is host-side and needs root:
 all USB completions are handled on one CPU, which any other job can
@@ -78,7 +81,7 @@ the AD9361 clock running and a blink at each PPS, red with the FPGA's clocks
 unlocked; USR green per host control packet, red for 2 s after any data
 loss; STATUS blue heartbeat.
 
-## What the reference image gets wrong
+## What the vendor image gets wrong
 
 Found with the bit-exact instruments while validating them on the vendor
 image; each is something our design has to get right, and is checked by the
@@ -140,7 +143,7 @@ design on the board, and proven before being fixed at the source.
 | 3 | nextpnr metadata | no placeable BUFR on Kintex-7 (site type missing) | copied from the Artix-7 metadata in `scripts/toolchain.sh` |
 | 4 | prjxray-db kintex7 | BUFR unroutable in HP banks: the 24 always-on pseudo pips of the `HCLK_IOI` BUFR datapath are missing | `container/patches/prjxray-db-kintex7-hclk-ioi-bufr-ppips.patch` |
 | 5 | nextpnr FASM writer | a BUFR output routed to a BUFG carries no clock (`CLK_HROW_CK_BUFRCLK_*_ACTIVE` and `HCLK_CMT_CK_BUFRCLK*_USED` never written); the radio clock stops in 2R2T mode | `container/patches/nextpnr-bufrclk-enable.patch` |
-| 6 | yosys 0.69 DSP packing (YosysHQ/yosys#6311, open) | a product or sum register with reset or enable that is wider than its value loses its sign bits: negative values come out as large positive ones on hardware while RTL simulation is correct | registers sized to their values in `src/rtl/dsp/hbdec47.v`; `tests/check_dsp_packing.py` and the post-synthesis benches in `make test` detect it |
+| 6 | yosys 0.69 DSP packing (YosysHQ/yosys#6311, open) | a product or sum register with reset or enable that is wider than its value loses its sign bits: negative values come out as large positive ones on hardware while RTL simulation is correct | registers sized to their values in `src/rtl/dsp/hbdec47.v`; `tests/check_dsp_packing.py` and the post-synthesis benches in `just test` detect it |
 | 7 | nextpnr Kintex-7 chip database | no cell timing for DSP48E1, and a cell without timing is left out of timing analysis: no path into or out of the 94 multipliers (two of them with no register at all) was ever checked, and the reported radio-clock Fmax did not cover them | `container/patches/nextpnr-dsp48e1-timing.patch` gives the arcs from each cell's registers with DS182 table 35 (speed grade -1); `scripts/toolchain.sh` installs an engine only if `tests/dsp_timing.v` shows the unregistered multiplier as the failing path (patched: 164 MHz on a 200 MHz clock; unpatched: 1150 MHz, the cell ignored) |
 
 Checked and found correct on the board: a DSP48E1 with one input register
@@ -271,7 +274,7 @@ bits matches a plain-logic multiplier cycle for cycle.
   USB buffer pool keeps only 0.5 ms in flight (16 x 8176 bytes), and the
   whole chain about 1.3 ms, so any longer host stall loses samples - on the
   vendor image as well.  `scripts/hw_gate.sh` therefore runs every
-  throughput measurement, the vendor control runs included, with
+  throughput measurement with
   `num_recv_frames=512,recv_frame_size=16360,num_send_frames=256
   ,send_frame_size=16360` (12-bit mode: 12264-byte frames, whose 4088
   samples per packet stay below the framer's clean limit), which queues
@@ -281,7 +284,8 @@ bits matches a plain-logic multiplier cycle for cycle.
 ## Reproducibility gaps
 
 - `scripts/toolchain.sh` rebuilds the place-and-route engine, the device
-  database and the measuring UHD from pinned sources; the engine and
+  database and UHD (with the stock FX3 firmware, hash-checked) from pinned
+  sources; the engine and
   database hashes repeat and a design rebuilt with them is byte-identical.
   The container (`b210-open-fpga:0.3.0`, one `container/Dockerfile`, 299 MB:
   the two tools and their run-time libraries, no compiler) is built from

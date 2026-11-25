@@ -32,7 +32,7 @@
 // +NEG_SCALE_REG gives the dut the scale word times 1.2143 (the inverse of
 // the CORDIC's 0.8235), which is what a chain with a unity-gain mixer in
 // place of the CORDIC puts out: 1.69 dB above the stock level.  That run
-// must FAIL; the Makefile checks that it does.  +NCFG=<n> stops after the
+// must FAIL; the justfile checks that it does.  +NCFG=<n> stops after the
 // first n configurations, +CFGMASK=<hex> runs only the configurations whose
 // bit is set, +NSETTLE=<n> / +NMEAS=<n> shorten a run.
 //

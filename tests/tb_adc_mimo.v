@@ -67,7 +67,7 @@ module adc_mimo_case #(
    function [11:0] i1_of(input integer k); i1_of = 5 * k + 2000; endfunction
    function [11:0] q1_of(input integer k); q1_of = 7 * k + 3000; endfunction
 
-   // Negative controls (the Makefile runs each and requires FAIL):
+   // Negative controls (the justfile runs each and requires FAIL):
    //   +NEG_CHSWAP  the two channels exchanged on the bus (frame unchanged)
    //   +NEG_IQSWAP  Q in the first half of each period, I in the second
    //   +NEG_X       one data pin undriven

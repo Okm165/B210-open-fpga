@@ -62,7 +62,7 @@ module tb_usb_rate;
           .resp_tdata(resp_tdata), .resp_tlast(resp_tlast), .resp_tvalid(resp_tvalid), .resp_tready(resp_tready),
           .debug());
 
-   // Negative controls (the Makefile runs the first and requires FAIL):
+   // Negative controls (the justfile runs the first and requires FAIL):
    //   +NEG_SLOW   the FX3 refuses data one clock in eight (a link below rate)
    reg neg_slow = 0;
    initial neg_slow = $test$plusargs("NEG_SLOW");

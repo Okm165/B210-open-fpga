@@ -22,15 +22,13 @@
 //     is 0.000) and a level within a decibel of the input, so a chain that
 //     is merely identical to a broken reference cannot pass
 //
-// The two halfband decimators are Xilinx cores upstream.  In the default
-// build the reference instantiates this repository's replacements (they are
-// checked on their own in tb_hbdec.v); with the vendor netlists at hand
-// (`make test-dsp-netlist UHD_FPGA=...`) it instantiates those instead and
-// the reference is the complete stock datapath.
+// The two halfband decimators are Xilinx cores upstream; the reference
+// instantiates this repository's replacements (checked on their own in
+// tb_hbdec.v).
 //
 // +NEG_RATE_REG withholds the decimation word from the dut only, which is
 // the defect this bench exists to catch: a chain that does not decode it.
-// That run must FAIL; the Makefile checks that it does.  +NCFG=<n> stops
+// That run must FAIL; the justfile checks that it does.  +NCFG=<n> stops
 // after the first n configurations, +CFGMASK=<hex> runs only the
 // configurations whose bit is set, +NSETTLE=<n> / +NMEAS=<n> shorten a run.
 //
@@ -98,10 +96,8 @@ module tb_ddc_golden;
    end
 
    // The setting registers have a reset but no initial value: 0 in the FPGA,
-   // X in a simulator until the first clock edge.  The vendor halfband
-   // netlists (when the reference uses them) are gate level and latch that X
-   // into control flops no reset reaches.  Start the reference's registers
-   // the way the hardware does.
+   // X in a simulator until the first clock edge.  Start the reference's
+   // registers the way the hardware does.
 `define POWER_UP(sr) begin sr.out = 0; sr.changed = 1'b0; end
    initial begin
       `POWER_UP(ref_i.sr_0)

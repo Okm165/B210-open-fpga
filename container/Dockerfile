@@ -1,5 +1,5 @@
 # The B210 open FPGA container image: synthesis (Yosys) and bitstream
-# assembly (Project X-Ray).  `make tools` builds it.
+# assembly (Project X-Ray).  `just container` builds it.
 #
 # Place and route is NOT in here: nextpnr is built on the host from pinned
 # sources by scripts/toolchain.sh, together with the device database that

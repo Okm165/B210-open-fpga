@@ -3,7 +3,7 @@
 #
 #   scripts/assemble.sh <in.fasm> <out.bin>      (paths relative to the repo)
 #
-# Runs the Project X-Ray tools of the container image (`make tools`) against
+# Runs the Project X-Ray tools of the container image (`just container`) against
 # the device database in third_party/prjxray-db-openxc7.
 #
 # Every intermediate of a previous run is removed first and every step's exit

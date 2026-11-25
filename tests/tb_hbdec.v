@@ -5,8 +5,7 @@
 // that shares nothing with the RTL: the 47 coefficients of hb47.coe written
 // out in full, a history of the accepted samples, and one 64-bit sum per
 // output.  The handshake contract the model follows is the one measured on
-// the vendor netlists (see hbdec47.v; the netlists themselves are compared in
-// tb_hbdec_netlist.v when they are available):
+// the Xilinx netlists (see hbdec47.v):
 //
 //   output every second accepted sample, LATENCY enabled clocks later;
 //   data_valid low for the first 23 outputs after sclr, rdy high for all;

@@ -1,6 +1,6 @@
 #!/bin/bash
 # postsyn.sh - the yosys half of the post-synthesis benches.  Runs inside the
-# toolchain container, from the repository root (/work); `make test` calls it.
+# toolchain container, from the repository root (/work); `just test` calls it.
 #
 #   postsyn.sh netlists <outdir>   synthesize the benches' devices under test
 #   postsyn.sh design   <outdir>   check the complete design after DSP mapping

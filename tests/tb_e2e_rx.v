@@ -51,7 +51,7 @@
 //              is sent is no more than the packets in flight
 //   no error   no error packet in the stream (see the overrun case below)
 //
-// Cases (see the Makefile for the flags):
+// Cases (see the justfile for the flags):
 //   base, fs, fslo, two, noisy   tone at bin 410/4096 at two levels, with a
 //              DDC LO of fs/8, with a second tone 54 dB down, with noise
 //   stall, stall30   the FX3 stops taking data for a while (flags low);
@@ -71,7 +71,7 @@
 //              the stream must come back with full-length packets, at full
 //              rate, time stamps and samples in place.
 //
-// Negative control (plusarg; the Makefile runs it and requires FAIL):
+// Negative control (plusarg; the justfile runs it and requires FAIL):
 // +NEG_IQSWAP puts Q in the first half of each pin period and I in the second.
 //
 // Offline (with +define+E2E_DUMP) every GPIF word is written to e2e_words.txt

@@ -15,9 +15,8 @@
 // paths, and nothing is rounded or saturated here: ddc_chain takes bits
 // [41:18] exactly as it does from the vendor cores.
 //
-// What was measured on the vendor netlists and is reproduced here (the
-// comparison itself is tests/tb_hbdec_netlist.v, run by `make test-dsp-netlist`;
-// tests/tb_hbdec.v checks the same contract without the netlists):
+// What was measured on the Xilinx netlists and is reproduced here
+// (tests/tb_hbdec.v checks this contract against an independent model):
 //
 //   * an output is produced for every second accepted input sample, counting
 //     from reset; that second sample is the newest one in the sum above

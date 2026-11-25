@@ -59,7 +59,7 @@ module tb_adc_pins;
    function [11:0] i_of(input integer k); i_of = k;              endfunction
    function [11:0] q_of(input integer k); q_of = 3 * k + 1000;   endfunction
 
-   // Negative controls (the Makefile runs each and requires FAIL):
+   // Negative controls (the justfile runs each and requires FAIL):
    //   +NEG_SWAP  Q in the first half of the period, I in the second
    //   +NEG_DROP  the converter skips one sample period in mid-run
    //   +NEG_X     one data pin undriven
