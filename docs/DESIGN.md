@@ -1,95 +1,145 @@
-# v2: our own stack, end to end
+# v2 design
 
-Status: design, from four audits (FPGA, FX3 firmware contract, AD9361
-bring-up, host streaming) of the working stage tagged `v1-ettus-uhd`.
-Nothing below is built yet.
+Two products, nothing else: the **FPGA image** and the **Rust driver**. The
+FPGA moves samples bit exact and executes control operations; the driver
+owns everything with logic (AD9361 setup, configuration, streams). A thin
+CLI on the driver receives, transmits, records and shows spectra.
 
-## Goal
+Scope (definition of done): 2 RX + 2 TX at 2 x 30.72 MS/s and 1 x 61.44 MS/s,
+full duplex, lossless; every setting over USB through one configuration;
+clocks with measured margin; LEDs; stock FX3 firmware unchanged; no UHD,
+no Ettus RTL, no Python.
 
-2 RX + 2 TX at 2 x 30.72 MS/s and 1 x 61.44 MS/s, full duplex, lossless;
-every setting reachable over USB through one declarative configuration; a
-protocol, an FPGA design and a host driver that are all ours. The stock FX3
-firmware stays.
+## Decided
 
-## What changes and why
+| Question | Decision |
+| --- | --- |
+| Protocol | ours: packets, control operations, register map |
+| FPGA DSP | none; the AD9361 filters and decimates (0.52 to 61.44 MS/s) |
+| Wire formats | sc12 (lossless; required for full duplex) and sc16 (code x 16) |
+| Host | one Rust workspace; no Python |
+| Configuration | one declarative TOML, applied whole, only differences written |
 
-| Today (v1) | Flaw found | v2 |
-| --- | --- | --- |
-| UHD's CHDR packets, two radio cores, per-radio timekeepers | ~10 300 lines of RTL, two clock domains of logic, channel alignment left to the host | one framer for both channels, one 64-bit sample clock, ~3 300 lines |
-| FPGA DDC/DUC (CORDIC, CIC, halfbands, 94 DSP48) | the AD9361 already filters and decimates from 61.44 down to 0.52 MS/s with ~19 Hz rate resolution; the DDC at decimation 1 only rescales (x0.9993) and inverts channel 2 | no FPGA DSP; samples are the AD9361's 12-bit codes, bit exact |
-| ~0.9 ms of receive buffering, store-and-forward in three stages | the rare residual loss is a USB service gap longer than the device can hold; a 34 ms host queue does not help | 1.25 MiB receive ring in BRAM (~7 ms at 2 x 30.72 MS/s, 12-bit), 256 KiB transmit ring |
-| an overflow stops the stream; UHD restarts it, ~22 ms of samples lost | | the stream never stops: a packet that does not fit is dropped and counted, the next carries an OVERFLOW flag, the timestamp gives the exact gap |
-| packets end with PKTEND, one USB transfer per ~16 KB packet (~15 000 completions/s); a pad word on 1024-multiples; packets of >= 4092 samples fail | | fixed 16 384-byte packets = one FX3 buffer, committed when full; 256 KB host transfers (~940 completions/s); short packets only at end of burst, padded off 1024-multiples |
-| control: one register write per USB round trip; radio registers clocked by the AD9361 clock (unreachable while it is stopped) | AD9361 setup needs thousands of SPI writes | batched operations per control packet (WRITE, READ, SPI, WAIT, POLL, AT_TIME); every register on the always-running bus clock |
-| UHD on the host (C++, 3.15) | | small C streaming engine (real-time thread, zero-copy usbfs buffers, ring per stream) + Python client |
+Open (researching, then the owner decides): source of the AD9361 driver's
+undocumented values; FPGA sample clock (data clock + strobe or divided
+radio clock).
 
-## Architecture
+## FPGA: what it does
 
 ```text
- AD9361 -- b200_io (kept) --+-- rx_framer --> [RX ring 1.25 MiB] --> rx_sender --+
-                            +-- tx_player <-- [TX ring 256 KiB] <--- tx_parser <--+-- fx3_master -- FX3 (stock)
-                            timekeeper (64-bit sample count, PPS)                   |
- bus clock 100 MHz:  ctrl (batched ops) -> registers, SPI (AD9361, ADF4001), GPIO/ATR, test pattern
-                     events (overflow, underflow, late, end of burst) -> control-in endpoint
- kept: b200_clk_gen, b200_io, b200_leds, diag_echo
+ AD9361 -- io (kept) --+-- rx_framer --> [rx ring] --> usb_tx --+
+                       +-- tx_player <-- [tx ring] <-- usb_rx --+-- fx3 bus master -- FX3
+                       time (64-bit sample counter, PPS)       |
+ bus clock: ctrl (operation list) -> registers, spi (AD9361, ADF4001), gpio/atr
+            events -> control endpoint
+ kept from v1: clk_gen, io, leds, diag_echo
 ```
 
-Endpoints (fixed by the firmware): EP2 out / EP6 in samples, EP4 out / EP8
-in control and events.
+- **rx_framer**: both channels into one packet, sample-interleaved; drops
+  a packet that does not fit the ring, counts it, flags the next.
+- **tx_player**: plays a burst from its time (or now); zero output when
+  idle, after a burst and on underflow; antenna switches follow.
+- **ctrl**: executes a list of operations per control packet: WRITE, READ,
+  SPI, WAIT, POLL, AT_TIME; one result per operation (status, value,
+  tick it took effect).
+- **Registers** (all on the always-running bus clock): ID, version, build
+  hash, scratch; status (locks, AD9361 clock present); time; rx and tx
+  stream control; gpio/atr; counters (packets, drops, underflows, late,
+  ring high-water marks).
 
-### Packet (16-byte header, little-endian)
+### Packet (16-byte header, 32-bit little-endian words)
 
 | Word | Content |
 | --- | --- |
-| 0 | length (bytes), type (rx, tx, command, response, event), format (sc12, sc16), channel mask, version |
-| 1 | sequence (per stream), flags (time valid, start/end of burst, overflow, underflow, late) |
-| 2-3 | 64-bit time of the first sample, in samples |
+| 0 | length (bytes), type (rx, tx, command, result, event), format, channel mask |
+| 1 | sequence, flags: HAS_TIME, START_OF_BURST, END_OF_BURST, OVERFLOW, OVERRANGE |
+| 2-3 | time of the first sample, in sample ticks |
 
-Payload: samples interleaved per sample time (I0 Q0 I1 Q1); sc12 packs two
-complex samples in three words. sc12 is lossless (the converters are 12-bit)
-and is the format that fits full duplex: 2 x 2 x 30.72 MS/s x 3 bytes =
-369 MB/s of the bus's 400 MB/s.
+Data packets are exactly 16 384 bytes (one FX3 buffer) except at the end
+of a burst or after the latency timer, when a short packet ends with
+PKTEND, padded off multiples of 1024 bytes. sc12: four complex samples in
+three 32-bit words (bit order fixed in the protocol file).
 
-### Configuration surface (one schema)
+### Stream rules
 
-`host/schema.py` defines every setting once: name, default, range, meaning.
-The same definition produces the client's checks, the CLI (`--set name=value`,
-`--config file.toml`), the README table and (v2) the FPGA register header.
-A configuration is one dict or TOML file; `apply()` checks it whole and
-changes only what differs.
+- rx: start now or at a time; N samples (last packet END_OF_BURST) or
+  continuous; stop now or at a time. Continuous never stops on overflow.
+- tx: a burst starts at its time or now and ends with END_OF_BURST. Events:
+  LATE (burst dropped), UNDERFLOW, SEQ_ERROR, BURST_ACK, each with its tick.
+- time: set now or at next PPS, read last PPS; rate changes only with
+  streams stopped.
+
+## Rust workspace
+
+```text
+host/
+  b210/        library: the driver
+    usb.rs        FX3 load, FPGA load, endpoints, async transfers, real-time thread
+    proto.rs      packet header, sc12/sc16 packing, control operations
+    ad9361.rs     bring-up, rates, tuning, gains, calibrations, test modes
+    config.rs     the schema: settings, ranges, defaults, diff
+    device.rs     Device: open, apply, rx, tx, rx_stream, tx_stream, time
+  b210-cli/    binary `b210`: config, rx, tx, live, fft, record (SigMF)
+```
+
+API (names identical in library and CLI):
+
+```text
+Device::open(&cfg)?    dev.apply(&cfg)?    dev.config()
+dev.rx(n, at)? -> (samples, meta)          dev.tx(&samples, at)?
+rx = dev.rx_stream()?  rx.start(at, count)  rx.read(n)? -> (samples, meta)  rx.stop(at)
+tx = dev.tx_stream()?  tx.write(&samples, at, end_of_burst)?  tx.events()
+meta: time (ticks), lost (samples), flags
+```
+
+Configuration (every setting, once):
 
 ```toml
 rate = 30.72e6
 otw  = "sc12"
 test = "none"          # none, tone, prbs, loopback
 [rx]
-channels = [0, 1]
-freq     = 100e6       # one synthesizer for both channels
-gain     = [30, 30]
-antenna  = ["RX2", "RX2"]
+channels  = [0, 1]
+freq      = 100e6      # one synthesizer for both channels
+bandwidth = 20e6
+gain      = [30, 30]
+antenna   = ["RX2", "RX2"]
 [tx]
-channels = [0, 1]
-freq     = 100e6
-gain     = [0, 0]
+channels  = [0, 1]
+freq      = 100e6
+bandwidth = 20e6
+gain      = [0, 0]
 ```
 
-Python: `B210(config)`, `apply(config)`, `rx(n)`, `tx(waves, secs)`,
-`stream()` (blocks carrying data, time, samples lost).
+Recordings: SigMF (`.sigmf-data` ci16_le interleaved per channel,
+`.sigmf-meta` with a capture segment at every gap and every change).
 
-## Order of work, each step proven on the board before the next
+## Code standard (Rust and Verilog alike)
 
-1. Python client and schema on the v1 (UHD) backend: the surface users see,
-   fixed before the layers under it change.
-2. FPGA: `fx3_master` + packets + rings + control, with a test-pattern
-   source in place of the AD9361; host C engine. Proof: lossless pattern
-   streams at full rate both ways, sequence and timestamp exact.
-3. AD9361 bring-up from our host driver (see the open decision); proof: the
-   BIST tone, PRBS bit exact on both channels, digital loopback.
-4. Python client on the v2 backend; the gate rewritten for v2.
-5. Delete v1 (UHD, Ettus RTL, rx_dump, the UHD patches).
+- Each module's header says what it computes, in mathematics with units:
+  the formula, its domain, the invariant it keeps (e.g. ring capacity
+  C bytes holds C / (rate x channels x bytes per sample) seconds).
+- No unexplained constant: every number is derived in a comment or named
+  from a datasheet section (UG-570/UG-671 page, FX3 firmware line).
+- Every stated property has a test that would fail without it, and a
+  negative control where a check could pass vacuously.
+- One name per concept across FPGA, protocol, Rust and docs (rx/tx,
+  start/stop, time in ticks, lost in samples).
+- Nothing kept "for later": unused types, options and code paths go.
 
-## Open decisions
+## Order of work (each step proven on the board)
 
-- AD9361 bring-up: who writes it (pending the AD9361 audit).
-- Sample domain: run on the AD9361 data clock directly (removes the divided
-  radio clock and its hand-over) or keep today's proven radio clock.
+1. FPGA bus master, packets, rings, control, with a test-pattern source;
+   Rust usb + proto. Proof: lossless pattern both ways at full rate,
+   sequence and time exact.
+2. Rust ad9361. Proof: its SPI writes equal UHD's on this board; BIST
+   tone, PRBS bit exact on both channels, loopback, eye scan.
+3. Device, config, CLI (rx, tx, live, zoom FFT, SigMF); v2 gate in just.
+4. Delete v1: UHD, Ettus RTL, rx_dump, UHD patches, all Python.
+
+## Risks
+
+- Full duplex sc12 is 92 % of the 400 MB/s bus: measured in step 1.
+- Ring size against BRAM (up to 384 of 445 RAMB36): sized from measured
+  USB service gaps.
+- Committing full FX3 buffers without PKTEND: checked first with diag_echo.
