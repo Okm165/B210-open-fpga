@@ -47,8 +47,15 @@ packet_fifo FAIL SEED=1 FAULT=1
 ctrl PASS SEED=1
 ctrl PASS SEED=2
 ctrl PASS SEED=3 N=600
+ctrl PASS SEED=4 H0=3 H1=3
+ctrl PASS SEED=5 N=40 H0=50 H1=5000
 ctrl FAIL SEED=1 FAULT=1
 ctrl FAIL SEED=1 FAULT=2
+ctrl FAIL SEED=1 FAULT=3
+ctrl FAIL SEED=1 FAULT=4
+ctrl FAIL SEED=1 FAULT=5
+ctrl FAIL SEED=1 FAULT=6
+ctrl FAIL SEED=1 FAULT=7
 rx_framer PASS SEED=1
 rx_framer PASS SEED=2
 rx_framer PASS SEED=3 STREAMS=80
@@ -76,6 +83,14 @@ events FAIL SEED=1 FAULT=2
 regs PASS SEED=1
 regs PASS SEED=2 N=60000
 regs FAIL SEED=1 FAULT=1
+ad9361_io PASS SEED=1
+ad9361_io PASS SEED=2
+ad9361_io PASS SEED=3 DLY=0.0
+ad9361_io PASS SEED=4 DLY=5.0
+ad9361_io FAIL SEED=1 DLY=5.2
+ad9361_io FAIL SEED=1 FAULT=1
+ad9361_io FAIL SEED=1 FAULT=2
+ad9361_io FAIL SEED=1 FAULT=3
 b210 PASS
 b210 FAIL FAULT=1
 packet_fifo FAIL SEED=1 FAULT=2 WCLK=8138 RCLK=5000
@@ -85,13 +100,14 @@ sources() {
   case $1 in
     fx3_master) echo fpga/tests/tb_fx3_master.v fpga/tests/fx3_model.v fpga/rtl/fx3_master.v fpga/rtl/fx3_pads.v ;;
     packet_fifo) echo fpga/tests/tb_packet_fifo.v fpga/rtl/packet_fifo.v ;;
-    ctrl) echo fpga/tests/tb_ctrl.v fpga/rtl/ctrl.v fpga/rtl/packet_fifo.v ;;
+    ctrl) echo fpga/tests/tb_ctrl.v fpga/tests/spi_model.v fpga/rtl/ctrl.v fpga/rtl/spi.v fpga/rtl/packet_fifo.v ;;
     rx_framer) echo fpga/tests/tb_rx_framer.v fpga/rtl/rx_framer.v fpga/rtl/packet_fifo.v ;;
     tx_player) echo fpga/tests/tb_tx_player.v fpga/rtl/tx_player.v fpga/rtl/packet_fifo.v ;;
     sample_core) echo fpga/tests/tb_sample_core.v fpga/rtl/sample_core.v fpga/rtl/cdc_fifo.v fpga/rtl/gray_sync.v ;;
     events) echo fpga/tests/tb_events.v fpga/rtl/events.v fpga/rtl/packet_mux.v fpga/rtl/packet_fifo.v ;;
     regs) echo fpga/tests/tb_regs.v fpga/rtl/regs.v ;;
-    b210) echo fpga/tests/tb_b210.v fpga/tests/fx3_model.v fpga/rtl/*.v ;;
+    ad9361_io) echo fpga/tests/tb_ad9361_io.v fpga/tests/ad9361_port_model.v fpga/rtl/ad9361_io.v ;;
+    b210) echo fpga/tests/tb_b210.v fpga/tests/fx3_model.v fpga/tests/spi_model.v fpga/rtl/*.v ;;
   esac
   echo fpga/tests/prims.v
 }

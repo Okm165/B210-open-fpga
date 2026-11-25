@@ -21,6 +21,8 @@
 //   0x022 rx_at_lo    rw  \ start time (with rx_ctrl[3])
 //   0x023 rx_at_hi    rw  /
 //   0x024 rx_spp      rw  sample times per packet (clamped to 16 .. full)
+//   0x030 radio       rw  [0] AD9361 RESETB: 0 holds the AD9361 in reset
+//                         (after power-up and after a reset), 1 releases it
 //   0x080 + k - 1     r   event counter of code k (PROTOCOL.md 5): 1
 //                         OVERFLOW, 2 UNDERFLOW, 3 LATE, 4 SEQ_ERROR,
 //                         5 BURST_ACK, 6 BAD_PACKET
@@ -61,6 +63,8 @@ module regs #(
   // counters
   input  wire [191:0] events,            // code k in bits 32 k - 1 : 32 (k - 1)
   input  wire [31:0]  rx_lost, cmd_dropped,
+  // radio
+  output reg          resetb = 0,        // AD9361 RESETB pin
   // test
   output reg  [1:0]   test = 0,
   output reg  [15:0]  test_div = 0
@@ -72,7 +76,7 @@ module regs #(
     rx_start <= 0; rx_stop <= 0;
     reg_rdata <= 0;
     if (rst) begin
-      rx_at <= 0; test <= 0;
+      rx_at <= 0; test <= 0; resetb <= 0;
     end else begin
       if (reg_we) case (reg_addr)
         16'h003: scratch <= reg_wdata;
@@ -87,6 +91,7 @@ module regs #(
         16'h022: rx_time[31:0] <= reg_wdata;
         16'h023: rx_time[63:32] <= reg_wdata;
         16'h024: rx_spp <= reg_wdata[12:0];
+        16'h030: resetb <= reg_wdata[0];
         16'h0F0: test <= reg_wdata[1:0];
         16'h0F1: test_div <= reg_wdata[15:0];
         default: ;
@@ -107,6 +112,7 @@ module regs #(
         16'h022: reg_rdata <= rx_time[31:0];
         16'h023: reg_rdata <= rx_time[63:32];
         16'h024: reg_rdata <= {19'd0, rx_spp};
+        16'h030: reg_rdata <= {31'd0, resetb};
         16'h080, 16'h081, 16'h082, 16'h083, 16'h084, 16'h085:
                  reg_rdata <= events[32 * (reg_addr - 16'h080) +: 32];
         16'h086: reg_rdata <= rx_lost;

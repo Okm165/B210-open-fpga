@@ -7,12 +7,18 @@
 //   2 rx pattern, sc16 1 channel, a strobe every sample clock: 3 full
 //     packets + a short one; every value f(t), times contiguous, the last
 //     packet END_OF_BURST at exactly the count
-//   3 rx pattern, sc12 2 channels, a strobe every other clock
+//   3 rx pattern, sc12 2 channels, a strobe every other clock, until the
+//     host's stop write (which rewrites rx_ctrl's configuration bits)
 //   4 timed loopback: time set; continuous rx; one tx packet of 300 samples
 //     with START/END_OF_BURST at T = now + 20000; they must come back on rx
 //     at exactly T .. T + 299 (zeros around); stop -> a header-only
 //     END_OF_BURST packet; a BURST_ACK event of count 1 arrives
 //   5 counters: overflow, underflow, late, sequence, bad, rx_lost all 0
+//   6 radio control: the AD9361 RESETB pin low until the radio register
+//     releases it, and low again when it is cleared; an AD9361 register
+//     written and read back over SPI (opcode 3) and POLLed over SPI; an
+//     ADF4001 word latched; both devices' timing checked (spi_model.v) at
+//     the design's SPI rates
 // FAULT 1: one tx sample corrupted in the model's buffer (must be caught).
 `timescale 1ns/1ps
 `default_nettype none
@@ -26,10 +32,15 @@ module tb_b210;
   wire [31:0] d;
   wire ifclk, slcs, slwr, sloe, slrd, pktend, a1, a0, flaga, flagb;
   wire [7:0] leds;
+  wire resetb, cat_ce, cat_mosi, cat_sclk, cat_miso, pll_ce, pll_mosi, pll_sclk;
+  pulldown (cat_miso);                           // SPI_DO released: the bench reads 0
+  ad9361_spi_model ad (.ce(cat_ce), .sclk(cat_sclk), .mosi(cat_mosi), .miso(cat_miso));
+  adf4001_model pll (.le(pll_ce), .clk(pll_sclk), .data(pll_mosi));
   b210 dut (.codec_main_clk_p(ref), .codec_main_clk_n(!ref), .IFCLK(ifclk), .GPIF_D(d),
     .GPIF_CTL0(slcs), .GPIF_CTL1(slwr), .GPIF_CTL2(sloe), .GPIF_CTL3(slrd), .GPIF_CTL7(pktend),
     .GPIF_CTL11(a1), .GPIF_CTL12(a0), .GPIF_CTL4(flaga), .GPIF_CTL5(flagb), .GPIF_CTL9(1'b0),
-    .codec_reset(), .cat_ce(), .cat_mosi(), .cat_sclk(), .pll_ce(), .pll_mosi(), .pll_sclk(), .ref_sel(),
+    .codec_reset(resetb), .cat_ce(cat_ce), .cat_mosi(cat_mosi), .cat_sclk(cat_sclk), .cat_miso(cat_miso),
+    .pll_ce(pll_ce), .pll_mosi(pll_mosi), .pll_sclk(pll_sclk), .ref_sel(),
     .tx_enable1(), .tx_enable2(), .SFDX1_RX(), .SFDX1_TX(), .SFDX2_RX(), .SFDX2_TX(),
     .SRX1_RX(), .SRX1_TX(), .SRX2_RX(), .SRX2_TX(),
     .LED_STATUS(leds[0]), .LED_CLK_G(leds[1]), .LED_CLK_R(leds[2]), .LED_USR_G(leds[3]), .LED_USR_R(leds[4]),
@@ -51,13 +62,14 @@ module tb_b210;
   integer ev_sum [1:6];
   initial for (k = 1; k <= 6; k = k + 1) ev_sum[k] = 0;
   reg [31:0] res;
-  task op(input [7:0] code, input [15:0] addr, input [31:0] data);
+  task op(input [7:0] code, input [15:0] addr, input [31:0] data); op_arg(code, 8'd0, addr, data); endtask
+  task op_arg(input [7:0] code, input [7:0] arg, input [15:0] addr, input [31:0] data);
     reg got;
     begin
       fx3.send[2*DATA + 0] = {4'd1, 8'd0, 4'd2, 16'd24};
       fx3.send[2*DATA + 1] = cseq;
       fx3.send[2*DATA + 2] = 0; fx3.send[2*DATA + 3] = 0;
-      fx3.send[2*DATA + 4] = {code, 8'd0, addr};
+      fx3.send[2*DATA + 4] = {code, arg, addr};
       fx3.send[2*DATA + 5] = data;
       fx3.host_send(2, 6);
       got = 0;
@@ -88,6 +100,8 @@ module tb_b210;
   reg [15:0] raw;
   reg [11:0] got, expv;
   reg        eob, loop;
+  reg [3:0]  want_fmt;
+  reg [1:0]  want_ch;
   reg [47:0] burst [0:299];
   task rx_packet;
     begin
@@ -98,8 +112,10 @@ module tb_b210;
       B = nv * vb / 8;
       nt = (fx3.recv[DATA][15:0] - 16) / B;
       t = {fx3.recv[DATA + 3], fx3.recv[DATA + 2]};
-      if (fx3.recv[DATA][31:28] != 1 || fx3.recv[DATA][19:16] != 0 || fx3.recv[DATA + 1][15:0] != seq[15:0] || !fl[0])
-        fail("rx header");
+      if (fx3.recv[DATA][31:28] != 1 || fx3.recv[DATA][19:16] != 0 || fx3.recv[DATA + 1][15:0] != seq[15:0] || !fl[0]
+          || fx3.recv[DATA][23:20] != want_fmt || fx3.recv[DATA][25:24] != want_ch) begin
+        fail("rx header"); $display("  %h %h, format %0d channels %0d configured", fx3.recv[DATA], fx3.recv[DATA + 1], want_fmt, want_ch);
+      end
       if (seq > 0 && t != next_t) begin fail("rx time not contiguous"); $display("  %0d, expected %0d", t, next_t); end
       for (kk = 0; kk < nt; kk = kk + 1)
         for (v = 0; v < nv; v = v + 1) begin
@@ -133,17 +149,24 @@ module tb_b210;
     loop = 0;
     wr(16'h0F0, 1); wr(16'h0F1, 0); wr(16'h024, 4092); wr(16'h021, 3 * 4092 + 100);
     wr(16'h020, 32'h0000_0111);                    // start, sc16, channel 0
+    want_fmt = 1; want_ch = 1;
     seq = 0; total = 0; eob = 0;
     while (!eob) rx_packet;
     if (total != 3 * 4092 + 100 || seq != 4) begin fail("rx count"); $display("  %0d in %0d packets", total, seq); end
     $display("%0t 2 rx sc16 x1: %0d samples in %0d packets", $time, total, seq);
     // 3
-    wr(16'h0F1, 1); wr(16'h024, 1000); wr(16'h021, 5000);
+    // continuous, ended by the host's stop write, which also rewrites
+    // rx_ctrl's format and channel bits: the stream must keep its own,
+    // and channel 1's pattern is nonzero, so a change would show
+    wr(16'h0F1, 1); wr(16'h024, 1000); wr(16'h021, 0);
     wr(16'h020, 32'h0000_0321);                    // start, sc12, channels 0 and 1
+    want_fmt = 2; want_ch = 3;
     seq = 0; total = 0; eob = 0;
+    while (seq < 3) rx_packet;
+    wr(16'h020, 2);                                // stop
     while (!eob) rx_packet;
-    if (total != 5000 || seq != 5) begin fail("rx count 2"); $display("  %0d in %0d packets", total, seq); end
-    $display("%0t 3 rx sc12 x2: %0d samples in %0d packets", $time, total, seq);
+    if (fx3.recv[DATA][15:0] != 16) fail("stop: header-only END_OF_BURST");
+    $display("%0t 3 rx sc12 x2 until stopped: %0d samples in %0d packets", $time, total, seq);
     // 4
     wr(16'h0F0, 2); wr(16'h0F1, 0);
     wr(16'h012, 32'h1000_0000); wr(16'h013, 32'h0000_0007); wr(16'h014, 1);
@@ -152,6 +175,7 @@ module tb_b210;
     if (t < 64'h0000_0007_1000_0000 || t > 64'h0000_0007_1001_0000) begin fail("time set"); $display("  %h", t); end
     burst_t = t + 20000;
     wr(16'h024, 512); wr(16'h021, 0); wr(16'h020, 32'h0000_0111);
+    want_fmt = 1; want_ch = 1;
     for (i = 0; i < 300; i = i + 1) begin burst[i] = {24'd0, $random} & 48'h0000_00FF_FFFF; if (burst[i] == 0) burst[i] = 1; end
     fx3.send[0] = {4'd1, 2'd0, 2'd1, 4'd1, 4'd1, 16'd16 + 16'd1200};
     fx3.send[1] = {12'd0, 1'b0, 1'b1, 1'b1, 1'b1, 16'd0};       // EOB SOB HAS_TIME, sequence 0
@@ -176,6 +200,21 @@ module tb_b210;
     end
     rd(16'h086); if (res != 0) fail("rx_lost");
     rd(16'h087); if (res != 0) fail("cmd_dropped");
+    $display("%0t 5 counters done", $time);
+    // 6
+    if (resetb !== 1'b0) fail("AD9361 out of reset at power-up");
+    rd(16'h030); if (res !== 0) fail("radio register after power-up");
+    wr(16'h030, 1); if (resetb !== 1'b1) fail("RESETB not released");
+    rd(16'h030); if (res !== 1) fail("radio register readback");
+    op(8'd3, 16'h0000, {8'd0, 1'b1, 5'd0, 10'h123, 8'h5A});               // AD9361 0x123 := 0x5A
+    if (ad.r[10'h123] !== 8'h5A) fail("AD9361 SPI write");
+    op(8'd3, 16'h0000, {8'd0, 1'b0, 5'd0, 10'h123, 8'h00}); if (res !== 32'h5A) fail("AD9361 SPI read");
+    op_arg(8'd5, 8'd1, 16'h0000, {16'h00FF, 16'h005A}); if (res !== 32'h5A) fail("POLL over SPI");
+    op_arg(8'd3, 8'd1, 16'h0000, 32'h00AB_CDE3);                          // ADF4001
+    if (pll.n !== 1 || pll.log[0] !== 24'hABCDE3) fail("ADF4001 word");
+    if (ad.errors != 0 || pll.errors != 0) fail("SPI timing or framing");
+    wr(16'h030, 0); if (resetb !== 1'b0) fail("RESETB not asserted again");
+    $display("%0t 6 radio control: RESETB, AD9361 write / read / POLL, ADF4001 word (%0d AD9361 frames)", $time, ad.frames);
     if (fx3.errors != 0) fail("FX3 contract");
     $display("model errors %0d, bench errors %0d", fx3.errors, errors);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");

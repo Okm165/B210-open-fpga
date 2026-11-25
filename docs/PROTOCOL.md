@@ -152,6 +152,7 @@ with the radio step.
 | 0x021 | rx_count | rw | sample times in the stream, 0 = until stopped |
 | 0x022 / 0x023 | rx_at_lo / hi | rw | start time (with at time) |
 | 0x024 | rx_spp | rw | sample times per packet (clamped to 16 .. full) |
+| 0x030 | radio | rw | AD9361 RESETB [0]: 0 holds the AD9361 in reset (the value after power-up and after an FPGA reset), 1 releases it |
 | 0x080 + k - 1 | events | r | counter of event code k (section 5), k = 1 .. 6 |
 | 0x086 | rx_lost | r | sample times lost crossing to the bus clock (nonzero = a design error) |
 | 0x087 | cmd_dropped | r | command packets dropped as malformed |

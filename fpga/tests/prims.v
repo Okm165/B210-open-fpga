@@ -71,6 +71,34 @@ module IOBUF #(
   assign O = IO;
 endmodule
 
+// IDELAYE2, IDELAY_TYPE "FIXED" only: DATAOUT is IDATAIN delayed by
+// IDELAY_VALUE taps of 1 / (64 REFCLK_FREQUENCY) (78.125 ps at 200 MHz,
+// UG471 "IDELAYE2"), a transport delay; the tap-0 insertion delay is not
+// modelled. X while the IDELAYCTRL is not ready is not modelled either.
+module IDELAYE2 #(
+  parameter IDELAY_TYPE = "FIXED", DELAY_SRC = "IDATAIN", HIGH_PERFORMANCE_MODE = "TRUE",
+  parameter SIGNAL_PATTERN = "DATA", CINVCTRL_SEL = "FALSE", PIPE_SEL = "FALSE",
+  parameter integer IDELAY_VALUE = 0,
+  parameter real REFCLK_FREQUENCY = 200.0
+) (
+  input C, CE, CINVCTRL, DATAIN, IDATAIN, INC, LD, LDPIPEEN, REGRST,
+  input [4:0] CNTVALUEIN,
+  output [4:0] CNTVALUEOUT,
+  output reg DATAOUT = 0
+);
+  always @(IDATAIN) DATAOUT <= #(IDELAY_VALUE * 1000.0 / (64.0 * REFCLK_FREQUENCY)) IDATAIN;
+  assign CNTVALUEOUT = IDELAY_VALUE;
+endmodule
+
+// IDELAYCTRL: RDY 32 REFCLK cycles after RST falls, low while RST is high.
+module IDELAYCTRL (input REFCLK, RST, output reg RDY = 0);
+  integer n = 0;
+  always @(posedge REFCLK or posedge RST)
+    if (RST) begin n = 0; RDY <= 0; end
+    else if (n < 32) n = n + 1;
+    else RDY <= 1;
+endmodule
+
 // BUFG, IBUFDS: wires.
 module BUFG (input I, output O); assign O = I; endmodule
 module IBUFDS #(parameter DIFF_TERM = "FALSE", IOSTANDARD = "DEFAULT") (input I, IB, output O);

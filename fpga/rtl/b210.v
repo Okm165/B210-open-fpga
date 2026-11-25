@@ -6,7 +6,7 @@
 //   host <-USB-> FX3 <-GPIF-> fx3_pads, fx3_master
 //     thread 0 tx      -> tx ring  -> tx_player -> cdc_fifo -> sample_core
 //     thread 1 rx      <- rx ring  <- rx_framer <- cdc_fifo <- sample_core
-//     thread 2 command -> cmd fifo -> ctrl -> regs
+//     thread 2 command -> cmd fifo -> ctrl -> regs, spi (AD9361, ADF4001)
 //     thread 3 result  <- packet_mux <- result fifo (ctrl), event fifo (events)
 //
 // Clocks, from the 40 MHz reference (codec_main_clk, running from power-up)
@@ -21,10 +21,11 @@
 // GPIF_CTL9 (the FX3's global reset) resets the MMCM; each clock domain
 // leaves reset two of its cycles after the MMCM locks.
 //
-// Pins this step does not use are held where the radio is off and silent:
-// AD9361 in reset (RESETB low), its SPI and the ADF4001's deselected, both
-// PA enables and every antenna-switch line low, the reference on the
-// internal oscillator.
+// The AD9361 stays in reset (RESETB low) until the radio register (0x030)
+// releases it; its SPI and the ADF4001's are spi.v's, deselected between
+// frames. Pins this step does not use are held where the radio is off and
+// silent: both PA enables and every antenna-switch line low, the reference
+// on the internal oscillator.
 //
 // LEDs (every pin lights its LED when high):
 //   STATUS  blue    heartbeat of the bus clock (0.67 s)
@@ -49,8 +50,11 @@ module b210 #(
   output wire        GPIF_CTL11, GPIF_CTL12,                                  // A1 A0
   input  wire        GPIF_CTL4, GPIF_CTL5,                                    // FLAGA FLAGB
   input  wire        GPIF_CTL9,                                               // global reset
+  // AD9361 control and SPI, ADF4001 SPI
+  output wire        codec_reset, cat_ce, cat_mosi, cat_sclk, pll_ce, pll_mosi, pll_sclk,
+  input  wire        cat_miso,
   // held off in step 1
-  output wire        codec_reset, cat_ce, cat_mosi, cat_sclk, pll_ce, pll_mosi, pll_sclk, ref_sel,
+  output wire        ref_sel,
   output wire        tx_enable1, tx_enable2,
   output wire        SFDX1_RX, SFDX1_TX, SFDX2_RX, SFDX2_TX, SRX1_RX, SRX1_TX, SRX2_RX, SRX2_TX,
   // LEDs
@@ -162,13 +166,20 @@ module b210 #(
   wire        reg_we, reg_re;
   wire [15:0] reg_addr;
   wire [31:0] reg_wdata, reg_rdata;
+  wire        spi_start, spi_dev, spi_done, resetb;
+  wire [23:0] spi_word;
+  wire [7:0]  spi_rdata;
   packet_fifo #(.AW(9), .MAX(256)) cmd_fifo (.wclk(bus_clk), .w_rst(rst), .w_room(out_room[1]),
     .w_valid(out_valid[1]), .w_last(out_last), .w_data(out_data), .rclk(bus_clk), .r_rst(rst),
     .r_avail(c_avail), .r_data(c_data), .r_last(c_last), .r_take(c_take));
   ctrl control (.clk(bus_clk), .rst(rst), .c_avail(c_avail), .c_data(c_data), .c_last(c_last), .c_take(c_take),
     .r_room(r_room), .r_valid(r_valid), .r_last(r_last), .r_data(r_data),
     .reg_we(reg_we), .reg_re(reg_re), .reg_addr(reg_addr), .reg_wdata(reg_wdata), .reg_rdata(reg_rdata),
+    .spi_start(spi_start), .spi_dev(spi_dev), .spi_word(spi_word), .spi_done(spi_done), .spi_rdata(spi_rdata),
     .dropped(cmd_dropped));
+  spi serial (.clk(bus_clk), .rst(rst), .start(spi_start), .dev(spi_dev), .word(spi_word), .done(spi_done),
+    .rdata(spi_rdata), .cat_ce(cat_ce), .cat_sclk(cat_sclk), .cat_mosi(cat_mosi), .cat_miso(cat_miso),
+    .pll_ce(pll_ce), .pll_sclk(pll_sclk), .pll_mosi(pll_mosi));
   packet_fifo #(.AW(9), .MAX(256)) result_fifo (.wclk(bus_clk), .w_rst(rst), .w_room(r_room), .w_valid(r_valid),
     .w_last(r_last), .w_data(r_data), .rclk(bus_clk), .r_rst(rst), .r_avail(ra), .r_data(rdat), .r_last(rl), .r_take(rta));
 
@@ -218,12 +229,10 @@ module b210 #(
     .locked(locked), .sample_running(sample_running), .now(now), .time_set(time_set), .time_req(time_req),
     .time_ack(ack2), .rx_start(rx_start), .rx_stop(rx_stop), .rx_at(rx_at), .rx_format(rx_format),
     .rx_channels(rx_channels), .rx_count(rx_count), .rx_time(rx_time), .rx_spp(rx_spp), .rx_running(rx_running),
-    .events(counts), .rx_lost(rx_lost), .cmd_dropped(cmd_dropped), .test(test), .test_div(test_div));
+    .events(counts), .rx_lost(rx_lost), .cmd_dropped(cmd_dropped), .resetb(resetb), .test(test), .test_div(test_div));
 
-  // -- pins held off ----------------------------------------------------------------------------------
-  assign codec_reset = 1'b0;                       // AD9361 RESETB: in reset
-  assign cat_ce = 1'b1;  assign cat_mosi = 1'b0;  assign cat_sclk = 1'b0;
-  assign pll_ce = 1'b1;  assign pll_mosi = 1'b0;  assign pll_sclk = 1'b0;
+  // -- AD9361 reset, pins held off -------------------------------------------------------------------
+  assign codec_reset = resetb;                     // AD9361 RESETB, active low
   assign ref_sel = 1'b0;
   assign {tx_enable1, tx_enable2} = 2'b00;
   assign {SFDX1_RX, SFDX1_TX, SFDX2_RX, SFDX2_TX, SRX1_RX, SRX1_TX, SRX2_RX, SRX2_TX} = 8'd0;

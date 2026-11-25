@@ -33,6 +33,7 @@ module tb_regs;
   wire        time_req, rx_start, rx_stop, rx_at;
   wire [3:0]  rx_format;
   wire [1:0]  rx_channels, test;
+  wire        resetb;
   wire [31:0] rx_count;
   wire [12:0] rx_spp;
   wire [15:0] test_div;
@@ -43,7 +44,7 @@ module tb_regs;
     .locked(1'b1), .sample_running(1'b0), .now(now), .time_set(time_set), .time_req(time_req), .time_ack(ack),
     .rx_start(rx_start), .rx_stop(rx_stop), .rx_at(rx_at), .rx_format(rx_format), .rx_channels(rx_channels),
     .rx_count(rx_count), .rx_time(rx_time), .rx_spp(rx_spp), .rx_running(1'b1),
-    .events(ev), .rx_lost(32'h77), .cmd_dropped(32'h88), .test(test), .test_div(test_div));
+    .events(ev), .rx_lost(32'h77), .cmd_dropped(32'h88), .resetb(resetb), .test(test), .test_div(test_div));
 
   // the time set is acknowledged a random while later
   always @(posedge clk) if (time_req != ack && rnd(20) == 0) ack <= time_req;
@@ -56,7 +57,7 @@ module tb_regs;
     for (i = 0; i < 256; i = i + 1) begin m[i] = 0; mask[i] = 0; end
     mask[8'h03] = 32'hFFFF_FFFF; mask[8'h12] = 32'hFFFF_FFFF; mask[8'h13] = 32'hFFFF_FFFF;
     mask[8'h21] = 32'hFFFF_FFFF; mask[8'h22] = 32'hFFFF_FFFF; mask[8'h23] = 32'hFFFF_FFFF;
-    mask[8'h24] = 32'h1FFF; mask[8'hF0] = 32'h3; mask[8'hF1] = 32'hFFFF;
+    mask[8'h24] = 32'h1FFF; mask[8'h30] = 32'h1; mask[8'hF0] = 32'h3; mask[8'hF1] = 32'hFFFF;
     m[8'h24] = 4096; m[8'h20] = {22'd0, 2'd1, 4'd1, 4'd0};
   end
   function [31:0] expect(input [15:0] a, input [63:0] t, input [31:0] hi);

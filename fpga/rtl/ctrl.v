@@ -11,12 +11,16 @@
 // Operations:
 //   1 WRITE  register addr := data                         -> 0
 //   2 READ                                                 -> register addr
+//   3 SPI    one 24-bit frame data[23:0] to device arg (0 AD9361, 1
+//            ADF4001) through spi.v                        -> the 8 bits read
 //   4 WAIT   data microseconds                             -> 0
-//   5 POLL   repeat the previous READ until (value[15:0] & data[31:16]) ==
-//            data[15:0], for at most arg milliseconds (0: one try)
-//                                                          -> the last value
-// Status: 0 ok, 1 timeout (POLL), 3 unknown opcode - then every later
-// operation of the packet is skipped and answered with status 3 too.
+//   5 POLL   repeat the previous READ or SPI (the last one executed, in
+//            this packet or an earlier one) until (value[15:0] &
+//            data[31:16]) == data[15:0], for at most arg milliseconds (0:
+//            one try)                                      -> the last value
+// Status: 0 ok, 1 timeout (POLL), 3 unknown opcode (also SPI to a device
+// other than 0 or 1) - then every later operation of the packet is skipped
+// and answered with status 3 too.
 //
 // Malformed input never stalls the host:
 //   - wrong version or type, or a length that is not 16 + 8 n bytes with
@@ -28,6 +32,11 @@
 // Register bus: reg_we / reg_re are one-cycle strobes with reg_addr (and
 // reg_wdata); the addressed block puts the value on reg_rdata in the next
 // cycle (every block drives 0 when not addressed, the top ORs them).
+//
+// SPI port (spi.v): spi_start is a one-cycle strobe with spi_dev and
+// spi_word (the registers POLL repeats, set in the same cycle); spi_done
+// pulses when the frame is over, with spi_rdata valid and held from then
+// on. An SPI operation takes the frame's 50 half periods plus a few cycles.
 //
 // Time: CLK_MHZ cycles per microsecond (CLK_MHZ <= 127). WAIT and POLL count
 // microseconds with a prescaler restarted at the operation's start: no
@@ -55,10 +64,16 @@ module ctrl #(
   output reg  [15:0] reg_addr,
   output reg  [31:0] reg_wdata,
   input  wire [31:0] reg_rdata,
+  // SPI master
+  output reg         spi_start = 0,
+  output wire        spi_dev,
+  output wire [23:0] spi_word,
+  input  wire        spi_done,
+  input  wire [7:0]  spi_rdata,
   output reg  [31:0] dropped = 0     // command packets dropped as malformed
 );
   localparam VERSION = 4'd1, T_COMMAND = 4'd2, T_RESULT = 4'd3;
-  localparam OP_WRITE = 8'd1, OP_READ = 8'd2, OP_WAIT = 8'd4, OP_POLL = 8'd5;
+  localparam OP_WRITE = 8'd1, OP_READ = 8'd2, OP_SPI = 8'd3, OP_WAIT = 8'd4, OP_POLL = 8'd5;
   localparam ST_OK = 8'd0, ST_TIMEOUT = 8'd1, ST_UNKNOWN = 8'd3;
 
   // states
@@ -73,7 +88,12 @@ module ctrl #(
   reg [31:0] a = 0, b = 0;       // current operation
   reg [7:0]  status = 0;
   reg [31:0] value = 0;          // result data
-  reg [15:0] poll_addr = 0;      // the previous READ's address
+  // the previous READ or SPI, which POLL repeats
+  reg        poll_spi = 0;       // 0 READ of poll_addr, 1 SPI of poll_word to poll_dev
+  reg [15:0] poll_addr = 0;
+  reg        poll_dev = 0;
+  reg [23:0] poll_word = 0;
+  assign spi_dev = poll_dev, spi_word = poll_word;
   reg [31:0] us = 0;             // microseconds left (WAIT, POLL)
   reg [6:0]  pre = 0;            // cycles into the current microsecond
   wire       tick = pre == CLK_MHZ - 1;
@@ -83,9 +103,12 @@ module ctrl #(
   wire        good   = h0[31:28] == VERSION && h0[19:16] == T_COMMAND &&
                        length >= 16 && length <= 1024 && length[2:0] == 0;
   wire [7:0]  opcode = a[31:24];
+  wire        known  = opcode == OP_WRITE || opcode == OP_READ || (opcode == OP_SPI && a[23:17] == 0) ||
+                       opcode == OP_WAIT || opcode == OP_POLL;
+  wire [15:0] polled = poll_spi ? {8'd0, spi_rdata} : reg_rdata[15:0];   // what POLL compares
 
   always @(posedge clk) begin
-    c_take <= 0; r_valid <= 0; r_last <= 0; reg_we <= 0; reg_re <= 0;
+    c_take <= 0; r_valid <= 0; r_last <= 0; reg_we <= 0; reg_re <= 0; spi_start <= 0;
     if (rst) begin
       state <= IDLE;
     end else case (state)
@@ -132,31 +155,41 @@ module ctrl #(
       end
       EXEC: begin
         status <= ST_OK; value <= 0;
-        if (skip || !(opcode == OP_WRITE || opcode == OP_READ || opcode == OP_WAIT || opcode == OP_POLL)) begin
+        if (skip || !known) begin
           skip <= 1; status <= ST_UNKNOWN; state <= RESULT_A;
         end else case (opcode)
           OP_WRITE: begin
             reg_we <= 1; reg_addr <= a[15:0]; reg_wdata <= b; state <= RESULT_A;
           end
           OP_READ: case (phase)   // strobe, wait, take the value
-            0: begin reg_re <= 1; reg_addr <= a[15:0]; poll_addr <= a[15:0]; phase <= 1; end
+            0: begin reg_re <= 1; reg_addr <= a[15:0]; poll_spi <= 0; poll_addr <= a[15:0]; phase <= 1; end
             1: phase <= 2;
             default: begin value <= reg_rdata; state <= RESULT_A; end
+          endcase
+          OP_SPI: case (phase)    // start the frame, take the byte when it is over
+            0: begin
+              spi_start <= 1; poll_spi <= 1; poll_dev <= a[16]; poll_word <= b[23:0]; phase <= 1;
+            end
+            default: if (spi_done) begin value <= {24'd0, spi_rdata}; state <= RESULT_A; end
           endcase
           OP_WAIT: case (phase)   // b * CLK_MHZ cycles in all
             0: begin us <= b; pre <= 2; phase <= 1; end
             default: if (us == 0) state <= RESULT_A;
                      else begin pre <= tick ? 7'd0 : pre + 1; if (tick) us <= us - 1; end
           endcase
-          default: begin          // POLL: read, compare; again until a match or the time is up
+          default: begin          // POLL: read or SPI, compare; again until a match or the time is up
             if (phase != 0) begin pre <= tick ? 7'd0 : pre + 1; if (tick && us != 0) us <= us - 1; end
             case (phase)
               0: begin us <= {a[23:16], 10'd0} - {a[23:16], 4'd0} - {a[23:16], 3'd0}; pre <= 0; phase <= 1; end
-              1: begin reg_re <= 1; reg_addr <= poll_addr; phase <= 2; end
-              2: phase <= 3;
+              1: begin
+                if (poll_spi) spi_start <= 1;
+                else begin reg_re <= 1; reg_addr <= poll_addr; end
+                phase <= 2;
+              end
+              2: if (!poll_spi || spi_done) phase <= 3;   // the register's value comes next cycle
               default: begin
-                value <= reg_rdata;
-                if ((reg_rdata[15:0] & b[31:16]) == b[15:0]) state <= RESULT_A;
+                value <= poll_spi ? {24'd0, spi_rdata} : reg_rdata;
+                if ((polled & b[31:16]) == b[15:0]) state <= RESULT_A;
                 else if (us == 0) begin status <= ST_TIMEOUT; state <= RESULT_A; end
                 else phase <= 1;
               end
