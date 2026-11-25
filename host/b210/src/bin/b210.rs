@@ -253,6 +253,9 @@ fn rx_run(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: usize,
     }
     ctrl.write(regs::RX_SPP, s.per_packet() as u32)?;
     ctrl.write(regs::RX_COUNT, 0)?;
+    // whatever a previous stream left in the endpoint must not mix with this
+    // stream's packets (its END_OF_BURST would end the run before it begins)
+    flush_rx(rx);
     ctrl.write(regs::RX_CTRL, rx::START | rx::config(s.code, s.mask as u32))?;
     let mut t = Tally::default();
     let mut values = vec![0i16; 4 * 8192];
@@ -336,6 +339,24 @@ fn check_packet(p: &[u8], s: Shape, expect: &impl Fn(u64) -> [i16; 4], values: &
     t.samples += n as u64;
     t.next = Some((h.time + n as u64, h.sequence.wrapping_add(1)));
     t.ended |= h.flags & flag::END_OF_BURST != 0;
+}
+
+/// Fetch and discard whatever a previous stream left on the endpoint. A
+/// stopped stream's packets (and its END_OF_BURST) sit in the FX3's DMA
+/// channel; the next run must begin with an empty one. Bounded: 100 ms is
+/// ~25 packets at the slowest test rate and far more than any leftover,
+/// and the loop exits at once when nothing arrives.
+fn flush_rx(rx: &mut Endpoint<Bulk, In>) {
+    let deadline = Instant::now() + Duration::from_millis(100);
+    rx.submit(zero_copy(rx.allocate(proto::DATA_BUFFER)));
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() { break; }
+        let Some(c) = rx.wait_next_complete(left) else { break };
+        rx.submit(zero_copy(rx.allocate(proto::DATA_BUFFER)));
+    }
+    rx.cancel_all();
+    while rx.pending() > 0 { rx.wait_next_complete(Duration::from_millis(100)); }
 }
 
 // -- the tests ----------------------------------------------------------------------------------
@@ -508,50 +529,61 @@ fn monitor(usb: &mut Usb, interval_ms: u64) -> Result<()> {
 /// signal statistics, and stop after `seconds`. The step-1 sources are the
 /// FPGA's pattern and the tx loopback; the radio needs the step-2 image.
 fn capture(usb: &mut Usb, a: &StreamArgs, source: &str, out: &std::path::Path) -> Result<()> {
+    use b210::iq;
+    use std::io::Write;
     let src = match source { "pattern" => test::PATTERN, "loopback" => test::LOOPBACK,
                              _ => bail!("source: pattern or loopback") };
     let s = Shape::new(a)?;
-    let nv = 2 * s.nch;
-    println!("capture {} x{} from {:?}: {:.3} MS/s -> {}", a.format, a.channels, source, s.rate / 1e6, out.display());
+    let nch = s.nch;
+    let nv = 2 * nch;
+    // one file per channel, so every later tool reads one channel without
+    // knowing the mask (iq::channel_path owns the naming)
+    let paths: Vec<_> = (0..nch).map(|c| iq::channel_path(out, c)).collect();
+    println!("capture {} x{} from {:?}: {:.3} MS/s -> {}", a.format, a.channels, source, s.rate / 1e6,
+             paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
     let before = setup(&mut usb.ctrl, src, a.div)?;
-    let mut file = std::io::BufWriter::new(std::fs::File::create(out)?);
     let depth = usb.depth;
+    let mut files = Vec::with_capacity(nch);
+    for p in &paths {
+        let f = std::fs::File::create(p).with_context(|| p.display().to_string())?;
+        files.push(std::io::BufWriter::new(f));
+    }
+    // level per channel, accumulated as it streams: (min, max, sum of squares,
+    // values), so the statistics never re-read or hold the capture
+    let mut acc = vec![(i16::MAX, i16::MIN, 0f64, 0u64); nch];
     ctrl_stream(&mut usb.rx, &mut usb.ctrl, s, depth, |vals| {
-        use std::io::Write;
-        let mut raw = Vec::with_capacity(2 * vals.len());
-        for v in vals { raw.extend_from_slice(&v.to_le_bytes()); }
-        file.write_all(&raw)
+        let frames = vals.len() / nv;          // sample times in this packet
+        for (c, acc) in acc.iter_mut().enumerate() {
+            // one write per channel per packet: the whole packet's I/Q pairs
+            let mut raw = Vec::with_capacity(4 * frames);
+            for k in 0..frames {
+                let i = vals[k * nv + 2 * c];
+                let q = vals[k * nv + 2 * c + 1];
+                raw.extend_from_slice(&i.to_le_bytes());
+                raw.extend_from_slice(&q.to_le_bytes());
+                acc.0 = acc.0.min(i).min(q);
+                acc.1 = acc.1.max(i).max(q);
+                acc.2 += (i as f64).powi(2) + (q as f64).powi(2);
+                acc.3 += 2;                     // I and Q are two values per time
+            }
+            files[c].write_all(&raw)?;
+        }
+        Ok(())
     }, |_, elapsed| elapsed >= a.seconds)?;
-    drop(file);
+    for f in &mut files { f.flush()?; }
+    drop(files);
     let after = counters(&mut usb.ctrl)?;
     // capture sends no burst, so no counter may rise in either source
     let counters_ok = check_counters(&before, &after, [0; 7]);
-    // signal statistics over the whole file: level, clipping, quiet
-    // signal statistics from the file: level, clipping, quiet
-    let bytes = std::fs::read(out)?;
-    let mut lo = [i16::MAX; 4];
-    let mut hi = [i16::MIN; 4];
-    let mut sums = [0f64; 4];
-    let mut n4 = [0u64; 4];
-    for (i, c) in bytes.as_chunks::<2>().0.iter().enumerate() {
-        let v = i16::from_le_bytes(*c);
-        let k = i % nv;
-        if k < 4 {
-            lo[k] = lo[k].min(v); hi[k] = hi[k].max(v);
-            sums[k] += (v as f64).powi(2); n4[k] += 1;
-        }
-    }
-    let samples = bytes.len() / 2 / nv;
-    println!("{} sample times in {:.2} s = {:.3} MS/s", samples, a.seconds, samples as f64 / a.seconds / 1e6);
-    for k in 0..4 {
-        if n4[k] == 0 { continue; }
-        if k / 2 < s.nch {
-            let rms = (sums[k] / n4[k] as f64).sqrt();
-            println!("  {}{}: min {} max {} rms {:.1} (full scale +-2048)",
-                     if k % 2 == 0 { "I" } else { "Q" }, k / 2, lo[k], hi[k], rms);
-        }
+    for (c, &(lo, hi, sum, n)) in acc.iter().enumerate() {
+        let st = iq::Stats { min: lo, max: hi, rms: if n > 0 { (sum / n as f64).sqrt() } else { 0.0 } };
+        let frames = n / 2;
+        println!("  ch{c}: {frames} times, {}: min {} max {} rms {:.1}{}",
+                 paths[c].display(), st.min, st.max, st.rms,
+                 if st.clipped(2048.0) { " (at full scale)" } else { "" });
     }
     if !counters_ok { bail!("capture: a counter rose that should not"); }
+    println!("plot one channel with: b210-plot {} --rate {:.6}", paths[0].display(), s.rate);
     Ok(())
 }
 
@@ -563,24 +595,28 @@ fn ctrl_stream(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: us
     let nv = 2 * s.nch;
     ctrl.write(regs::RX_SPP, s.per_packet() as u32)?;
     ctrl.write(regs::RX_COUNT, 0)?;
+    flush_rx(rx);
     ctrl.write(regs::RX_CTRL, rx::START | rx::config(s.code, s.mask as u32))?;
     let mut t = Tally::default();
     let mut values = vec![0i16; 4 * 8192];
+    let t0 = Instant::now();
     for _ in 0..depth {
         rx.submit(zero_copy(rx.allocate(proto::DATA_BUFFER)));
     }
+    if std::env::var("B210_DEBUG").is_ok() { eprintln!("submitted {depth} at {:.3}s", t0.elapsed().as_secs_f64()); }
     let mut pending = Vec::new();        // bytes of a packet split over transfers
     let start = Instant::now();
     let mut stopping = false;
     while !t.ended {
         if !stopping && stop(&t, start.elapsed().as_secs_f64()) {
+            if std::env::var("B210_DEBUG").is_ok() { eprintln!("{:.6}s stop", start.elapsed().as_secs_f64()); }
             ctrl.write(regs::RX_CTRL, rx::STOP)?;
             stopping = true;
         }
         let c = rx.wait_next_complete(Duration::from_secs(2)).context("no rx packet for 2 s")?;
         let n = c.actual_len;
         let buf = c.into_result()?;
-        if std::env::var("B210_DEBUG").is_ok() { eprintln!("{:.3}s transfer {n} bytes, pending {}, at {}", start.elapsed().as_secs_f64(), rx.pending(), Header::decode(&buf[..n]).map(|h| h.time).unwrap_or(0)); }
+        if std::env::var("B210_DEBUG").is_ok() { eprintln!("{:.3}s transfer {n} bytes, pending {}", start.elapsed().as_secs_f64(), rx.pending()); }
         // Packets may split across transfers and several may share one, so
         // accumulate bytes and walk whole packets: the wire size of a packet
         // follows from its 16-bit length (PROTOCOL.md 1).
@@ -594,19 +630,35 @@ fn ctrl_stream(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: us
             let p = &bytes[at..at + size];
             let h = match Header::decode(p) {
                 Ok(h) if h.kind == Kind::Rx && h.length as usize == length => h,
-                _ => { t.bad_headers += 1; at += size.max(1); continue }
+                e => {
+                    t.bad_headers += 1;
+                    if std::env::var("B210_DEBUG").is_ok() {
+                        eprintln!("bad header at {}, length {}: {:?} {:02x?}", at, length, e, &p[..16.min(p.len())]);
+                    }
+                    at += size.max(1); continue
+                }
             };
             let payload = h.length as usize - proto::HEADER;
             let bpt = s.format.bytes_per_time(s.nch);
-            if payload.is_multiple_of(bpt) {
+            if payload == 0 {
+                // header-only END_OF_BURST: marks the end, carries no sample
+            } else if payload.is_multiple_of(bpt) {
                 let n = payload / bpt;
                 let body = &p[proto::HEADER..proto::HEADER + payload];
                 if s.format == Format::Sc16 { proto::unpack_sc16(body, &mut values[..n * nv]); }
                 else { proto::unpack_sc12(body, &mut values[..n * nv]); }
                 sink(&values[..n * nv])?;
                 t.packets += 1; t.samples += n as u64;
-            } else { t.bad_headers += 1 }
-            t.ended |= h.flags & flag::END_OF_BURST != 0;
+            } else {
+                t.bad_headers += 1;
+            }
+            // an END_OF_BURST before any data is a stopped stream's leftover,
+            // never this stream's end
+            if std::env::var("B210_DEBUG").is_ok() { eprintln!("  pkt t {} len {} flags {:04x}", h.time, h.length, h.flags); }
+            if t.packets > 0 && h.flags & flag::END_OF_BURST != 0 {
+                if std::env::var("B210_DEBUG").is_ok() { eprintln!("  end at {} after {} packets", h.time, t.packets); }
+                t.ended = true;
+            }
             at += size;
         }
         pending = bytes.split_off(at);
@@ -614,6 +666,7 @@ fn ctrl_stream(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: us
     }
     rx.cancel_all();
     while rx.pending() > 0 { rx.wait_next_complete(Duration::from_secs(1)); }
+    if std::env::var("B210_DEBUG").is_ok() { eprintln!("done: {} packets, {} times, {} bad", t.packets, t.samples, t.bad_headers); }
     if t.bad_headers > 0 { bail!("capture: {} bad headers", t.bad_headers) }
     Ok(())
 }

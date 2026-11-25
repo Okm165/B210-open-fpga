@@ -3,6 +3,8 @@
 //! `usb` carries it, `regs` names the registers.
 pub mod config;
 pub mod ad9361;
+pub mod dsp;
+pub mod iq;
 pub mod proto;
 pub mod regs;
 pub mod usb;
