@@ -5,7 +5,7 @@
 #   .tools/nextpnr-himbaechel
 #   .tools/chipdb-xc7k325t.bin
 #
-# Sources and the two local fixes:
+# Sources and the local fixes:
 #
 #   openXC7/nextpnr              $NEXTPNR_REV
 #     + container/patches/nextpnr-rioi-zinv-t1.patch
@@ -14,6 +14,11 @@
 #     + container/patches/nextpnr-bufrclk-enable.patch
 #         a BUFR output routed to a BUFG carried no clock: the buffer enables
 #         of that line in the clock row and the CMT column were never written.
+#     + container/patches/nextpnr-dsp48e1-timing.patch
+#         the Kintex-7 chipdb has no timing for DSP48E1, and a cell without
+#         timing is ignored: no path into or out of a multiplier was checked.
+#         The arcs are worked out from each cell's register parameters with
+#         the data sheet's figures (DS182 table 35, speed grade -1).
 #   openXC7/nextpnr-xilinx-meta  $META_REV
 #     + kintex7/site_type_BUFR.json copied from artix7
 #         the Kintex-7 metadata lacks the BUFR site type, so the chipdb had
