@@ -132,8 +132,19 @@ examples/config.toml     every configuration key
    sequence and time exact (`b210 rx-test`, `b210 loop-test`). Done on the
    board.
 2. AD9361 data path: ad9361_io in the top on the AD9361's data clock, the
-   Rust ad9361 driver on the board. Proof: BIST tone, PRBS bit exact on
-   both channels, digital loopback, eye scan.
+   Rust ad9361 driver on the board. Done on the board (build 9,
+   `d346cc5`): config applied from the TOML with every poll ok; pattern
+   lossless at 2 x 30.72 MS/s (sc12 and sc16) and 1 x 61.44 MS/s; full
+   duplex loopback 307.2 M samples back at exactly their ticks in 10 s
+   (2 channels) and 5 s (1 channel at 61.44 MS/s); a 3 s radio capture
+   kept 89.0 M sample times per channel with nothing lost. Clocks
+   104.24 / 104.11 MHz, both crossings 2.14 and 1.78 ns against the
+   8.00 ns bound. First real RF (2.45 GHz, 40 / 35 dB gain, no antenna):
+   rms -59.2 / -61.6 dBFS, floor -134 dBFS/Hz, DC -151 dBFS, no tone;
+   the two ambient carriers repeat at their absolute frequencies and moved
+   when the LO moved 100 kHz, so they are external; with no coherent input
+   the I/Q balance figure is the signal's, not the receiver's (quality.rs).
+   BIST/PRBS/eye scan are still v1 measurements, not repeated on this image.
 3. Device API, configuration applied through config.rs, CLI rx / tx /
    record; a board check in just.
 4. No Python, no v1 left in the tree (v1 is tag v1-ettus-uhd).
