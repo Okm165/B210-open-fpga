@@ -51,10 +51,15 @@ no Ettus RTL, no Python.
 - **regs**: the register map, all on the always-running bus clock.
 - **events**: counter increases into event packets.
 
-Clocks (step 1, `b210.v`): one MMCM from the 40 MHz reference, VCO
-1200 MHz: bus clock 100 MHz, IFCLK 100 MHz lagging it by 66 steps of
-45 / 12 degrees, and a 61.54 MHz test sample clock (1200 / 19.5) with a
-strobe every `strobe_div` + 1 cycles in place of the AD9361's data clock.
+Clocks (`b210.v`): one MMCM from the 40 MHz reference, VCO 1200 MHz:
+bus clock 100 MHz, IFCLK 100 MHz lagging it by 66 steps of 45 / 12
+degrees, and 200 MHz for the IDELAYCTRL (its reset held past lock,
+DS182 >= 52 ns). The sample clock is the AD9361's own DATA_CLK (61.44 MHz
+in both modes: 2 x 30.72 or 1 x 61.44 MS/s), taken through one BUFG; the
+sample domain runs on it, one sample every period (1R1T) or every other
+period (2R2T, the strobe). The bus clock counts DATA_CLK edges to see it
+alive and measures the rate; the sample domain is held in reset until
+DATA_CLK runs.
 
 Sources:
 
@@ -76,7 +81,8 @@ fpga/
     regs.v          the register map
     spi_master.v    AD9361 and ADF4001 SPI
     events.v        event packets from counters
-    ad9361_io.v     the AD9361 data port (step 2; benched, not yet in the top)
+    ad9361_io.v     the AD9361 data port: DATA_CLK through one BUFG, the
+                    sample strobe, rx/tx words, frames, FB_CLK (RX_IDELAY taps)
     protocol.vh     packet constants (PROTOCOL.md 2)
   tests/            tb_<block>.v per block, tb_b210.v end to end, device
                     models (FX3, SPI, AD9361 port), run.sh
@@ -138,8 +144,9 @@ examples/config.toml     every configuration key
 - AT (opcode 6) and result status 2: reserved in PROTOCOL.md 4.
 - Results carrying the tick an operation took effect.
 - PPS: time set at the next PPS, the time of the last PPS.
-- Antenna switches, PA enables and ATR following tx_active / rx streams
-  (held off in step 1).
+- Antenna switches follow a stream (ATR): they are driven to UHD's off
+  state 1010_0101 and the PA enables stay low; switching per state is not
+  built (no configuration key until it is).
 
 ## Risks
 
