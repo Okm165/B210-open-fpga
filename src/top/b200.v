@@ -84,13 +84,16 @@ module b200 (
    // input 	 gps_txd, // FPGA has pullup for unpopulated GPS
    // input 	 gps_txd_nmea, // FPGA has pullup for unpopulated GPS
 
-   // LEDS
-   output 	 LED_RX1,
-   output 	 LED_RX2,
-   output 	 LED_TXRX1_RX,
-   output 	 LED_TXRX1_TX,
+   // LEDs, each lit by a high level; what they show is in b200_leds.v.
+   // Per channel a TX/RX and an RX2 port LED, green and red in one case.
+   output 	 LED_TXRX1_RX,   // TX/RX 1 green
+   output 	 LED_TXRX1_TX,   // TX/RX 1 red
+   output 	 LED_RX1,        // RX2 1 green
+   output 	 LED_RX1_R,      // RX2 1 red
    output 	 LED_TXRX2_RX,
    output 	 LED_TXRX2_TX,
+   output 	 LED_RX2,
+   output 	 LED_RX2_R,
 
    // GPIO Header J504  - 10 pin 0.1" 3.3V.
    // Only present on Rev6 and later boards...these pins unused on Rev5 and earlier.
@@ -124,9 +127,11 @@ module b200 (
    output 	 rx_bandsel_b,
    output 	 rx_bandsel_c,
 
-   output    LED_STATUS,
+   output    LED_STATUS,     // blue
    output    LED_CLK_G,
-   output    LED_CLK_R
+   output    LED_CLK_R,
+   output    LED_USR_G,
+   output    LED_USR_R
    );
 
 
@@ -295,8 +300,23 @@ module b200 (
       fe0_gpio <= swap_atr_n ? radio1_gpio : radio0_gpio;
       fe1_gpio <= swap_atr_n ? radio0_gpio : radio1_gpio;
    end
-   assign {tx_enable1, SFDX1_RX, SFDX1_TX, SRX1_RX, SRX1_TX, LED_RX1, LED_TXRX1_RX, LED_TXRX1_TX} = fe0_gpio;
-   assign {tx_enable2, SFDX2_RX, SFDX2_TX, SRX2_RX, SRX2_TX, LED_RX2, LED_TXRX2_RX, LED_TXRX2_TX} = fe1_gpio;
+   // The low three bits are UHD's LED word for the front end: receiving
+   // through RX2, receiving through TX/RX, transmitting.  b200_leds shows it.
+   assign {tx_enable1, SFDX1_RX, SFDX1_TX, SRX1_RX, SRX1_TX} = fe0_gpio[7:3];
+   assign {tx_enable2, SFDX2_RX, SFDX2_TX, SRX2_RX, SRX2_TX} = fe1_gpio[7:3];
+
+   wire [3:0] radio0_events, radio1_events;
+   wire       pps;
+   b200_leds leds (
+      .bus_clk(bus_clk), .clocks_ok({clocks_ready, idelay_rdy}),
+      .ctrl_stb(ctrl_tvalid & ctrl_tready & ctrl_tlast),
+      .radio_clk(radio_clk), .pps(pps),
+      .atr({fe1_gpio[2:0], fe0_gpio[2:0]}),
+      .events(swap_atr_n ? {radio0_events, radio1_events} : {radio1_events, radio0_events}),
+      .trx_g({LED_TXRX2_RX, LED_TXRX1_RX}), .trx_r({LED_TXRX2_TX, LED_TXRX1_TX}),
+      .rx2_g({LED_RX2, LED_RX1}),           .rx2_r({LED_RX2_R, LED_RX1_R}),
+      .clk_g(LED_CLK_G), .clk_r(LED_CLK_R), .usr_g(LED_USR_G), .usr_r(LED_USR_R),
+      .status(LED_STATUS));
 
    wire [31:0] misc_outs; reg [31:0] misc_outs_r;
 
@@ -340,12 +360,12 @@ module b200 (
       // instead of leaving it open: an open input is x in simulation and
       // a permanent start bit after synthesis.
       .rxd(1'b1), .txd(),
-      .pps(LED_CLK_R),
+      .pps(pps),
       .sclk(sclk), .sen(sen), .mosi(mosi), .miso(miso),
       .rb_misc({31'b0, pll_lock}), .misc_outs(misc_outs),
 
       .lock_signals(codec_ctrl_out[7:6]),
-      .debug()
+      .radio0_events(radio0_events), .radio1_events(radio1_events)
    );
 
    // FPGA_RXD0/FPGA_TXD0 are the two upper front-panel GPIO bits.
@@ -374,12 +394,6 @@ module b200 (
         .debug()
     );
 
-   ///////////////////////////////////////////////////////////////////////
-   // Debug port
-   ///////////////////////////////////////////////////////////////////////
-   // assign debug = 0;
-   assign LED_STATUS = 'd1;
-   assign LED_CLK_G  = 'd0;
 
 
 

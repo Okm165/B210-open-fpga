@@ -75,7 +75,7 @@ image-clean:
 RUN := tests/run.sh
 TEST_JOBS ?= 8
 
-TESTS := t-elab t-constraints t-clk-gen t-fifo t-io t-gpif t-usb-rate t-e2e \
+TESTS := t-elab t-constraints t-clk-gen t-fifo t-io t-leds t-gpif t-usb-rate t-e2e \
          t-dac-slice t-tx t-rx-saturate t-atr t-golden t-postsyn
 .PHONY: $(TESTS) tests-all
 
@@ -129,6 +129,12 @@ t-io:
 	  $(RUN) --must-fail tb_tx_pins_$$fault tb_tx_pins '^TX-PINS: PASS' +$$fault
 	done
 	$(RUN) tb_io_handover tb_io_handover '^PASS: samples cross to radio_clk whole'
+
+# The LEDs show what src/top/b200_leds.v says they show, in eleven
+# situations; a transmitting port expected red instead of amber has to fail.
+t-leds:
+	@$(RUN) tb_leds tb_leds '^LEDS: PASS'
+	$(RUN) --must-fail tb_leds_red tb_leds '^LEDS: PASS' +NEG_RED
 
 # The FX3 bus module with its registers in the I/O blocks against the
 # unmodified reference, every pad and stream, every cycle; and the error

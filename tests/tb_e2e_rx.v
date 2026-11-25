@@ -253,6 +253,7 @@ module tb_e2e_rx;
    reg  ctrl_tlast = 0, ctrl_tvalid = 0;
    wire ctrl_tready;
 
+   wire [3:0] led_events;                 // radio 0: {tx alarm, rx alarm, tx sample, rx sample}
    b200_core #(.EXTRA_BUFF_SIZE(12), .BUS_CLK_HZ(100000000)) core (
       .bus_clk(bus_clk), .bus_rst(bus_rst),
       .tx_tdata(tx_tdata), .tx_tlast(tx_tlast), .tx_tvalid(tx_tvalid), .tx_tready(tx_tready),
@@ -267,7 +268,7 @@ module tb_e2e_rx;
       .rxd(1'b1), .txd(),
       .sen(), .sclk(), .mosi(), .miso(1'b0),
       .rb_misc(32'h0), .misc_outs(),
-      .lock_signals(2'b00), .debug(), .pps());
+      .lock_signals(2'b00), .radio0_events(led_events), .radio1_events(), .pps());
 
    // ---- GPIF + FX3 model --------------------------------------------------
    wire [31:0] gpif_d;
@@ -319,6 +320,15 @@ module tb_e2e_rx;
    // the stream control machine.
    integer strobes = 0, full_events = 0, cref = 0;
    reg full_d = 0;
+   // What the radio tells the LEDs: one pulse per received sample and one per
+   // error packet.  A shimmer that counts something else, or an alarm that
+   // fires twice or not at all, is found here.
+   integer led_samples = 0, led_rx_alarms = 0, led_tx = 0;
+   always @(posedge radio_clk) if (!radio_rst) begin
+      if (led_events[0] === 1'b1) led_samples   = led_samples + 1;
+      if (led_events[2] === 1'b1) led_rx_alarms = led_rx_alarms + 1;
+      if (led_events[1] === 1'b1 || led_events[3] === 1'b1) led_tx = led_tx + 1;
+   end
    wire [3:0] ibs_state = core.radio_0.ibs_state;
    always @(posedge radio_clk) begin
       cref = n - core.radio_0.vita_time;
@@ -754,6 +764,11 @@ module tb_e2e_rx;
       end
       if (rail_hits > 0) begin
          $display("E2E: FAIL - output reached the rail (clipping)"); fails = fails + 1;
+      end
+      if (led_samples != strobes || led_rx_alarms != err_packets || led_tx != 0) begin
+         $display("E2E: FAIL - LED events: %0d samples for %0d produced, %0d alarms for %0d error packets, %0d transmit events with no transmission",
+                  led_samples, strobes, led_rx_alarms, err_packets, led_tx);
+         fails = fails + 1;
       end
       if (bad_err != 0 || err_packets != OVERRUN || streams != 1 + OVERRUN) begin
          $display("E2E: FAIL - %0d error packets (%0d not as expected), %0d streams", err_packets, bad_err, streams);

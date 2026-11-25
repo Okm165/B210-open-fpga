@@ -27,7 +27,10 @@ module radio_legacy
    input [63:0]  ctrl_tdata, input ctrl_tlast, input ctrl_tvalid, output ctrl_tready,
    output [63:0] resp_tdata, output resp_tlast, output resp_tvalid, input resp_tready,
 
-   output [63:0] debug
+   // For the board's LEDs (b200_leds.v), one radio_clk pulse each:
+   // {transmit error reported, receive error reported, sample transmitted,
+   // sample received}
+   output reg [3:0] events
    );
 
 
@@ -418,9 +421,17 @@ module radio_legacy
 
 
 
-   /*******************************************************************
-    * Debug only logic below here.
-    ******************************************************************/
- assign debug = 0;
+   // An error is what the host is told about: the last word of a receive
+   // error packet (overflow, late command, broken chain), and every transmit
+   // response except the end-of-burst acknowledgement (underflow, late packet,
+   // sequence error).
+   reg tx_response_q;
+   always @(posedge radio_clk) begin
+      tx_response_q <= ack_or_error;
+      events <= {ack_or_error & ~tx_response_q & (error_code[63:32] != 32'd1),
+                 rx_err_gate & rx_err_tvalid_r & rx_err_tready_r & rx_err_tlast_r,
+                 strobe_tx & run_tx,
+                 strobe_rx & run_rx};
+   end
 
 endmodule // radio_legacy

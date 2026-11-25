@@ -66,9 +66,9 @@ module b200_core
     input [1:0] lock_signals,
 
     ////////////////////////////////////////////////////////////////////
-    // debug signals
+    // per radio, for the LEDs: {tx error, rx error, tx sample, rx sample}
     ////////////////////////////////////////////////////////////////////
-    output [63:0] debug,
+    output [3:0] radio0_events, output [3:0] radio1_events,
 
     output pps
 );
@@ -292,7 +292,6 @@ module b200_core
     /*******************************************************************
      * Radio 0
      ******************************************************************/
-   wire [63:0] radio0_debug;
    wire [31:0] fe0_gpio_out32;
    assign fe0_gpio_out = fe0_gpio_out32[7:0];
 
@@ -311,7 +310,7 @@ module b200_core
       .rx_tdata(r0_rx_tdata), .rx_tlast(r0_rx_tlast),  .rx_tvalid(r0_rx_tvalid), .rx_tready(r0_rx_tready),
       .ctrl_tdata(r0_ctrl_tdata), .ctrl_tlast(r0_ctrl_tlast),  .ctrl_tvalid(r0_ctrl_tvalid), .ctrl_tready(r0_ctrl_tready),
       .resp_tdata(r0_resp_tdata), .resp_tlast(r0_resp_tlast),  .resp_tvalid(r0_resp_tvalid), .resp_tready(r0_resp_tready),
-      .debug(radio0_debug)
+      .events(radio0_events)
    );
 
     /*******************************************************************
@@ -319,7 +318,6 @@ module b200_core
      ******************************************************************/
    assign      radio_st = 8'h2;
 
-   wire [63:0] radio1_debug;
    wire [31:0] fe1_gpio_out32;
    assign fe1_gpio_out = fe1_gpio_out32[7:0];
 
@@ -338,7 +336,7 @@ module b200_core
       .rx_tdata(r1_rx_tdata), .rx_tlast(r1_rx_tlast),  .rx_tvalid(r1_rx_tvalid), .rx_tready(r1_rx_tready),
       .ctrl_tdata(r1_ctrl_tdata), .ctrl_tlast(r1_ctrl_tlast),  .ctrl_tvalid(r1_ctrl_tvalid), .ctrl_tready(r1_ctrl_tready),
       .resp_tdata(r1_resp_tdata), .resp_tlast(r1_resp_tlast),  .resp_tvalid(r1_resp_tvalid), .resp_tready(r1_resp_tready),
-      .debug(radio1_debug)
+      .events(radio1_events)
    );
 
 endmodule // b200_core

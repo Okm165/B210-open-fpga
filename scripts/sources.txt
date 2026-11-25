@@ -77,4 +77,5 @@ src/rtl/wishbone/simple_uart.v
 src/top/b200_clk_gen.v
 src/top/b200_core.v
 src/top/b200_io.v
+src/top/b200_leds.v
 src/top/b200.v
