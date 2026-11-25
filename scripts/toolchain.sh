@@ -111,6 +111,24 @@ rm -f build/himbaechel/uarch/xilinx/chipdb-xc7k325t.* build/share/himbaechel/xil
 TMPDIR="$T/tmp" cmake --build build --parallel "${JOBS:-$(nproc)}" > "$T/build.log" 2>&1 \
   || { tail -20 "$T/build.log" >&2; exit 1; }
 
+# An engine is installed only if it times DSP48E1 paths: tests/dsp_timing.v
+# has a multiplier without registers between flip-flops, 4.39 ns that must
+# show as the critical path and miss the 5 ns clock.  An engine that ignores
+# the cell reports over 1 GHz and passes.
+cd "$ROOT"
+mkdir -p build/tmp
+podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -w /work -e HOME=/work/build \
+  "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" yosys -q -p "read_verilog tests/dsp_timing.v;
+    synth_xilinx -flatten -abc9 -family xc7 -nodsp -top dsp_timing; write_json build/tmp/dsp_timing.json" \
+  > build/tmp/dsp_timing-synth.log 2>&1 || { tail -5 build/tmp/dsp_timing-synth.log >&2; exit 1; }
+"$SRC/build/nextpnr-himbaechel" --device xc7k325tffg676-1 --chipdb "$SRC/build/share/himbaechel/xilinx/chipdb-xc7k325t.bin" \
+  --json build/tmp/dsp_timing.json -o xdc=tests/dsp_timing.xdc --timing-allow-fail > build/tmp/dsp_timing-pnr.log 2>&1 \
+  || { tail -5 build/tmp/dsp_timing-pnr.log >&2; exit 1; }
+grep -Eq "Source u_comb\.P[0-9]+" build/tmp/dsp_timing-pnr.log && grep -q "(FAIL at 200.00 MHz)" build/tmp/dsp_timing-pnr.log \
+  || { echo "toolchain: this engine does not time DSP48E1 paths; see build/tmp/dsp_timing-pnr.log" >&2; exit 1; }
+echo "engine times DSP48E1 paths: $(grep 'Max frequency' build/tmp/dsp_timing-pnr.log | tail -1 | sed 's/^[A-Za-z]*: //')"
+cd "$SRC"
+
 install -m755 build/nextpnr-himbaechel "$T/nextpnr-himbaechel"
 install -m644 build/share/himbaechel/xilinx/chipdb-xc7k325t.bin "$T/chipdb-xc7k325t.bin"
 rm -rf "$T/tmp"
