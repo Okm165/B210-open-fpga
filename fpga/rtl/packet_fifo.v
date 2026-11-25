@@ -1,136 +1,141 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// packet_fifo - a FIFO of whole packets between two clocks (or one).
+// packet_fifo - a FIFO of whole packets, one clock.
 //
-// Words are 32 bits plus a `last` mark. A packet becomes visible to the
-// reader only once its last word is written, so the reader can move a
-// whole packet without waiting; the writer reserves room for a whole
-// packet before it starts one. These are the two promises fx3_master
-// relies on (out_room, in_avail), and the radio side relies on them too.
+// Units: words of 32 bits, each carrying a `last` mark (33 bits an entry).
+// MAX is the longest packet in words; the depth is 2^AW words, with
+// MAX <= 2^AW. w_used, r_used and the room/avail decisions count words.
 //
-// Depth: a stream of full packets needs more than 2 MAX words: a finished
-// packet waits whole until the reader takes it, while the writer reserves
-// MAX words (+ 1, see w_room) for the next.
+// Invariant:
+//   * A packet becomes visible to the reader only once its last word is
+//     written: r_avail is high only when the packet that r_data starts is
+//     whole, and it stays high until that packet's last word is taken, so
+//     the reader moves a whole packet without waiting. A word of a packet
+//     still being written is kept, never shown.
+//   * Words and their `last` marks come out in the order they were written:
+//     word j of a packet the writer wrote is word j of the packet the reader
+//     takes, and the reader sees the packet's end exactly where the writer
+//     put it. The reader never reads a word that was not written, the writer
+//     never writes over a word the reader has not taken.
+// These are the two promises fx3_master relies on (out_room, in_avail: "a
+// source holds a whole packet, never withdrawn untaken") and the radio side
+// relies on them too.
 //
-// Write side (wclk):
-//   w_room   at least MAX words free, counting the word on w_data in this
-//            cycle as written. Check it in the cycle before the first word
-//            of a packet (or with it); a packet has at most MAX words, so it
-//            then always fits.
+// Write side:
 //   w_valid, w_data, w_last   one word; w_last marks a packet's last word.
-// Read side (rclk), show-ahead:
-//   r_avail  r_data / r_last hold a word of a complete packet: the packet
-//            can be taken one word per cycle to its end without a gap.
-//   r_take   consume r_data.
+//   w_room   there is room for one more packet: the FIFO holds fewer than
+//            ROOM words, where ROOM = MAX when the depth is 2*MAX or less
+//            and depth - MAX when it is deeper (deeper than 2*MAX, a FIFO
+//            buffers several packets and the room is what is left for one
+//            more). Check it in the cycle before the first word of a packet
+//            (or with it); a packet has at most MAX words, so it then always
+//            fits - the FIFO holds 2*MAX - 1 words at most when
+//            depth <= 2*MAX and depth - 1 at most otherwise.
+//            A word is taken at an edge with w_valid && w_room. The room
+//            check is the writer's promise, as it was in the two-clock
+//            version; the module takes a word with w_valid as long as the
+//            memory has a slot (fewer than 2^AW words in), which a writer
+//            that keeps its promise never reaches, and a writer that breaks
+//            it loses the word rather than writing over an unread one.
+//   w_used   words in the FIFO in this cycle, before this cycle's write; a
+//            high-water register can follow it.
+//   A packet must be written whole: no other packet's words in between.
 //
-// Clock crossing: three pointers of AW + 1 bits (the extra bit tells full
-// from empty), each counting words modulo 2^(AW+1):
-//   wp      words written           (write side)
-//   wc      words of complete packets (write side) -> Gray -> read side
-//   rp      words read from memory   (read side)  -> Gray -> write side
-// A Gray-coded count changes one bit per step, so a synchroniser that
-// samples it mid-change gets the old or the new value, never a mix
-// (Cummings, "Simulation and Synthesis Techniques for Asynchronous FIFO
-// Design", SNUG 2002). The copies a side holds of the other side's pointer
-// are therefore never ahead of the truth: the reader never reads a word not
-// yet committed, the writer never overwrites a word not yet read.
+// Read side, show-ahead:
+//   r_avail  the FIFO holds a word of a complete packet; r_data / r_last are
+//            that word, the oldest one, in this cycle.
+//   r_take   consume r_data: a word is read at an edge with r_take && r_avail.
+//   r_used   words in the FIFO, the same count as w_used (a packet being
+//            written counts before it is shown).
 //
-//   free (write side) = 2^AW - (wp - rp_seen)          <= true free space
-//   ready (read side) = wc_seen - rp                   <= true ready words
-// Both differences are taken modulo 2^(AW+1), in AW+1 bits.
+// Latency: registered both ways. A word is in the read register in the cycle
+// after it is written; r_avail rises in the cycle after a packet's last word
+// is written, and from then the packet's words follow on r_data one per
+// cycle as they are taken. There is no combinational path from w_data to
+// r_data.
 //
-// Memory: one simple dual-port RAM, read with a registered output and one
-// more pipeline register (2 cycles, so large depths meet timing at
-// 100 MHz). Reads run ahead into a 4-entry queue whose head is r_data:
-// 4 >= 2 cycles in flight + 1 being taken + 1, so a word taken every cycle
-// is always replaced in time.
+// Pointers, all counting words modulo 2^(AW+1); the extra bit tells a full
+// FIFO from an empty one and makes the differences below wrap correctly:
+//   wp   words written            wc   words of complete packets
+//   rp   words read and passed    used = wp - rp    (words in the FIFO)
+//                                 ready = wc - rp   (words of complete
+//                                 packets not read yet, r_avail is ready != 0)
+// Both sides are the same clock: nothing crosses, so there is no Gray code
+// and no synchroniser, and each pointer is a single register.
 //
-// Reset: w_rst and r_rst must be asserted together (each synchronous to its
-// clock) and held for at least 4 cycles of the slower clock, so that the
-// pointers' synchronised copies (2 registers + 1 conversion register) are
-// 0 when it ends.
+// Memory: one simple dual-port RAM, written at wp with a registered read at
+// the head's successor, rp + take: the word that becomes the head is in the
+// read register by the time the head is taken, so the head can be shown for
+// as long as the reader needs it without a second register. When the FIFO is
+// empty, or holds only the word being taken, the word written in this cycle
+// is the head next cycle; it is forwarded from w_data rather than read (a
+// read of the slot being written would return the old contents).
+//
+// Reset: synchronous, one clock, active high. One cycle is enough: it puts
+// the three pointers and the read register at 0, so the FIFO is empty after
+// it.
 `default_nettype none
 
 module packet_fifo #(
   parameter AW  = 12,         // log2 of the depth in words
   parameter MAX = 4096        // words in the longest packet
 ) (
-  input  wire        wclk, w_rst,
-  output reg         w_room = 0,
-  input  wire        w_valid, w_last,
-  input  wire [31:0] w_data,
-  input  wire        rclk, r_rst,
-  output wire        r_avail,
-  output wire [31:0] r_data,
-  output wire        r_last,
-  input  wire        r_take
+  input  wire          clk,
+  input  wire          rst,      // synchronous, holds the pointers at 0
+  // write side
+  input  wire          w_valid,
+  input  wire          w_last,
+  input  wire [31:0]   w_data,
+  output wire          w_room,   // room for a whole more packet
+  output wire [AW:0]   w_used,   // words in the FIFO
+  // read side, show-ahead
+  input  wire          r_take,
+  output wire          r_avail,
+  output wire          r_last,
+  output wire [31:0]   r_data,
+  output wire [AW:0]   r_used
 );
   localparam DEPTH = 1 << AW;
+  // room for one more packet: the whole depth less one packet, but never
+  // less than one packet itself (a depth of 2*MAX or less holds one)
+  localparam ROOM  = (DEPTH - MAX) > MAX ? (DEPTH - MAX) : MAX;
   generate if (MAX > DEPTH) begin : max_exceeds_depth
     initial begin $display("packet_fifo: MAX %0d > depth %0d", MAX, DEPTH); $finish; end
   end endgenerate
 
-  function [AW:0] gray(input [AW:0] b); gray = b ^ (b >> 1); endfunction
-  function [AW:0] bin(input [AW:0] g);
-    integer i;
-    begin bin[AW] = g[AW]; for (i = AW - 1; i >= 0; i = i - 1) bin[i] = bin[i+1] ^ g[i]; end
-  endfunction
-
   reg [32:0] mem [0:DEPTH-1];
 
-  // -- write side ---------------------------------------------------------------
-  reg [AW:0] wp = 0, wc = 0, wc_g = 0;
-  (* ASYNC_REG = "TRUE" *) reg [AW:0] rp_g1 = 0, rp_g2 = 0;
-  reg [AW:0] rp_g = 0;                      // rp in Gray, read side
-  wire [AW:0] wp_n = wp + w_valid;
-  // the reader's pointer, converted to binary one cycle after it is
-  // synchronised (a register between the XOR tree and the subtraction:
-  // 100 MHz); it lags one cycle more, which only understates the room
-  reg  [AW:0] rp_seen = 0;
-  wire [AW:0] used = wp_n - rp_seen;         // words in memory once w_data is written
-  wire [AW:0] used_next = used + w_valid;    // ... and once the next word is too
-  always @(posedge wclk) begin
-    if (w_valid) mem[wp[AW-1:0]] <= {w_last, w_data};
-    rp_g1 <= rp_g; rp_g2 <= rp_g1; rp_seen <= bin(rp_g2);
-    if (w_rst) begin
-      wp <= 0; wc <= 0; wc_g <= 0; w_room <= 0;
-    end else begin
-      wp <= wp_n;
-      if (w_valid && w_last) begin wc <= wp_n; wc_g <= gray(wp_n); end
-      // in the next cycle w_room must count the word then on w_data, which
-      // the writer may be presenting now already: reserve one more
-      w_room <= used_next + MAX <= DEPTH;
-    end
-  end
+  reg  [AW:0] wp = 0, rp = 0, wc = 0;
+  wire [AW:0] used  = wp - rp;                    // words in the FIFO
+  wire [AW:0] ready = wc - rp;                    // words of complete packets
+  wire        w_en  = w_valid && (used < DEPTH);  // the memory has a slot
+  wire        take  = r_take && ready != 0;
+  wire [AW:0] rp_n  = rp + take;                  // the head next cycle
 
-  // -- read side ----------------------------------------------------------------
-  reg [AW:0] rp = 0;
-  (* ASYNC_REG = "TRUE" *) reg [AW:0] wc_g1 = 0, wc_g2 = 0;
-  reg [32:0] m1 = 0, m2 = 0;                // memory output, pipeline register
-  reg        v1 = 0, v2 = 0;                // they hold a word in flight
-  reg [32:0] q [0:3];                       // queue, q[0] is the head
-  reg [2:0]  qn = 0;                        // words in the queue
-  reg  [AW:0] wc_seen = 0;                  // as rp_seen: one more cycle, understates `ready`
-  wire [AW:0] ready = wc_seen - rp;
-  // issue a read if a committed word is left and the queue will have room
-  // for it: queue + in flight + this read <= 4, counting the one taken now
-  wire       take  = r_take && qn != 0;
-  wire       issue = ready != 0 && qn + v1 + v2 + 1 - take <= 4;
-  assign r_avail = qn != 0;
-  assign {r_last, r_data} = q[0];
-  integer i;
-  always @(posedge rclk) begin
-    wc_g1 <= wc_g; wc_g2 <= wc_g1; wc_seen <= bin(wc_g2);
-    m1 <= mem[rp[AW-1:0]]; m2 <= m1;
-    if (r_rst) begin
-      rp <= 0; rp_g <= 0; v1 <= 0; v2 <= 0; qn <= 0;
+  assign w_room  = used < ROOM;
+  assign w_used  = used;
+  assign r_used  = used;
+  assign r_avail = ready != 0;
+
+  // the head, in a register: the memory's registered read output
+  reg  [32:0] m = 0;
+  // the word being written is the head next cycle: the FIFO is empty, or the
+  // only word in it is the one being taken. Reading the slot the writer fills
+  // would return its old contents, so forward the word instead.
+  wire        fwd = w_en && (used == take);
+
+  assign {r_last, r_data} = m;
+
+  always @(posedge clk) begin
+    if (w_en) mem[wp[AW-1:0]] <= {w_last, w_data};
+    if (fwd) m <= {w_last, w_data};
+    else if (take) m <= mem[rp_n[AW-1:0]];
+    if (rst) begin
+      wp <= 0; rp <= 0; wc <= 0;
     end else begin
-      v1 <= issue; v2 <= v1;
-      if (issue) begin rp <= rp + 1; rp_g <= gray(rp + 1); end
-      // shift out the taken head, append the word leaving the pipeline
-      if (take) for (i = 0; i < 3; i = i + 1) q[i] <= q[i+1];
-      if (v2) q[qn - take] <= m2;
-      qn <= qn - take + v2;
+      wp <= wp + w_en;
+      rp <= rp_n;
+      if (w_en && w_last) wc <= wp + 1;           // the packet is whole
     end
   end
 endmodule

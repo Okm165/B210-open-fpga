@@ -72,18 +72,18 @@ module tb_ctrl;
   wire        cat_ce, cat_sclk, cat_mosi, pll_ce, pll_sclk, pll_mosi;
   wire        cat_miso;
 
-  packet_fifo #(.AW(9), .MAX(256)) cmd (.wclk(clk), .w_rst(rst), .w_room(c_room), .w_valid(w_valid),
-    .w_last(w_last), .w_data(w_data), .rclk(clk), .r_rst(rst), .r_avail(c_avail), .r_data(c_data),
-    .r_last(c_last), .r_take(c_take));
+  packet_fifo #(.AW(9), .MAX(256)) cmd (.clk(clk), .rst(rst), .w_room(c_room), .w_valid(w_valid),
+    .w_last(w_last), .w_data(w_data), .w_used(),  .r_avail(c_avail), .r_data(c_data),
+    .r_last(c_last), .r_take(c_take), .r_used());
   ctrl #(.CLK_MHZ(FAULT == 2 ? 99 : 100)) dut (.clk(clk), .rst(rst),
     .c_avail(c_avail), .c_data(c_data), .c_last(c_last), .c_take(c_take),
     .r_room(r_room), .r_valid(r_valid), .r_last(r_last), .r_data(r_data),
     .reg_we(reg_we), .reg_re(reg_re), .reg_addr(reg_addr), .reg_wdata(reg_wdata), .reg_rdata(reg_rdata),
     .spi_start(spi_start), .spi_dev(spi_dev), .spi_word(spi_word), .spi_done(spi_done), .spi_rdata(spi_rdata),
     .dropped(dropped));
-  packet_fifo #(.AW(9), .MAX(256)) rsp (.wclk(clk), .w_rst(rst), .w_room(r_room), .w_valid(r_valid),
-    .w_last(r_last), .w_data(r_data), .rclk(clk), .r_rst(rst), .r_avail(q_avail), .r_data(q_data),
-    .r_last(q_last), .r_take(q_take));
+  packet_fifo #(.AW(9), .MAX(256)) rsp (.clk(clk), .rst(rst), .w_room(r_room), .w_valid(r_valid),
+    .w_last(r_last), .w_data(r_data), .w_used(),  .r_avail(q_avail), .r_data(q_data),
+    .r_last(q_last), .r_take(q_take), .r_used());
 
   function [23:0] rev24(input [23:0] w);
     integer j;

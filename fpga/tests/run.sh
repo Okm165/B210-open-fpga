@@ -37,18 +37,22 @@ fx3_master FAIL MODE=0 N=25 ADDR_LAT=6
 fx3_master PASS MODE=3 N=10 WM_LAT=2
 fx3_master FAIL MODE=3 N=10 WM_LAT=3
 packet_fifo PASS SEED=1
-packet_fifo PASS SEED=2 WCLK=8138 RCLK=5000
-packet_fifo PASS SEED=3 WCLK=5000 RCLK=5000
+packet_fifo PASS SEED=2 GAPS=0
+packet_fifo PASS SEED=3
 packet_fifo PASS SEED=4 GAPS=0
-packet_fifo PASS SEED=5 GAPS=0 WCLK=8138 RCLK=5000
-packet_fifo PASS SEED=6 AW=12 MAX=4096 N=40
+packet_fifo PASS SEED=5 AW=12 MAX=4096 N=40
+packet_fifo PASS SEED=6 AW=12 MAX=4096 N=40 GAPS=0
 packet_fifo PASS SEED=7 AW=8 MAX=256 N=200
+packet_fifo PASS SEED=8 AW=10 MAX=64 N=80
 packet_fifo FAIL SEED=1 FAULT=1
+packet_fifo FAIL SEED=1 FAULT=2
+packet_fifo FAIL SEED=1 FAULT=3
+packet_fifo FAIL SEED=1 FAULT=4
 ctrl PASS SEED=1
 ctrl PASS SEED=2
 ctrl PASS SEED=3 N=600
 ctrl PASS SEED=4 H0=3 H1=3
-ctrl PASS SEED=5 N=40 H0=50 H1=5000
+ctrl PASS SEED=5 N=120 H0=50 H1=5000
 ctrl FAIL SEED=1 FAULT=1
 ctrl FAIL SEED=1 FAULT=2
 ctrl FAIL SEED=1 FAULT=3
@@ -61,8 +65,10 @@ rx_framer PASS SEED=2
 rx_framer PASS SEED=3 STREAMS=80
 rx_framer PASS SEED=4 SLOW=1
 rx_framer PASS SEED=5 SLOW=1
+rx_framer PASS SEED=6 STREAMS=0
 rx_framer FAIL SEED=1 FAULT=1
 rx_framer FAIL SEED=1 FAULT=2
+rx_framer FAIL SEED=1 FAULT=3
 tx_player PASS SEED=1
 tx_player PASS SEED=2
 tx_player PASS SEED=3 N=1500
@@ -74,6 +80,7 @@ sample_core PASS SEED=3 STB=1 BURSTS=300
 sample_core PASS SEED=4 STB=2 BURSTS=300
 sample_core FAIL SEED=1 FAULT=1
 sample_core FAIL SEED=1 FAULT=2
+sample_core FAIL SEED=1 FAULT=3
 events PASS SEED=1
 events PASS SEED=2 INTERVAL=1
 events PASS SEED=3 SLOW=1
@@ -93,7 +100,6 @@ ad9361_io FAIL SEED=1 FAULT=2
 ad9361_io FAIL SEED=1 FAULT=3
 b210 PASS
 b210 FAIL FAULT=1
-packet_fifo FAIL SEED=1 FAULT=2 WCLK=8138 RCLK=5000
 '
 
 sources() {

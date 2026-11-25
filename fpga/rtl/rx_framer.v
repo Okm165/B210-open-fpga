@@ -21,15 +21,44 @@
 // keeps them to its END_OF_BURST whatever the registers do meanwhile (the
 // host's stop write itself rewrites rx_ctrl's configuration bits).
 //   start          begin with the first sample at time >= start_time if
-//                  start_at, else with the next sample
+//                  start_at, else with the next sample; ignored unless the
+//                  framer is idle (a start while a stream runs does nothing)
 //   count          sample times in the stream, 0 = until stopped
 //   stop           end after the packet in progress, then send a 16-byte
 //                  packet (header only) with END_OF_BURST and the time just
-//                  after the stream's last sample; a stream still waiting
-//                  for its start time ends without a packet
+//                  after the stream's last sample
+// How a stream ends, exactly (state names below; `first` set = no packet has
+// been written yet):
+//   stop seen while ARMED (the start is latched, the first sample at/after
+//     start_time has not arrived): nothing is sent, not even END_OF_BURST,
+//     the framer goes IDLE - no packet at all.
+//   stop seen while START (no header written yet: nothing has been sent):
+//     one 16-byte header-only packet with END_OF_BURST, START_OF_BURST too
+//     when it is the stream's first, written as soon as the fifo has room,
+//     never counted as dropped.
+//   stop seen while HEAD/BODY (this packet's header is already written):
+//     the packet in progress ends, then the same 16-byte END_OF_BURST
+//     packet closes the stream, unless that packet was already marked
+//     END_OF_BURST (a stop seen at its START) and ends the stream itself.
+//   stop seen while DROP (a packet is being discarded for lack of room):
+//     the dropped samples are consumed, then the 16-byte END_OF_BURST
+//     carries OVERFLOW; if the stream's count was used up by a dropped
+//     packet, that header-only packet is the stream's only one.
+// A header-only packet's time is t_end, the time just after the stream's
+// last sample (0 after reset: a stream that never sent a sample has no
+// last sample and the field carries the previous stream's t_end).
 // The first packet carries START_OF_BURST, the last END_OF_BURST; every
 // packet HAS_TIME = the time of its first sample, so a gap between packets
 // is time - (previous time + previous n).
+//
+// Configuration is checked when start is seen, from the values that would be
+// latched: format must be 1 (sc16) or 2 (sc12) and channels must be nonzero
+// (the port is 2 bits, so bits outside [1:0] cannot reach this module; 0 is
+// the only invalid value). Otherwise start is ignored - the framer stays
+// IDLE, running stays low, nothing is latched and no packet is written, so
+// the host reads rx_ctrl's running bit as 0. A stream that does run was
+// checked at its start, and it uses only its latched run_* copies, so no
+// invalid configuration can reach a packet; the check is not repeated.
 // Overflow: if the packet_fifo has no room when a packet would start, its
 // n samples are dropped (and counted) and the next packet carries OVERFLOW;
 // if that was the stream's last packet, a header-only END_OF_BURST packet
@@ -78,6 +107,9 @@ module rx_framer (
   reg  [63:0] run_time = 0;
   wire       sc12  = run_format == 4'd2;
   wire       two   = run_channels == 2'b11;
+  // a start is taken only with a configuration the host can be given: the
+  // latched copies are only ever written by a start that passed this
+  wire       cfg_ok = (format == 4'd1 || format == 4'd2) && channels != 2'b00;
   wire [6:0] vbits = sc12 ? 7'd12 : 7'd16;             // bits per value
   wire [6:0] tbits = two ? vbits << 2 : vbits << 1;    // bits per sample time: 24 32 48 64
   // the selected values of one sample time, low first, packed; bits above
@@ -94,7 +126,7 @@ module rx_framer (
   // (n >= 8, 1 channel sc16), 0.3072 at 2 x 30.72 (n >= 4); 16 leaves margin
 
   // -- stream and packet state ----------------------------------------------------
-  localparam IDLE = 0, ARMED = 1, START = 2, HEAD = 3, BODY = 4, DROP = 5, EOB_ONLY = 6;
+  localparam IDLE = 0, ARMED = 1, START = 2, HEAD = 3, BODY = 4, DROP = 5;
   reg [2:0]  state = IDLE;
   reg        first = 0, overflow = 0, stopping = 0, endless = 0;
   reg [31:0] left = 0;            // sample times still to send (if !endless)
@@ -136,6 +168,11 @@ module rx_framer (
     w_all <= w_raw + (w_raw[7:0] == 0 && w_raw != FULL_WORDS);
   end
   wire        last_packet = ends || stopping;
+  // START owes a header-only END_OF_BURST instead of a data packet: stop
+  // arrived before this packet's header, or the stream's count was used up
+  // by a dropped packet. Loaded like a data packet's header, so HEAD writes
+  // and ends it (words == 4, w_last on its last word).
+  wire        eob_owed = state == START && ((!endless && left == 0) || stopping);
 
   // accumulator: write a word when 32 bits are held or the packet's samples
   // are all in and bits remain; take a sample when it fits
@@ -145,7 +182,7 @@ module rx_framer (
   wire take_body = in_body && n != 0 && s_valid && nb1 + tbits <= 96;
   // samples consumed outside a packet: discarded (idle, before the start
   // time, dropped for lack of room)
-  wire take_skip = s_valid && (state == IDLE || state == EOB_ONLY ||
+  wire take_skip = s_valid && (state == IDLE || eob_owed ||
                                (state == ARMED && run_at && s_time < run_time) ||
                                (state == DROP && n != 0));
   assign s_take = take_body || take_skip;
@@ -158,7 +195,7 @@ module rx_framer (
       if (stop && state != IDLE) stopping <= 1;
       if (age != 4) age <= age + 1;               // a later `age <= 0` wins
       case (state)
-        IDLE: if (start) begin
+        IDLE: if (start && cfg_ok) begin
           first <= 1; overflow <= 0; stopping <= 0; seq <= 0;
           endless <= count == 0; left <= count; age <= 0; state <= ARMED;
           run_format <= format; run_channels <= channels; run_spp <= spp;
@@ -166,11 +203,19 @@ module rx_framer (
         end
         ARMED: if (stopping) state <= IDLE;
           else if (s_valid && !(run_at && s_time < run_time)) state <= START;
-        // a packet begins at the sample now at the head
-        // (left == 0 here: the last packet was dropped, its EOB still owed)
+        // a packet begins at the sample now at the head; if the next packet
+        // would be empty - its count was used up by a dropped packet, or stop
+        // arrived with no packet begun - the stream closes with a header-only
+        // END_OF_BURST instead (HEAD writes it and ends on its last word)
         START: if (age != 4) ;                     // the size pipeline is catching up
-        else if ((!endless && left == 0) || (stopping && !first)) begin
-          hw <= 0; state <= EOB_ONLY;
+        else if (eob_owed) begin                   // header-only END_OF_BURST
+          if (w_room) begin
+            hw <= 0; words <= 4; t0 <= t_end;
+            h0 <= {VERSION, 2'd0, run_channels, run_format, T_RX, 16'd16};
+            // last_packet is set here: ends (count used up) or stopping
+            h1 <= {11'd0, 1'b0, overflow, last_packet, first, 1'b1, seq};
+            state <= HEAD;
+          end
         end else if (s_valid) begin
           n <= n_new; t0 <= s_time; t_end <= s_time + n_new;
           if (!endless) left <= left - n_new;
@@ -189,11 +234,16 @@ module rx_framer (
         DROP: if (n == 0 || (n == 1 && take_skip)) state <= START;
         HEAD: begin
           w_valid <= 1; hw <= hw + 1; words <= words - 1;
+          w_last <= words == 1;                    // the packet is header only
           case (hw)
             0: w_data <= h0;
             1: w_data <= h1;
             2: w_data <= t0[31:0];
-            default: begin w_data <= t0[63:32]; state <= BODY; end
+            default: begin
+              w_data <= t0[63:32];
+              if (words == 1) state <= h1[16 + F_EOB] ? IDLE : START;
+              else state <= BODY;
+            end
           endcase
         end
         BODY: begin
@@ -202,15 +252,6 @@ module rx_framer (
             w_last <= words == 1;
             if (words == 1) state <= h1[16 + F_EOB] ? IDLE : START;
           end
-        end
-        EOB_ONLY: if (hw != 0 || w_room) begin   // header-only packet ending the stream
-          w_valid <= 1; hw <= hw + 1;
-          case (hw)
-            0: w_data <= {VERSION, 2'd0, run_channels, run_format, T_RX, 16'd16};
-            1: w_data <= {11'd0, 1'b0, overflow, 1'b1, first, 1'b1, seq};
-            2: w_data <= t_end[31:0];
-            default: begin w_data <= t_end[63:32]; w_last <= 1; state <= IDLE; end
-          endcase
         end
         default: state <= IDLE;
       endcase

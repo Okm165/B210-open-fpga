@@ -20,13 +20,22 @@
 // tx: entries from tx_player through the tx cdc_fifo, one per strobe:
 //   idle    the DAC gets 0. An entry with START_OF_BURST and a time waits
 //           for the strobe where now == time; if now has passed it, the
-//           burst is LATE and discarded up to its END_OF_BURST entry. Any
-//           other entry plays at once.
-//   burst   one entry per strobe; END_OF_BURST ends the burst (BURST_ACK)
-//           after its sample, or before the strobe for an entry without a
-//           sample. No entry at a strobe: UNDERFLOW (counted once per gap),
-//           the DAC gets 0, the burst goes on when entries come. A timed
-//           START_OF_BURST ends the burst and waits for its time.
+//           burst is LATE and discarded up to its END_OF_BURST (or the next
+//           START_OF_BURST) entry. Any other entry plays at once.
+//   burst   one entry per strobe; END_OF_BURST ends the burst after its
+//           sample (or before the strobe for an entry without a sample) and
+//           counts one BURST_ACK - but only if a burst was playing: a
+//           header-only END_OF_BURST in idle counts nothing.
+//           No entry at a strobe: UNDERFLOW (counted once per gap), the DAC
+//           gets 0, no BURST_ACK is possible for this burst any more, and
+//           the burst goes on when entries come. Because a packet carries a
+//           time only at START_OF_BURST, every sample after the gap plays
+//           shifted by the gap; the host must therefore treat an UNDERFLOW
+//           as "this burst's timeline is broken" and start a new burst.
+//           A timed START_OF_BURST during a burst ends the burst (no
+//           BURST_ACK) and waits for its time.
+// Discard: entries are taken until END_OF_BURST, or until a START_OF_BURST
+// of the next burst, which is left at the head and starts it.
 // Event counts leave Gray-coded (gray_sync on the bus side), so do now.
 `default_nettype none
 
@@ -51,7 +60,8 @@ module sample_core (
   output wire         tx_take,
   // events, Gray-coded counts
   output wire [15:0]  rx_lost_gray, underflow_gray, late_gray, ack_gray,
-  output reg          tx_active = 0  // in a burst (for antenna switches and LEDs)
+  output reg          tx_active = 0, // in a burst (for antenna switches and LEDs)
+  output wire         sclk_alive      // toggles every 2 sclk cycles: the bus side checks the clock, not the strobes
 );
   function [15:0] gray16(input [15:0] b); gray16 = b ^ (b >> 1); endfunction
 
@@ -80,7 +90,8 @@ module sample_core (
   wire [47:0] e_data    = tx_entry[47:0];
   localparam IDLE = 0, BURST = 1, DISCARD = 2;
   reg [1:0]  state = IDLE;
-  reg        gap = 0;                  // in an underflow
+  reg        gap = 0;                  // in an underflow: the DAC is silent
+  reg        gapped = 0;               // this burst had an underflow: no BURST_ACK
   reg [15:0] underflows = 0, lates = 0, acks = 0, lost = 0;
 
   // At a strobe, in IDLE or BURST, the entry at the head decides:
@@ -93,36 +104,55 @@ module sample_core (
   wire late  = timed && e_time < now;
   wire live  = stb && state != DISCARD && tx_valid && !early;   // the head is used now
   wire play  = live && !late && e_present;
-  assign tx_take = live || (state == DISCARD && tx_valid);
+  wire resync = state == DISCARD && tx_valid && e_sob;     // next burst's start, left in place
+  assign tx_take = live || (state == DISCARD && tx_valid && !resync);
 
   always @(posedge sclk) begin
     if (srst) begin
-      state <= IDLE; gap <= 0;
+      state <= IDLE; gap <= 0; gapped <= 0;
     end else begin
       if (live) begin
         gap <= 0;
-        if (late) begin lates <= lates + 1; state <= e_eob ? IDLE : DISCARD; end
-        else if (!e_present || e_eob) begin acks <= acks + 1; state <= IDLE; end
-        else state <= BURST;
+        if (late) begin lates <= lates + 1; state <= e_eob ? IDLE : DISCARD; gapped <= 0; end
+        else if (!e_present || e_eob) begin
+          // one ack per burst that played through without a gap: a
+          // header-only END_OF_BURST in idle (no burst) counts nothing, and
+          // neither does one after an underflow (its samples played shifted)
+          if (state == BURST && !gapped) acks <= acks + 1;
+          state <= IDLE; gapped <= 0;
+        end else begin
+          if (state != BURST) gapped <= 0;      // a new burst starts here
+          state <= BURST;
+        end
       end
-      if (stb && state == BURST && early) state <= IDLE;
+      if (stb && state == BURST && early) begin state <= IDLE; gap <= 0; gapped <= 0; end
       if (stb && state == BURST && !tx_valid) begin
         if (!gap) underflows <= underflows + 1;
-        gap <= 1;
+        gap <= 1; gapped <= 1;
       end
-      if (state == DISCARD && tx_valid && e_eob) state <= IDLE;
+      if (state == DISCARD && tx_valid && (e_eob || e_sob)) state <= IDLE;
     end
-    tx_active <= state == BURST;
+    // a gap means the DAC is silent: antenna switches and the PA follow
+    tx_active <= state == BURST && !gap;
   end
-  always @(posedge sclk) if (stb) dac <= play ? e_data : 48'd0;
+  // one wire for the DAC and for the loopback source, so a bench checks
+  // what the DAC really gets
+  wire [47:0] dac_now = play ? e_data : 48'd0;
+  always @(posedge sclk) if (stb) dac <= dac_now;
 
   // -- rx ----------------------------------------------------------------------------------
   wire [11:0] t = now[11:0];
   wire [47:0] pattern = {t * 12'd13 + 12'd5, t * 12'd7, ~t, t};
-  wire [47:0] rx_sample = mode == 2'd1 ? pattern : mode == 2'd2 ? (play ? e_data : 48'd0) : adc;
+  wire [47:0] rx_sample = mode == 2'd1 ? pattern : mode == 2'd2 ? dac_now : adc;
   assign rx_valid = stb;
   assign rx_entry = {now, rx_sample};
   always @(posedge sclk) if (stb && rx_full) lost <= lost + 1;
+
+  // the clock itself, not the strobe: a slow strobe divider must not look
+  // like a stopped clock
+  reg [1:0] hb = 0;
+  always @(posedge sclk) hb <= hb + 1;
+  assign sclk_alive = hb[1];
 
   assign rx_lost_gray   = gray16(lost);
   assign underflow_gray = gray16(underflows);

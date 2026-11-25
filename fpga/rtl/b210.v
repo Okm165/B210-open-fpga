@@ -104,15 +104,17 @@ module b210 #(
 
   // -- tx: ring, player, crossing ------------------------------------------------------------------
   wire        tx_avail, tx_last, tx_take, txp_valid, txp_ready, txp_present, txp_sob, txp_eob, txp_timed;
-  wire [31:0] tx_data, tx_bad, tx_seq, tx_short;
+  wire [31:0] tx_data, tx_bad_packets, tx_seq_errors;
   wire [63:0] txp_time;
   wire [47:0] txp_data;
-  packet_fifo #(.AW(16), .MAX(4096)) tx_ring (.wclk(bus_clk), .w_rst(rst), .w_room(out_room[0]),
-    .w_valid(out_valid[0]), .w_last(out_last), .w_data(out_data), .rclk(bus_clk), .r_rst(rst),
-    .r_avail(tx_avail), .r_data(tx_data), .r_last(tx_last), .r_take(tx_take));
+  wire [16:0] tx_used_w;
+  packet_fifo #(.AW(16), .MAX(4096)) tx_ring (.clk(bus_clk), .rst(rst), .w_room(out_room[0]),
+    .w_valid(out_valid[0]), .w_last(out_last), .w_data(out_data), .w_used(tx_used_w),
+    .r_avail(tx_avail), .r_data(tx_data), .r_last(tx_last), .r_take(tx_take), .r_used());
   tx_player player (.clk(bus_clk), .rst(rst), .r_avail(tx_avail), .r_data(tx_data), .r_last(tx_last), .r_take(tx_take),
     .o_valid(txp_valid), .o_ready(txp_ready), .o_present(txp_present), .o_sob(txp_sob), .o_eob(txp_eob),
-    .o_timed(txp_timed), .o_time(txp_time), .o_data(txp_data), .bad(tx_bad), .seq_errors(tx_seq), .short(tx_short));
+    .o_timed(txp_timed), .o_time(txp_time), .o_data(txp_data),
+    .bad_packets(tx_bad_packets), .seq_errors(tx_seq_errors));
   wire         txc_full, txs_valid, txs_take;
   wire [115:0] txs_entry;
   assign txp_ready = !txc_full;
@@ -132,14 +134,15 @@ module b210 #(
     div_cnt <= div_cnt == 0 ? div2 : div_cnt - 1;
   end
   wire [63:0]  time_set, now_gray;
-  wire         time_req, time_ack, rxs_valid, rxc_full, tx_active;
+  wire         time_req, time_ack, rxs_valid, rxc_full, tx_active, sclk_alive;
   wire [111:0] rxs_entry;
   wire [15:0]  lost_g, under_g, late_g, ack_g;
   sample_core core (.sclk(sclk), .srst(srst), .stb(stb), .adc(48'd0), .dac(), .mode_async(test),
     .set_value(time_set), .set_req(time_req), .set_ack(time_ack), .now_gray(now_gray),
     .rx_valid(rxs_valid), .rx_entry(rxs_entry), .rx_full(rxc_full),
     .tx_valid(txs_valid), .tx_entry(txs_entry), .tx_take(txs_take),
-    .rx_lost_gray(lost_g), .underflow_gray(under_g), .late_gray(late_g), .ack_gray(ack_g), .tx_active(tx_active));
+    .rx_lost_gray(lost_g), .underflow_gray(under_g), .late_gray(late_g), .ack_gray(ack_g),
+    .tx_active(tx_active), .sclk_alive(sclk_alive));
 
   // -- rx: crossing, framer, ring -------------------------------------------------------------------
   wire         rxb_valid, rxb_take;
@@ -156,9 +159,10 @@ module b210 #(
     .s_data(rxb_entry[47:0]), .s_take(rxb_take), .format(rx_format), .channels(rx_channels), .spp(rx_spp),
     .start(rx_start), .stop(rx_stop), .start_at(rx_at), .start_time(rx_time), .count(rx_count),
     .w_room(rf_room), .w_valid(rf_valid), .w_last(rf_last), .w_data(rf_data), .running(rx_running), .dropped(rx_dropped));
-  packet_fifo #(.AW(17), .MAX(4096)) rx_ring (.wclk(bus_clk), .w_rst(rst), .w_room(rf_room), .w_valid(rf_valid),
-    .w_last(rf_last), .w_data(rf_data), .rclk(bus_clk), .r_rst(rst), .r_avail(in_avail[0]), .r_data(in_data0),
-    .r_last(in_last[0]), .r_take(in_take[0]));
+  wire [17:0] rx_used_w;
+  packet_fifo #(.AW(17), .MAX(4096)) rx_ring (.clk(bus_clk), .rst(rst), .w_room(rf_room), .w_valid(rf_valid),
+    .w_last(rf_last), .w_data(rf_data), .w_used(rx_used_w), .r_avail(in_avail[0]), .r_data(in_data0),
+    .r_last(in_last[0]), .r_take(in_take[0]), .r_used());
 
   // -- control: commands, results, events ----------------------------------------------------------------
   wire        c_avail, c_last, c_take, r_room, r_valid, r_last, ra, rl, rta, e_room, e_valid, e_last, ea, el, eta;
@@ -169,9 +173,9 @@ module b210 #(
   wire        spi_start, spi_dev, spi_done, resetb;
   wire [23:0] spi_word;
   wire [7:0]  spi_rdata;
-  packet_fifo #(.AW(9), .MAX(256)) cmd_fifo (.wclk(bus_clk), .w_rst(rst), .w_room(out_room[1]),
-    .w_valid(out_valid[1]), .w_last(out_last), .w_data(out_data), .rclk(bus_clk), .r_rst(rst),
-    .r_avail(c_avail), .r_data(c_data), .r_last(c_last), .r_take(c_take));
+  packet_fifo #(.AW(9), .MAX(256)) cmd_fifo (.clk(bus_clk), .rst(rst), .w_room(out_room[1]),
+    .w_valid(out_valid[1]), .w_last(out_last), .w_data(out_data), .w_used(),
+    .r_avail(c_avail), .r_data(c_data), .r_last(c_last), .r_take(c_take), .r_used());
   ctrl control (.clk(bus_clk), .rst(rst), .c_avail(c_avail), .c_data(c_data), .c_last(c_last), .c_take(c_take),
     .r_room(r_room), .r_valid(r_valid), .r_last(r_last), .r_data(r_data),
     .reg_we(reg_we), .reg_re(reg_re), .reg_addr(reg_addr), .reg_wdata(reg_wdata), .reg_rdata(reg_rdata),
@@ -180,8 +184,8 @@ module b210 #(
   spi serial (.clk(bus_clk), .rst(rst), .start(spi_start), .dev(spi_dev), .word(spi_word), .done(spi_done),
     .rdata(spi_rdata), .cat_ce(cat_ce), .cat_sclk(cat_sclk), .cat_mosi(cat_mosi), .cat_miso(cat_miso),
     .pll_ce(pll_ce), .pll_sclk(pll_sclk), .pll_mosi(pll_mosi));
-  packet_fifo #(.AW(9), .MAX(256)) result_fifo (.wclk(bus_clk), .w_rst(rst), .w_room(r_room), .w_valid(r_valid),
-    .w_last(r_last), .w_data(r_data), .rclk(bus_clk), .r_rst(rst), .r_avail(ra), .r_data(rdat), .r_last(rl), .r_take(rta));
+  packet_fifo #(.AW(9), .MAX(256)) result_fifo (.clk(bus_clk), .rst(rst), .w_room(r_room), .w_valid(r_valid),
+    .w_last(r_last), .w_data(r_data), .w_used(), .r_avail(ra), .r_data(rdat), .r_last(rl), .r_take(rta), .r_used());
 
   // time and the sample side's counters, read on the bus clock
   wire [63:0] now;
@@ -205,31 +209,56 @@ module b210 #(
   // event codes 1 .. 6: OVERFLOW (rx dropped + lost crossing), UNDERFLOW,
   // LATE, SEQ_ERROR, BURST_ACK, BAD_PACKET
   // registered: the sums would otherwise sit in series with events' compares
+  wire [31:0] rx_overflows = rx_dropped + rx_lost;
   reg  [191:0] counts = 0;
-  always @(posedge bus_clk) counts <= {tx_bad + tx_short, acks, tx_seq, lates, underflows, rx_dropped + rx_lost};
+  always @(posedge bus_clk) counts <= {tx_bad_packets, acks, tx_seq_errors, lates, underflows, rx_overflows};
   events ev (.clk(bus_clk), .rst(rst), .counts(counts), .now(now), .w_room(e_room), .w_valid(e_valid),
     .w_last(e_last), .w_data(e_data));
-  packet_fifo #(.AW(7), .MAX(32)) event_fifo (.wclk(bus_clk), .w_rst(rst), .w_room(e_room), .w_valid(e_valid),
-    .w_last(e_last), .w_data(e_data), .rclk(bus_clk), .r_rst(rst), .r_avail(ea), .r_data(edat), .r_last(el), .r_take(eta));
+  packet_fifo #(.AW(7), .MAX(32)) event_fifo (.clk(bus_clk), .rst(rst), .w_room(e_room), .w_valid(e_valid),
+    .w_last(e_last), .w_data(e_data), .w_used(), .r_avail(ea), .r_data(edat), .r_last(el), .r_take(eta), .r_used());
   packet_mux to_host (.clk(bus_clk), .rst(rst), .a_avail(ra), .a_last(rl), .a_data(rdat), .a_take(rta),
     .b_avail(ea), .b_last(el), .b_data(edat), .b_take(eta),
     .o_avail(in_avail[1]), .o_last(in_last[1]), .o_data(in_data1), .o_take(in_take[1]));
 
-  // sample clock running: time moved within the last 1000 bus cycles
+  // sample clock running: the radio's clock itself (sample_core's
+  // sclk_alive toggles every 2 sclk cycles) moved within the last 1023 bus
+  // cycles = 10.24 us, so a slow strobe divider cannot look like a stopped
+  // clock and a stopped clock cannot look alive
   reg [63:0] now_p = 0;
+  (* ASYNC_REG = "TRUE" *) reg alive1 = 0, alive2 = 0, alive_p = 0;
   reg [9:0]  still = 0;
-  always @(posedge bus_clk) begin now_p <= now; still <= now != now_p ? 10'd0 : still == 10'h3FF ? still : still + 1; end
+  wire alive_change = alive2 != alive_p;
+  always @(posedge bus_clk) begin
+    now_p <= now; alive1 <= sclk_alive; alive2 <= alive1; alive_p <= alive2;
+    still <= alive_change ? 10'd0 : still == 10'h3FF ? still : still + 1;
+  end
   wire sample_running = still != 10'h3FF;
-  // time_ack crosses back to the bus clock
-  (* ASYNC_REG = "TRUE" *) reg ack1 = 0, ack2 = 0;
-  always @(posedge bus_clk) begin ack1 <= time_ack; ack2 <= ack1; end
+  // sample rate: strobes in the last 100 000 bus cycles (1 ms at 100 MHz).
+  // The 16-bit difference is exact: fewer than 2^16 strobes fit in 1 ms at
+  // any rate this design allows.
+  reg [16:0] rate_cnt = 0, sample_ksps = 0;
+  reg [16:0] ms = 0;
+  wire [15:0] tick_delta = now[15:0] - now_p[15:0];
+  always @(posedge bus_clk) begin
+    ms <= ms + 1;
+    if (ms == 100_000 - 1) begin sample_ksps <= rate_cnt + tick_delta; rate_cnt <= 0; ms <= 0; end
+    else rate_cnt <= rate_cnt + tick_delta;
+  end
+  // time_ack crosses back to the bus clock. The ack is delayed 2 more cycles
+  // so that it rises no earlier than the now copy: gray_sync takes 4 stages
+  // (2 synchronisers + local XOR + b), the ack 2 synchronisers + these 2.
+  // Without that, a POLL of 0x014 could see "done" and read a mixed `now`.
+  (* ASYNC_REG = "TRUE" *) reg ack1 = 0, ack2 = 0, ack3 = 0, ack4 = 0;
+  always @(posedge bus_clk) begin ack1 <= time_ack; ack2 <= ack1; ack3 <= ack2; ack4 <= ack3; end
 
   regs #(.BUILD_NUMBER(BUILD_NUMBER), .BUILD_COMMIT(BUILD_COMMIT)) registers (.clk(bus_clk), .rst(rst),
     .reg_we(reg_we), .reg_re(reg_re), .reg_addr(reg_addr), .reg_wdata(reg_wdata), .reg_rdata(reg_rdata),
     .locked(locked), .sample_running(sample_running), .now(now), .time_set(time_set), .time_req(time_req),
-    .time_ack(ack2), .rx_start(rx_start), .rx_stop(rx_stop), .rx_at(rx_at), .rx_format(rx_format),
+    .time_ack(ack4), .rx_start(rx_start), .rx_stop(rx_stop), .rx_at(rx_at), .rx_format(rx_format),
     .rx_channels(rx_channels), .rx_count(rx_count), .rx_time(rx_time), .rx_spp(rx_spp), .rx_running(rx_running),
-    .events(counts), .rx_lost(rx_lost), .cmd_dropped(cmd_dropped), .resetb(resetb), .test(test), .test_div(test_div));
+    .events(counts), .rx_lost(rx_lost), .cmd_dropped(cmd_dropped),
+    .rx_used(rx_used_w[12:0]), .tx_used(tx_used_w[12:0]), .sample_ksps(sample_ksps),
+    .resetb(resetb), .test(test), .test_div(test_div));
 
   // -- AD9361 reset, pins held off -------------------------------------------------------------------
   assign codec_reset = resetb;                     // AD9361 RESETB, active low
@@ -243,13 +272,14 @@ module b210 #(
   // lit for N bus cycles after a trigger
   reg [22:0] cmd_lit = 0;          // 84 ms
   reg [27:0] err_lit = 0;          // 2.7 s
-  reg [191:0] counts_p = 0;
+  // the trouble counters as one sum (codes 1, 2, 3, 4, 6; 5 is BURST_ACK):
+  // 32 flip-flops instead of a copy of the 192-bit counter bus
+  reg  [31:0] trouble = 0, trouble_p = 0;
   always @(posedge bus_clk) begin
-    counts_p <= counts;
+    trouble <= rx_overflows + underflows + lates + tx_seq_errors + tx_bad_packets;
+    trouble_p <= trouble;
     cmd_lit <= (r_valid && r_last) ? 23'h7FFFFF : cmd_lit != 0 ? cmd_lit - 1 : 0;
-    // codes 1 .. 4 and 6 are trouble; 5 (BURST_ACK) is not
-    err_lit <= (counts[127:0] != counts_p[127:0] || counts[191:160] != counts_p[191:160]) ? 28'hFFFFFFF :
-               err_lit != 0 ? err_lit - 1 : 0;
+    err_lit <= trouble != trouble_p ? 28'hFFFFFFF : err_lit != 0 ? err_lit - 1 : 0;
   end
   (* ASYNC_REG = "TRUE" *) reg [1:0] txa = 0;
   always @(posedge bus_clk) txa <= {txa[0], tx_active};

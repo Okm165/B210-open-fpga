@@ -45,10 +45,10 @@ module tb_events;
   wire r_room;
   events #(.INTERVAL(INTERVAL)) dut (.clk(clk), .rst(rst), .counts(counts), .now(now),
     .w_room(e_room), .w_valid(e_valid), .w_last(e_last), .w_data(e_data));
-  packet_fifo #(.AW(7), .MAX(32)) ef (.wclk(clk), .w_rst(rst), .w_room(e_room), .w_valid(e_valid), .w_last(e_last),
-    .w_data(e_data), .rclk(clk), .r_rst(rst), .r_avail(ea), .r_data(ed), .r_last(el), .r_take(eta));
-  packet_fifo #(.AW(9), .MAX(256)) rf (.wclk(clk), .w_rst(rst), .w_room(r_room), .w_valid(r_valid), .w_last(r_last),
-    .w_data(r_data), .rclk(clk), .r_rst(rst), .r_avail(ra), .r_data(rd), .r_last(rl), .r_take(rta));
+  packet_fifo #(.AW(7), .MAX(32)) ef (.clk(clk), .rst(rst), .w_room(e_room), .w_valid(e_valid), .w_last(e_last),
+    .w_data(e_data), .w_used(),  .r_avail(ea), .r_data(ed), .r_last(el), .r_take(eta), .r_used());
+  packet_fifo #(.AW(9), .MAX(256)) rf (.clk(clk), .rst(rst), .w_room(r_room), .w_valid(r_valid), .w_last(r_last),
+    .w_data(r_data), .w_used(),  .r_avail(ra), .r_data(rd), .r_last(rl), .r_take(rta), .r_used());
   packet_mux mux (.clk(clk), .rst(rst), .a_avail(ra), .a_last(rl), .a_data(rd), .a_take(rta),
     .b_avail(ea), .b_last(el), .b_data(ed), .b_take(eta), .o_avail(o_avail), .o_last(o_last), .o_data(o_data), .o_take(o_take));
 

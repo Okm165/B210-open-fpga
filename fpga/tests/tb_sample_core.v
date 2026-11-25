@@ -13,11 +13,17 @@
 // burst's first sample at exactly its time and nothing of it earlier;
 // late bursts (time passed) never play and count as LATE; samples of a
 // burst contiguous except across an intended pause (counted UNDERFLOW,
-// once); an END_OF_BURST without a sample ends a burst; every burst
-// ending with END_OF_BURST counts one BURST_ACK.
+// once, and then no BURST_ACK: the samples after the gap played shifted);
+// an END_OF_BURST without a sample ends a burst; only a burst that played
+// without a gap counts one BURST_ACK; a header-only END_OF_BURST in idle
+// counts nothing; a discarded (LATE) burst that never sends its
+// END_OF_BURST does not swallow the next burst (the next START_OF_BURST
+// resyncs); tx_active is low while the DAC is silent in a gap.
 // STB = 1: a strobe every cycle (1 channel); 2: every other cycle.
 // FAULT 1: the rx FIFO drops one entry silently (must be caught).
 // FAULT 2: one timed burst plays one tick early (must be caught).
+// FAULT 3: the model counts an ACK for a burst it paused (a wrong model;
+// there is none, and the bench must say so).
 `timescale 1ns/1ps
 `default_nettype none
 
@@ -118,7 +124,7 @@ module tb_sample_core;
   integer    b_n [0:BURSTS-1], b_pause [0:BURSTS-1];
   reg [63:0] b_t [0:BURSTS-1];
   reg        b_timed [0:BURSTS-1], b_late [0:BURSTS-1];
-  integer    cur = 0, idx = 0, exp_late = 0, exp_ack = 0, exp_under = 0, gen_done = 0;
+  integer    cur = 0, idx = 0, exp_late = 0, exp_ack = 0, exp_under = 0, gen_done = 0, prev6 = 0;
   reg [63:0] last_play = 0;
   task burst_check(input [63:0] t, input [47:0] s);
     integer b, i;
@@ -174,24 +180,31 @@ module tb_sample_core;
     // phase 2: loopback bursts
     phase = 0; mode = 2; repeat (50) @(posedge clk); phase = 2;   // no value check while the mode crosses
     for (b = 0; b < BURSTS; b = b + 1) begin
-      // the core idle and the FIFO empty: bursts do not overlap
-      while (dut.state != 0 || tx_valid_s || tx_valid) @(posedge clk);
-      kind = rnd(6);   // 0 untimed, 1 timed, 2 late, 3 pause, 4 EOB as its own entry, 5 timed + pause
+      // the core idle (or discarding: a late burst without its END_OF_BURST
+      // leaves it there, and the next START_OF_BURST is what resyncs it) and
+      // the FIFO empty: bursts do not overlap
+      while ((dut.state != 0 && dut.state != 2) || tx_valid_s || tx_valid) @(posedge clk);
+      // 0 untimed, 1 timed, 2 late, 3 pause, 4 EOB as its own entry,
+      // 5 timed + pause, 6 late without an END_OF_BURST (the next burst must resync)
+      kind = prev6 ? 0 : rnd(7);     // after a discarded burst without EOB, an untimed one
+      prev6 = kind == 6;
       if (FAULT == 2 && b == 7) kind = 1;
       b_n[b] = 1 + rnd(300);
-      b_timed[b] = kind == 1 || kind == 2 || kind == 5;
-      b_late[b] = kind == 2;
+      b_timed[b] = kind == 1 || kind == 2 || kind == 5 || kind == 6;
+      b_late[b] = kind == 2 || kind == 6;
       b_pause[b] = (kind == 3 || kind == 5) && b_n[b] > 2 ? 1 + rnd(b_n[b] - 1) : -1;
-      b_t[b] = kind == 2 ? now_b - 20 - rnd(1000) : now_b + 300 + rnd(3000);
-      if (b_late[b]) exp_late = exp_late + 1; else exp_ack = exp_ack + 1;
+      b_t[b] = kind == 2 || kind == 6 ? now_b - 20 - rnd(1000) : now_b + 300 + rnd(3000);
+      if (b_late[b]) exp_late = exp_late + 1;
+      else if (b_pause[b] < 0 && kind != 4) exp_ack = exp_ack + 1;      // a gap or an EOB-only wait: no ack
       if (b_pause[b] > 0 && !b_late[b]) exp_under = exp_under + 1;
       if (kind == 4 && !b_late[b]) exp_under = exp_under + 1;           // the burst waits for its EOB
       for (i = 0; i < b_n[b]; i = i + 1) begin
         if (i == b_pause[b]) begin                                     // the FIFO runs dry: underflow
           while (dut.state != 1 || tx_valid) @(posedge clk);
           repeat (100 * STB) @(posedge clk);
+          if (tx_active) begin errors = errors + 1; $display("%0t tx_active with no sample to play", $time); end
         end
-        push(1, i == 0, i == b_n[b] - 1 && kind != 4, i == 0 && b_timed[b],
+        push(1, i == 0, i == b_n[b] - 1 && kind != 4 && kind != 6, i == 0 && b_timed[b],
              (FAULT == 2 && b == 7 && i == 0) ? b_t[b] - 1 : b_t[b], {12'hABC, b[11:0], i[23:0]});
       end
       if (kind == 4) begin
@@ -199,13 +212,20 @@ module tb_sample_core;
         repeat (100 * STB + 50) @(posedge clk); push(0, 0, 1, 0, 0, 0);
       end
     end
-    // drained: the feeder queue, the crossing and the core all empty and idle
-    while (tx_valid || dut.state != 0 || tx_valid_s) @(posedge clk);
+    // a header-only END_OF_BURST in idle plays nothing and counts no ack
+    while (dut.state != 0 || tx_valid_s || tx_valid) @(posedge clk);
+    push(0, 0, 1, 0, 0, 0);
+    while (tx_valid_s || tx_valid) @(posedge clk);
+    repeat (20) @(posedge clk);
+    // drained: the feeder queue, the crossing and the core all empty (IDLE,
+    // or DISCARD after a late burst that sent no END_OF_BURST)
+    while (tx_valid || (dut.state != 0 && dut.state != 2) || tx_valid_s) @(posedge clk);
     repeat (20) @(posedge clk);
     while (dut.state != 0 || tx_valid_s) @(posedge clk);
     repeat (200) @(posedge clk);
     while (cur < BURSTS && b_late[cur]) cur = cur + 1;
     if (cur != BURSTS) begin errors = errors + 1; $display("%0d bursts played, %0d expected", cur, BURSTS); end
+    if (FAULT == 3) exp_ack = exp_ack + 1;                  // a wrong model must be caught
     if (lates != exp_late || acks != exp_ack || unders != exp_under) begin
       errors = errors + 1;
       $display("late %0d ack %0d underflow %0d, expected %0d %0d %0d", lates, acks, unders, exp_late, exp_ack, exp_under);
