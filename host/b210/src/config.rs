@@ -1,0 +1,1487 @@
+//! The radio's configuration: one declarative TOML file holding the whole
+//! radio state (docs/DESIGN.md: applied whole, only differences written),
+//! its validation against the hardware's limits, and the minimal ordered
+//! list of operations that takes the radio from one state to another.
+//! Example, every key used: host/b210/examples/config.toml.
+//!
+//! # Schema
+//!
+//! | Key | Unit, range | Meaning |
+//! | --- | --- | --- |
+//! | `rate_hz` | Hz, 220e3 ..= 61.44e6 (30.72e6 with 2 channels in a direction) | sample rate of every channel |
+//! | `reference` | `"internal"` (default) or `"external"` | the 40 MHz TCXO free-running, or locked by the ADF4001 to 10 MHz at REF |
+//! | `format` | `"sc12"` (3 bytes) or `"sc16"` (4 bytes per complex sample) | samples on the wire, both directions (PROTOCOL.md 3) |
+//! | `[rx]`, `[tx]` | present = in use | a direction; absent = both its channels off |
+//! | `lo_hz` | Hz, 70e6 ..= 6e9 | the direction's one synthesizer |
+//! | `bandwidth_hz` | Hz, 200e3 ..= 56e6 and <= `rate_hz` | the direction's one analog filter setting |
+//! | `rx.spp` | sample times, 16 ..= full packet (default full) | rx packet size; latency = spp / rate_hz |
+//! | `ch0`, `ch1` | present = enabled | a channel (bit c of PROTOCOL.md's channel mask) |
+//! | `rx.chC.gain_db` | dB, 0 ..= 76 in 1 dB steps | rx gain index of the AD9361 gain table |
+//! | `rx.chC.antenna` | `"RX2"` (default) or `"TX/RX"` | the channel's receive port |
+//! | `tx.chC.gain_db` | dB, 0 ..= 89.75 in 0.25 dB steps | attenuation = 89.75 dB - gain_db |
+//!
+//! # Shape, and why
+//!
+//! - What the AD9361 has once is written once: one sample rate (one
+//!   baseband PLL, one data port), and per direction one LO synthesizer
+//!   and one analog filter setting, shared by both channels; gains are per
+//!   channel; the antenna is per rx channel (tx has the TX/RX port only).
+//! - A channel is enabled by being present, a direction by its section:
+//!   a disabled channel has no settings, so no key in a file is without
+//!   effect (DESIGN.md: nothing kept "for later"). For the same reason a
+//!   section without a channel is rejected.
+//! - The rx packet size is `spp`, the register rx_spp itself, rather than
+//!   a latency target, which would have to be rounded and clamped into
+//!   16 ..= full: the file says exactly what runs. tx packets describe
+//!   themselves (PROTOCOL.md 6), so tx has no such key.
+//! - One wire format for both directions: sc12 and sc16 carry the same
+//!   12-bit codes (both lossless), so the choice only trades bus load for
+//!   host work, and one key says it.
+//! - Defaults only where the board has a natural state: reference
+//!   internal (needs no cable), antenna RX2 (the receive-only port, UHD's
+//!   default), spp a full packet (the least bus overhead). Everything else
+//!   must be written. AGC is out of scope: gains are manual only.
+//!
+//! # Limits
+//!
+//! With n = the larger number of enabled channels in a direction and
+//! b(k) = bytes per sample time of k channels (sc16: 4 k, sc12: 3 k):
+//!
+//! - 220e3 <= rate_hz <= 61.44e6 / (1 if n <= 1 else 2). Upper: the
+//!   AD9361's data clock is at most 61.44 MHz and carries the two channels
+//!   of a direction interleaved (UHD b200_impl.cpp enforce_tick_rate_limits,
+//!   AD9361_MAX_CLOCK_RATE). Lower: UHD's AD9361_MIN_CLOCK_RATE, from its
+//!   baseband PLL minimum 672 MHz / largest divider 2^6 / largest
+//!   decimation 48 = 218.75 kHz (ad9361_device.cpp _tune_bbvco,
+//!   _setup_rates).
+//! - 70e6 <= lo_hz <= 6e9: the AD9361's and the B210's specified tuning
+//!   range (UHD's get_rf_freq_range accepts down to 50 MHz, unspecified).
+//! - 200e3 <= bandwidth_hz <= 56e6 (UHD AD9361_MIN_BW, AD9361_MAX_BW) and
+//!   bandwidth_hz <= rate_hz: UHD's filter calibration clips the baseband
+//!   bandwidth to the sample rate (ad9361_device.cpp
+//!   _calibrate_baseband_rx_analog_filter), so a wider request would not
+//!   be what runs.
+//! - rx gain_db in 0 ..= 76, integral: the gain table index (UHD
+//!   get_gain_range: step 1.0; set_gain truncates to an integer index).
+//! - tx gain_db in 0 ..= 89.75, a multiple of 0.25: the attenuation word
+//!   counts 0.25 dB (UHD set_gain, AD9361_MAX_GAIN = 89.75).
+//! - rate_hz x (b(rx channels) + b(tx channels)) < 400e6 bytes/s, the bus
+//!   (32 bits x 100 MHz; PROTOCOL.md 3). 2 x 2 x 30.72 MS/s needs sc12.
+//! - 16 <= spp <= the full packet's sample times (PROTOCOL.md 3 table).
+//!
+//! # The plan
+//!
+//! `Config::changes(old, new)` returns the operations (`Change`) that take
+//! a radio configured as `old` (or in an unknown state: `None`) to `new`;
+//! `Change::apply` runs one on a `Radio`. The radio state a configuration
+//! means is `State::of`: every value it sets, a tx chain that is off at
+//! gain 0 dB (maximum attenuation), everything else unknown. The plan
+//! writes a value only where it differs from what the radio already
+//! holds, and only the values `new` sets.
+//!
+//! It relies on the `Radio` contract: each operation changes only what it
+//! names, except `set_rate`, after which both bandwidths are unknown.
+//! (UHD's set_clock_rate recalibrates the filters to the new rate, and
+//! retunes the stored LOs, reprograms the stored gains and restores the
+//! enabled chains.)
+//!
+//! Order, each step skipped when nothing in it differs:
+//!
+//! 1. **Mute**: every tx gain to 0 dB (89.75 dB attenuation) when the plan
+//!    holds an operation that could make a tx chain emit something other
+//!    than its samples at its gain (below); otherwise only the tx chains
+//!    about to be switched off. Reason: TX attenuation at maximum before
+//!    anything that could transmit.
+//! 2. **Chains off**: enabled := old AND new, switching off only. Reason:
+//!    a chain going away does not run through the calibrations below; and
+//!    the channel count only falls before the rate changes and only rises
+//!    after, so every intermediate state keeps the 2-channel rate limit
+//!    (old and new each do).
+//! 3. **Reference**. Reason: every clock below derives from it.
+//! 4. **Rate**. Reason: the filter calibrations depend on it (UHD:
+//!    "must be re-done after any change to the sample rate").
+//! 5. **Bandwidth**, rx then tx (UHD's set_clock_rate order). Reason: the
+//!    calibrations an LO change runs (DC offset, quadrature) use the
+//!    current filters.
+//! 6. **LO**, rx then tx (UHD's set_clock_rate order). Reason: the gain
+//!    table follows the LO band (UHD _tune_helper reprograms it).
+//! 7. **Chains on**: enabled := new. Reason: a chain is switched on into
+//!    a finished path, a tx chain at maximum attenuation.
+//! 8. **Antenna**, **format**, **spp**: switches and FPGA stream settings;
+//!    nothing depends on them, and they precede the gains so that the
+//!    gains are last.
+//! 9. **Gains**, rx then tx. Reason: tx gain last, so that nothing above
+//!    runs while a tx chain is loud.
+//!
+//! Operations that could transmit (step 1 mutes for them), with reason:
+//! reference (the synthesizers relock, LOs move meanwhile); rate (UHD's
+//! set_clock_rate switches every chain on, both tx chains included, and
+//! calibrates with TX on); tx bandwidth (the tx filters are recalibrated
+//! while a chain may carry signal); rx LO (UHD's rx quadrature calibration
+//! moves the tx LO into the rx band); tx LO (the tx synthesizer relocks;
+//! a jump over 100 MHz runs the tx quadrature calibration); a tx chain
+//! switched on; the data port changing between 1 and 2 channels at step 2
+//! or 7 (the tx samples are undefined while it switches; 1 rx + 2 tx to
+//! 2 rx + 1 tx is 2-channel at both ends but 1-channel between). An rx bandwidth change only
+//! recalibrates rx filters and does not mute.
+
+use crate::proto;
+use serde::Deserialize;
+use std::fmt;
+
+/// rate_hz bounds (module doc, Limits).
+const MIN_RATE_HZ: f64 = 220e3;
+const MAX_RATE_HZ: f64 = 61.44e6;
+/// Two channels share a direction's data port: half the data clock.
+const MAX_RATE_2CH_HZ: f64 = MAX_RATE_HZ / 2.0;
+const MIN_LO_HZ: f64 = 70e6;
+const MAX_LO_HZ: f64 = 6e9;
+const MIN_BANDWIDTH_HZ: f64 = 200e3;
+const MAX_BANDWIDTH_HZ: f64 = 56e6;
+const MAX_RX_GAIN_DB: f64 = 76.0;
+const RX_GAIN_STEP_DB: f64 = 1.0;
+const MAX_TX_GAIN_DB: f64 = 89.75;
+const TX_GAIN_STEP_DB: f64 = 0.25;
+/// The bus: 32 bits x 100 MHz, bytes/s.
+const BUS_BYTES_PER_S: f64 = 4.0 * 100e6;
+/// The FPGA's least rx packet, sample times (PROTOCOL.md 3).
+const MIN_SPP: u32 = 16;
+
+// -- the file ---------------------------------------------------------------
+
+/// The whole radio state; module doc for every key.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    /// Sample rate of every channel, Hz.
+    pub rate_hz: f64,
+    #[serde(default)]
+    pub reference: Reference,
+    pub format: Format,
+    pub rx: Option<Rx>,
+    pub tx: Option<Tx>,
+}
+
+/// The source of the AD9361's 40 MHz reference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Reference {
+    /// The 40 MHz TCXO, free-running (the ADF4001's charge pump off).
+    #[default]
+    Internal,
+    /// The TCXO locked by the ADF4001 to 10 MHz at the REF input
+    /// (R = 1, N = 4: UHD adf4001_ctrl.cpp).
+    External,
+}
+
+/// Samples on the wire (PROTOCOL.md 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    /// Each value c << 4 in 16 bits: 4 bytes per complex sample.
+    Sc16,
+    /// Each value in 12 bits: 3 bytes per complex sample.
+    Sc12,
+}
+
+impl Format {
+    pub fn wire(self) -> proto::Format {
+        match self {
+            Format::Sc16 => proto::Format::Sc16,
+            Format::Sc12 => proto::Format::Sc12,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rx {
+    /// The rx synthesizer, both channels, Hz.
+    pub lo_hz: f64,
+    /// The rx analog filter, both channels, Hz.
+    pub bandwidth_hz: f64,
+    /// Sample times per rx packet; None: a full packet.
+    pub spp: Option<u32>,
+    pub ch0: Option<RxChannel>,
+    pub ch1: Option<RxChannel>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RxChannel {
+    /// Gain table index, dB.
+    pub gain_db: f64,
+    #[serde(default)]
+    pub antenna: Antenna,
+}
+
+/// An rx channel's receive port.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum Antenna {
+    /// The receive-only port.
+    #[default]
+    #[serde(rename = "RX2")]
+    Rx2,
+    /// The port shared with the channel's transmitter.
+    #[serde(rename = "TX/RX")]
+    TxRx,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tx {
+    /// The tx synthesizer, both channels, Hz.
+    pub lo_hz: f64,
+    /// The tx analog filter, both channels, Hz.
+    pub bandwidth_hz: f64,
+    pub ch0: Option<TxChannel>,
+    pub ch1: Option<TxChannel>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TxChannel {
+    /// 89.75 dB minus the attenuation, dB.
+    pub gain_db: f64,
+}
+
+impl Rx {
+    pub fn channels(&self) -> [Option<&RxChannel>; 2] {
+        [self.ch0.as_ref(), self.ch1.as_ref()]
+    }
+}
+
+impl Tx {
+    pub fn channels(&self) -> [Option<&TxChannel>; 2] {
+        [self.ch0.as_ref(), self.ch1.as_ref()]
+    }
+}
+
+/// Which chains are on: index = channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chains {
+    pub rx: [bool; 2],
+    pub tx: [bool; 2],
+}
+
+impl Chains {
+    pub const NONE: Chains = Chains { rx: [false; 2], tx: [false; 2] };
+
+    fn and(self, o: Chains) -> Chains {
+        Chains { rx: [self.rx[0] && o.rx[0], self.rx[1] && o.rx[1]], tx: [self.tx[0] && o.tx[0], self.tx[1] && o.tx[1]] }
+    }
+
+    pub fn rx_count(self) -> usize {
+        self.rx.iter().filter(|&&on| on).count()
+    }
+
+    pub fn tx_count(self) -> usize {
+        self.tx.iter().filter(|&&on| on).count()
+    }
+
+    /// The data port carries two channels of a direction.
+    pub fn dual(self) -> bool {
+        self.rx_count() == 2 || self.tx_count() == 2
+    }
+
+    /// The highest sample rate these chains allow, Hz.
+    pub fn max_rate_hz(self) -> f64 {
+        if self.dual() { MAX_RATE_2CH_HZ } else { MAX_RATE_HZ }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Rx = 0,
+    Tx = 1,
+}
+
+// -- validation ---------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    /// Not TOML, or not this schema (unknown key, wrong type, missing key).
+    Toml(String),
+    /// `key` = `value` lies outside `min ..= max`, in `unit`.
+    Range { key: String, value: f64, min: f64, max: f64, unit: &'static str },
+    /// `key` = `value` dB is not a multiple of `step` dB.
+    Step { key: String, value: f64, step: f64 },
+    /// rate_hz above what `channels` channels in a direction allow.
+    RateForChannels { rate_hz: f64, max_hz: f64 },
+    /// `key` (a bandwidth) above rate_hz.
+    BandwidthAboveRate { key: &'static str, bandwidth_hz: f64, rate_hz: f64 },
+    /// A section with no channel.
+    NoChannel(&'static str),
+    /// The bus load, bytes/s, not below 400e6.
+    Bus { bytes_per_s: f64, format: Format },
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::Toml(m) => write!(f, "configuration: {m}"),
+            Error::Range { key, value, min, max, unit } => {
+                write!(f, "{key} = {value}: outside {min} ..= {max} {unit}")
+            }
+            Error::Step { key, value, step } => write!(f, "{key} = {value}: not a multiple of {step} dB"),
+            Error::RateForChannels { rate_hz, max_hz } => write!(
+                f,
+                "rate_hz = {rate_hz}: above {max_hz} Hz, the most with two channels in a direction \
+                 (one data port carries both)"
+            ),
+            Error::BandwidthAboveRate { key, bandwidth_hz, rate_hz } => write!(
+                f,
+                "{key} = {bandwidth_hz}: above rate_hz = {rate_hz}; the AD9361's filter is clipped to the sample rate"
+            ),
+            Error::NoChannel(section) => {
+                write!(f, "[{section}] has no channel: add ch0 and/or ch1, or remove the section")
+            }
+            Error::Bus { bytes_per_s, format } => {
+                write!(f, "bus load {} MB/s (rate_hz x bytes per sample time, rx + tx) is not below 400 MB/s", bytes_per_s / 1e6)?;
+                match format {
+                    Format::Sc16 => write!(f, "; use format = \"sc12\", fewer channels or a lower rate"),
+                    Format::Sc12 => write!(f, "; use fewer channels or a lower rate"),
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+fn range(key: &str, value: f64, min: f64, max: f64, unit: &'static str) -> Result<(), Error> {
+    // written so that NaN fails
+    if min <= value && value <= max {
+        Ok(())
+    } else {
+        Err(Error::Range { key: key.into(), value, min, max, unit })
+    }
+}
+
+fn step(key: &str, value: f64, step: f64) -> Result<(), Error> {
+    // exact: every multiple of 0.25 below 2^50 is an f64, so is value / step
+    if (value / step).fract() == 0.0 { Ok(()) } else { Err(Error::Step { key: key.into(), value, step }) }
+}
+
+impl Config {
+    /// A configuration from TOML text, validated.
+    pub fn parse(text: &str) -> Result<Config, Error> {
+        let c: Config = toml::from_str(text).map_err(|e| Error::Toml(e.to_string()))?;
+        c.validate()?;
+        Ok(c)
+    }
+
+    /// The limits of the module doc; the first one broken.
+    pub fn validate(&self) -> Result<(), Error> {
+        range("rate_hz", self.rate_hz, MIN_RATE_HZ, MAX_RATE_HZ, "Hz")?;
+        let chains = self.chains();
+        if self.rate_hz > chains.max_rate_hz() {
+            return Err(Error::RateForChannels { rate_hz: self.rate_hz, max_hz: chains.max_rate_hz() });
+        }
+        let bandwidth = |key: &'static str, hz: f64| {
+            range(key, hz, MIN_BANDWIDTH_HZ, MAX_BANDWIDTH_HZ, "Hz")?;
+            if hz > self.rate_hz {
+                return Err(Error::BandwidthAboveRate { key, bandwidth_hz: hz, rate_hz: self.rate_hz });
+            }
+            Ok(())
+        };
+        if let Some(rx) = &self.rx {
+            if chains.rx_count() == 0 {
+                return Err(Error::NoChannel("rx"));
+            }
+            range("rx.lo_hz", rx.lo_hz, MIN_LO_HZ, MAX_LO_HZ, "Hz")?;
+            bandwidth("rx.bandwidth_hz", rx.bandwidth_hz)?;
+            for (c, ch) in rx.channels().into_iter().enumerate() {
+                if let Some(ch) = ch {
+                    let key = format!("rx.ch{c}.gain_db");
+                    range(&key, ch.gain_db, 0.0, MAX_RX_GAIN_DB, "dB")?;
+                    step(&key, ch.gain_db, RX_GAIN_STEP_DB)?;
+                }
+            }
+            if let Some(spp) = rx.spp {
+                let full = self.full_spp(chains.rx_count());
+                range("rx.spp", spp as f64, MIN_SPP as f64, full as f64, "sample times")?;
+            }
+        }
+        if let Some(tx) = &self.tx {
+            if chains.tx_count() == 0 {
+                return Err(Error::NoChannel("tx"));
+            }
+            range("tx.lo_hz", tx.lo_hz, MIN_LO_HZ, MAX_LO_HZ, "Hz")?;
+            bandwidth("tx.bandwidth_hz", tx.bandwidth_hz)?;
+            for (c, ch) in tx.channels().into_iter().enumerate() {
+                if let Some(ch) = ch {
+                    let key = format!("tx.ch{c}.gain_db");
+                    range(&key, ch.gain_db, 0.0, MAX_TX_GAIN_DB, "dB")?;
+                    step(&key, ch.gain_db, TX_GAIN_STEP_DB)?;
+                }
+            }
+        }
+        let load = self.bus_bytes_per_s();
+        // load is finite: rate_hz passed its range
+        if load >= BUS_BYTES_PER_S {
+            return Err(Error::Bus { bytes_per_s: load, format: self.format });
+        }
+        Ok(())
+    }
+
+    pub fn chains(&self) -> Chains {
+        let rx = self.rx.as_ref().map_or([false; 2], |r| r.channels().map(|c| c.is_some()));
+        let tx = self.tx.as_ref().map_or([false; 2], |t| t.channels().map(|c| c.is_some()));
+        Chains { rx, tx }
+    }
+
+    /// Bus load, bytes/s: rate_hz x (b(rx channels) + b(tx channels)).
+    pub fn bus_bytes_per_s(&self) -> f64 {
+        let c = self.chains();
+        let w = self.format.wire();
+        self.rate_hz * (w.bytes_per_time(c.rx_count()) + w.bytes_per_time(c.tx_count())) as f64
+    }
+
+    /// Sample times in a full rx packet of `channels` channels.
+    fn full_spp(&self, channels: usize) -> u32 {
+        self.format.wire().times_per_packet(channels) as u32
+    }
+
+    /// Sample times per rx packet as run (None without rx).
+    pub fn rx_spp(&self) -> Option<u32> {
+        let rx = self.rx.as_ref()?;
+        Some(rx.spp.unwrap_or_else(|| self.full_spp(self.chains().rx_count())))
+    }
+
+    /// The operations that take a radio configured as `old` (None: in an
+    /// unknown state) to `new`, in the order of the module doc. Both must
+    /// be valid.
+    pub fn changes(old: Option<&Config>, new: &Config) -> Vec<Change> {
+        let want = State::of(new);
+        let mut p = Plan { now: old.map_or_else(State::default, State::of), changes: Vec::new() };
+        let new_chains = new.chains();
+        let now_chains = p.now.chains;
+        let on = |c: Option<Chains>, tx: usize| c.is_some_and(|c| c.tx[tx]);
+        // the chains between steps 2 and 7
+        let kept = now_chains.map_or(Chains::NONE, |n| n.and(new_chains));
+
+        // 1. mute; the port's mode may change at step 2 or 7 (1 rx + 2 tx
+        // to 2 rx + 1 tx passes through 1 + 1)
+        let could_transmit = differs(p.now.reference, want.reference).is_some()
+            || differs(p.now.rate_hz, want.rate_hz).is_some()
+            || differs(p.now.bandwidth_hz[Direction::Tx as usize], want.bandwidth_hz[Direction::Tx as usize]).is_some()
+            || (0..2).any(|d| differs(p.now.lo_hz[d], want.lo_hz[d]).is_some())
+            || (0..2).any(|c| new_chains.tx[c] && !on(now_chains, c))
+            || now_chains.is_none_or(|n| n.dual() != kept.dual() || kept.dual() != new_chains.dual());
+        for c in 0..2 {
+            let switched_off = on(now_chains, c) && !new_chains.tx[c];
+            if (could_transmit || switched_off) && p.now.tx_gain_db[c] != Some(0.0) {
+                p.emit(Change::Gain { direction: Direction::Tx, channel: c, db: 0.0 });
+            }
+        }
+        // 2. chains off
+        if now_chains != Some(kept) {
+            p.emit(Change::Chains(kept));
+        }
+        // 3, 4. reference, rate
+        if let Some(r) = differs(p.now.reference, want.reference) {
+            p.emit(Change::Reference(r));
+        }
+        if let Some(hz) = differs(p.now.rate_hz, want.rate_hz) {
+            p.emit(Change::Rate { hz });
+        }
+        // 5, 6. bandwidth, LO
+        for direction in [Direction::Rx, Direction::Tx] {
+            if let Some(hz) = differs(p.now.bandwidth_hz[direction as usize], want.bandwidth_hz[direction as usize]) {
+                p.emit(Change::Bandwidth { direction, hz });
+            }
+        }
+        for direction in [Direction::Rx, Direction::Tx] {
+            if let Some(hz) = differs(p.now.lo_hz[direction as usize], want.lo_hz[direction as usize]) {
+                p.emit(Change::Lo { direction, hz });
+            }
+        }
+        // 7. chains on
+        if p.now.chains != want.chains {
+            p.emit(Change::Chains(new_chains));
+        }
+        // 8. antenna, format, spp
+        for channel in 0..2 {
+            if let Some(antenna) = differs(p.now.antenna[channel], want.antenna[channel]) {
+                p.emit(Change::Antenna { channel, antenna });
+            }
+        }
+        if let Some(f) = differs(p.now.format, want.format) {
+            p.emit(Change::Format(f));
+        }
+        if let Some(n) = differs(p.now.rx_spp, want.rx_spp) {
+            p.emit(Change::RxSpp(n));
+        }
+        // 9. gains, tx last
+        for channel in 0..2 {
+            if let Some(db) = differs(p.now.rx_gain_db[channel], want.rx_gain_db[channel]) {
+                p.emit(Change::Gain { direction: Direction::Rx, channel, db });
+            }
+        }
+        for channel in 0..2 {
+            if let Some(db) = differs(p.now.tx_gain_db[channel], want.tx_gain_db[channel]) {
+                p.emit(Change::Gain { direction: Direction::Tx, channel, db });
+            }
+        }
+        p.changes
+    }
+}
+
+// -- the plan -----------------------------------------------------------------
+
+/// One operation on the radio; `Radio` has one method per kind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Change {
+    Reference(Reference),
+    /// Sample rate, Hz.
+    Rate { hz: f64 },
+    /// A direction's analog filter, Hz.
+    Bandwidth { direction: Direction, hz: f64 },
+    /// A direction's synthesizer, Hz.
+    Lo { direction: Direction, hz: f64 },
+    /// Which chains are on (the data port's channel count follows).
+    Chains(Chains),
+    /// An rx channel's port.
+    Antenna { channel: usize, antenna: Antenna },
+    /// A channel's gain, dB (tx: 89.75 dB minus the attenuation).
+    Gain { direction: Direction, channel: usize, db: f64 },
+    /// The wire format of both directions.
+    Format(Format),
+    /// Sample times per rx packet.
+    RxSpp(u32),
+}
+
+/// What a driver implements to run a plan. Contract (the plan relies on
+/// it): each method changes only what it names, except `set_rate`, after
+/// which both bandwidths are unknown and set again by the plan.
+pub trait Radio {
+    type Error;
+    fn set_reference(&mut self, reference: Reference) -> Result<(), Self::Error>;
+    fn set_rate(&mut self, hz: f64) -> Result<(), Self::Error>;
+    fn set_bandwidth(&mut self, direction: Direction, hz: f64) -> Result<(), Self::Error>;
+    fn set_lo(&mut self, direction: Direction, hz: f64) -> Result<(), Self::Error>;
+    fn set_chains(&mut self, chains: Chains) -> Result<(), Self::Error>;
+    fn set_antenna(&mut self, channel: usize, antenna: Antenna) -> Result<(), Self::Error>;
+    fn set_gain(&mut self, direction: Direction, channel: usize, db: f64) -> Result<(), Self::Error>;
+    fn set_format(&mut self, format: Format) -> Result<(), Self::Error>;
+    fn set_rx_spp(&mut self, spp: u32) -> Result<(), Self::Error>;
+}
+
+impl Change {
+    pub fn apply<R: Radio>(&self, radio: &mut R) -> Result<(), R::Error> {
+        match *self {
+            Change::Reference(r) => radio.set_reference(r),
+            Change::Rate { hz } => radio.set_rate(hz),
+            Change::Bandwidth { direction, hz } => radio.set_bandwidth(direction, hz),
+            Change::Lo { direction, hz } => radio.set_lo(direction, hz),
+            Change::Chains(c) => radio.set_chains(c),
+            Change::Antenna { channel, antenna } => radio.set_antenna(channel, antenna),
+            Change::Gain { direction, channel, db } => radio.set_gain(direction, channel, db),
+            Change::Format(f) => radio.set_format(f),
+            Change::RxSpp(n) => radio.set_rx_spp(n),
+        }
+    }
+}
+
+/// What the radio holds; None: unknown (or, for a target, left as it is).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct State {
+    reference: Option<Reference>,
+    rate_hz: Option<f64>,
+    /// Index: Direction.
+    bandwidth_hz: [Option<f64>; 2],
+    lo_hz: [Option<f64>; 2],
+    chains: Option<Chains>,
+    antenna: [Option<Antenna>; 2],
+    rx_gain_db: [Option<f64>; 2],
+    tx_gain_db: [Option<f64>; 2],
+    format: Option<Format>,
+    rx_spp: Option<u32>,
+}
+
+impl State {
+    /// The state `c` means: what it sets, a tx chain that is off at 0 dB.
+    fn of(c: &Config) -> State {
+        let mut s = State {
+            reference: Some(c.reference),
+            rate_hz: Some(c.rate_hz),
+            chains: Some(c.chains()),
+            tx_gain_db: [Some(0.0); 2],
+            format: Some(c.format),
+            rx_spp: c.rx_spp(),
+            ..State::default()
+        };
+        if let Some(rx) = &c.rx {
+            s.bandwidth_hz[Direction::Rx as usize] = Some(rx.bandwidth_hz);
+            s.lo_hz[Direction::Rx as usize] = Some(rx.lo_hz);
+            for (k, ch) in rx.channels().into_iter().enumerate() {
+                s.antenna[k] = ch.map(|ch| ch.antenna);
+                s.rx_gain_db[k] = ch.map(|ch| ch.gain_db);
+            }
+        }
+        if let Some(tx) = &c.tx {
+            s.bandwidth_hz[Direction::Tx as usize] = Some(tx.bandwidth_hz);
+            s.lo_hz[Direction::Tx as usize] = Some(tx.lo_hz);
+            for (k, ch) in tx.channels().into_iter().enumerate() {
+                if let Some(ch) = ch {
+                    s.tx_gain_db[k] = Some(ch.gain_db);
+                }
+            }
+        }
+        s
+    }
+
+    /// The `Radio` contract.
+    fn apply(&mut self, change: &Change) {
+        match *change {
+            Change::Reference(r) => self.reference = Some(r),
+            Change::Rate { hz } => {
+                self.rate_hz = Some(hz);
+                self.bandwidth_hz = [None; 2];
+            }
+            Change::Bandwidth { direction, hz } => self.bandwidth_hz[direction as usize] = Some(hz),
+            Change::Lo { direction, hz } => self.lo_hz[direction as usize] = Some(hz),
+            Change::Chains(c) => self.chains = Some(c),
+            Change::Antenna { channel, antenna } => self.antenna[channel] = Some(antenna),
+            Change::Gain { direction: Direction::Rx, channel, db } => self.rx_gain_db[channel] = Some(db),
+            Change::Gain { direction: Direction::Tx, channel, db } => self.tx_gain_db[channel] = Some(db),
+            Change::Format(f) => self.format = Some(f),
+            Change::RxSpp(n) => self.rx_spp = Some(n),
+        }
+    }
+}
+
+/// The target value when it is set and the radio holds another.
+fn differs<T: PartialEq + Copy>(now: Option<T>, want: Option<T>) -> Option<T> {
+    want.filter(|w| now != Some(*w))
+}
+
+struct Plan {
+    now: State,
+    changes: Vec<Change>,
+}
+
+impl Plan {
+    fn emit(&mut self, c: Change) {
+        self.now.apply(&c);
+        self.changes.push(c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Direction::{Rx as DRx, Tx as DTx};
+
+    const EXAMPLE: &str = include_str!("../examples/config.toml");
+    const MINIMAL: &str = "rate_hz = 1e6\nformat = \"sc16\"\n\
+                           [rx]\nlo_hz = 100e6\nbandwidth_hz = 1e6\nch0 = { gain_db = 30 }\n";
+
+    fn example() -> Config {
+        Config::parse(EXAMPLE).unwrap()
+    }
+
+    /// 1 rx + 1 tx channel, sc12, 10 MS/s: inside every limit, so that a
+    /// test moves one value to its boundary.
+    fn base() -> Config {
+        Config::parse(
+            "rate_hz = 10e6\nformat = \"sc12\"\n\
+             [rx]\nlo_hz = 1e9\nbandwidth_hz = 5e6\nch0 = { gain_db = 30 }\n\
+             [tx]\nlo_hz = 1e9\nbandwidth_hz = 5e6\nch0 = { gain_db = 30 }\n",
+        )
+        .unwrap()
+    }
+
+    fn with(f: impl FnOnce(&mut Config)) -> Result<(), Error> {
+        let mut c = base();
+        f(&mut c);
+        c.validate()
+    }
+
+    fn rx(c: &mut Config) -> &mut Rx {
+        c.rx.as_mut().unwrap()
+    }
+
+    fn tx(c: &mut Config) -> &mut Tx {
+        c.tx.as_mut().unwrap()
+    }
+
+    /// The Range error's key and value, or a panic.
+    fn range_of(r: Result<(), Error>) -> (String, f64) {
+        match r {
+            Err(Error::Range { key, value, .. }) => (key, value),
+            other => panic!("expected a range error, got {other:?}"),
+        }
+    }
+
+    // -- parsing ----------------------------------------------------------------
+
+    #[test]
+    fn parses_the_example() {
+        let c = example();
+        assert_eq!((c.rate_hz, c.reference, c.format), (30.72e6, Reference::Internal, Format::Sc12));
+        let r = c.rx.as_ref().unwrap();
+        assert_eq!((r.lo_hz, r.bandwidth_hz, r.spp), (2.45e9, 20e6, Some(1024)));
+        assert_eq!(r.ch0, Some(RxChannel { gain_db: 40.0, antenna: Antenna::Rx2 }));
+        assert_eq!(r.ch1, Some(RxChannel { gain_db: 35.0, antenna: Antenna::Rx2 }));
+        let t = c.tx.as_ref().unwrap();
+        assert_eq!((t.lo_hz, t.bandwidth_hz), (2.45e9, 20e6));
+        assert_eq!((t.ch0, t.ch1), (Some(TxChannel { gain_db: 60.0 }), Some(TxChannel { gain_db: 55.5 })));
+        assert_eq!(c.chains(), Chains { rx: [true; 2], tx: [true; 2] });
+        // 30.72e6 x (6 + 6) bytes: PROTOCOL.md's 369 MB/s
+        assert_eq!(c.bus_bytes_per_s(), 368.64e6);
+        assert_eq!(c.rx_spp(), Some(1024));
+    }
+
+    #[test]
+    fn parses_the_minimal_with_its_defaults() {
+        let c = Config::parse(MINIMAL).unwrap();
+        assert_eq!(c.reference, Reference::Internal);
+        assert_eq!(c.rx.as_ref().unwrap().ch0.unwrap().antenna, Antenna::Rx2);
+        assert_eq!(c.tx, None);
+        assert_eq!(c.chains(), Chains { rx: [true, false], tx: [false; 2] });
+        assert_eq!(c.rx_spp(), Some(4092)); // full sc16 packet, 1 channel
+        // the other values of the enums parse too
+        let c = Config::parse(&MINIMAL.replace("gain_db = 30", "gain_db = 30, antenna = \"TX/RX\"")
+            .replace("format", "reference = \"external\"\nformat")).unwrap();
+        assert_eq!((c.reference, c.rx.unwrap().ch0.unwrap().antenna), (Reference::External, Antenna::TxRx));
+    }
+
+    #[test]
+    fn rejects_unknown_misspelled_and_missing_keys() {
+        let cases = [
+            (MINIMAL.replace("format", "gain = 3\nformat"), "unknown field `gain`"),
+            (MINIMAL.replace("bandwidth_hz", "agc = false\nbandwidth_hz"), "unknown field `agc`"),
+            (MINIMAL.replace("gain_db = 30", "gain_db = 30, agc = true"), "unknown field `agc`"),
+            (MINIMAL.replace("ch0", "ch2"), "unknown field `ch2`"),
+            (MINIMAL.replace("lo_hz", "freq"), "unknown field `freq`"),
+            (format!("{MINIMAL}[tx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\nch0 = {{ gain_db = 1, antenna = \"TX/RX\" }}\n"),
+             "unknown field `antenna`"),
+            (MINIMAL.replace("format = \"sc16\"\n", ""), "missing field `format`"),
+            (MINIMAL.replace("gain_db = 30", "antenna = \"RX2\""), "missing field `gain_db`"),
+            (MINIMAL.replace("gain_db = 30", "gain_db = 30, antenna = \"RX1\""), "RX1"),
+            (MINIMAL.replace("format", "reference = \"gpsdo\"\nformat"), "gpsdo"),
+            (MINIMAL.replace("sc16", "sc8"), "sc8"),
+        ];
+        for (text, needle) in cases {
+            match Config::parse(&text) {
+                Err(Error::Toml(m)) => assert!(m.contains(needle), "{needle:?} not in {m:?}"),
+                other => panic!("{text}\n-> {other:?}"),
+            }
+        }
+    }
+
+    // -- limits, each at its boundary ---------------------------------------
+
+    #[test]
+    fn rate_limits() {
+        // 1 channel per direction: 61.44 MS/s (sc12: 61.44e6 x 6 = 369 MB/s)
+        assert_eq!(with(|c| c.rate_hz = 61.44e6), Ok(()));
+        assert_eq!(range_of(with(|c| c.rate_hz = 61_440_001.0)), ("rate_hz".into(), 61_440_001.0));
+        let low = |c: &mut Config, hz| {
+            c.rate_hz = hz;
+            rx(c).bandwidth_hz = 200e3;
+            tx(c).bandwidth_hz = 200e3;
+        };
+        assert_eq!(with(|c| low(c, 220e3)), Ok(()));
+        assert_eq!(range_of(with(|c| low(c, 219_999.0))), ("rate_hz".into(), 219_999.0));
+        assert!(range_of(with(|c| c.rate_hz = f64::NAN)).1.is_nan());
+        // 2 channels in either direction: 30.72 MS/s
+        let two_rx = |c: &mut Config| rx(c).ch1 = Some(RxChannel { gain_db: 0.0, antenna: Antenna::Rx2 });
+        let two_tx = |c: &mut Config| tx(c).ch1 = Some(TxChannel { gain_db: 0.0 });
+        for two in [two_rx as fn(&mut Config), two_tx] {
+            assert_eq!(with(|c| { two(c); c.rate_hz = 30.72e6 }), Ok(()));
+            assert_eq!(
+                with(|c| { two(c); c.rate_hz = 30_720_001.0 }),
+                Err(Error::RateForChannels { rate_hz: 30_720_001.0, max_hz: 30.72e6 })
+            );
+        }
+    }
+
+    #[test]
+    fn lo_limits() {
+        for (key, set) in [
+            ("rx.lo_hz", (|c: &mut Config, hz| rx(c).lo_hz = hz) as fn(&mut Config, f64)),
+            ("tx.lo_hz", |c, hz| tx(c).lo_hz = hz),
+        ] {
+            assert_eq!(with(|c| set(c, 70e6)), Ok(()));
+            assert_eq!(with(|c| set(c, 6e9)), Ok(()));
+            assert_eq!(range_of(with(|c| set(c, 69_999_999.0))), (key.into(), 69_999_999.0));
+            assert_eq!(range_of(with(|c| set(c, 6_000_000_001.0))), (key.into(), 6_000_000_001.0));
+        }
+    }
+
+    #[test]
+    fn bandwidth_limits() {
+        for (key, set) in [
+            ("rx.bandwidth_hz", (|c: &mut Config, hz| rx(c).bandwidth_hz = hz) as fn(&mut Config, f64)),
+            ("tx.bandwidth_hz", |c, hz| tx(c).bandwidth_hz = hz),
+        ] {
+            assert_eq!(with(|c| set(c, 200e3)), Ok(()));
+            assert_eq!(range_of(with(|c| set(c, 199_999.0))), (key.into(), 199_999.0));
+            assert_eq!(with(|c| { c.rate_hz = 61.44e6; set(c, 56e6) }), Ok(()));
+            assert_eq!(range_of(with(|c| { c.rate_hz = 61.44e6; set(c, 56_000_001.0) })), (key.into(), 56_000_001.0));
+            // no wider than the rate (10 MS/s in base)
+            assert_eq!(with(|c| set(c, 10e6)), Ok(()));
+            assert_eq!(
+                with(|c| set(c, 10_000_001.0)),
+                Err(Error::BandwidthAboveRate { key, bandwidth_hz: 10_000_001.0, rate_hz: 10e6 })
+            );
+        }
+    }
+
+    #[test]
+    fn rx_gain_limits_and_step() {
+        let set = |db| move |c: &mut Config| rx(c).ch0.as_mut().unwrap().gain_db = db;
+        for db in [0.0, 1.0, 75.0, 76.0] {
+            assert_eq!(with(set(db)), Ok(()), "{db}");
+        }
+        for db in [-1.0, 77.0] {
+            assert_eq!(range_of(with(set(db))), ("rx.ch0.gain_db".into(), db));
+        }
+        for db in [30.5, 0.25, 75.75] {
+            assert_eq!(with(set(db)), Err(Error::Step { key: "rx.ch0.gain_db".into(), value: db, step: 1.0 }));
+        }
+        // the key names the channel
+        let ch1 = with(|c| rx(c).ch1 = Some(RxChannel { gain_db: 77.0, antenna: Antenna::Rx2 }));
+        assert_eq!(range_of(ch1).0, "rx.ch1.gain_db");
+    }
+
+    #[test]
+    fn tx_gain_limits_and_step() {
+        let set = |db| move |c: &mut Config| tx(c).ch0.as_mut().unwrap().gain_db = db;
+        for db in [0.0, 0.25, 89.5, 89.75] {
+            assert_eq!(with(set(db)), Ok(()), "{db}");
+        }
+        for db in [-0.25, 90.0] {
+            assert_eq!(range_of(with(set(db))), ("tx.ch0.gain_db".into(), db));
+        }
+        for db in [0.1, 30.3, 89.7] {
+            assert_eq!(with(set(db)), Err(Error::Step { key: "tx.ch0.gain_db".into(), value: db, step: 0.25 }));
+        }
+    }
+
+    #[test]
+    fn spp_limits_follow_format_and_channels() {
+        // full counts from PROTOCOL.md section 3's table
+        for (format, two, full) in [(Format::Sc12, false, 5456), (Format::Sc12, true, 2728), (Format::Sc16, false, 4092), (Format::Sc16, true, 2046)] {
+            let set = |spp| move |c: &mut Config| {
+                c.format = format;
+                c.tx = None; // sc16 with 2 rx: inside the bus budget at 10 MS/s either way
+                if two {
+                    rx(c).ch1 = Some(RxChannel { gain_db: 0.0, antenna: Antenna::Rx2 });
+                }
+                rx(c).spp = Some(spp);
+            };
+            assert_eq!(with(set(16)), Ok(()));
+            assert_eq!(with(set(full)), Ok(()));
+            assert_eq!(range_of(with(set(15))), ("rx.spp".into(), 15.0));
+            assert_eq!(range_of(with(set(full + 1))), ("rx.spp".into(), (full + 1) as f64));
+        }
+    }
+
+    #[test]
+    fn a_section_needs_a_channel() {
+        assert_eq!(with(|c| rx(c).ch0 = None), Err(Error::NoChannel("rx")));
+        assert_eq!(with(|c| tx(c).ch0 = None), Err(Error::NoChannel("tx")));
+        assert_eq!(with(|c| c.tx = None), Ok(())); // the whole section away: tx off
+    }
+
+    #[test]
+    fn bus_budget() {
+        let mut c = example(); // 2 x 2 at 30.72 MS/s
+        c.format = Format::Sc16;
+        assert_eq!(c.validate(), Err(Error::Bus { bytes_per_s: 491.52e6, format: Format::Sc16 }));
+        c.format = Format::Sc12;
+        assert_eq!(c.validate(), Ok(()));
+        // 1 x 1 at 61.44 MS/s: the same loads
+        let one = |format| with(|c| { c.rate_hz = 61.44e6; c.format = format });
+        assert_eq!(one(Format::Sc16), Err(Error::Bus { bytes_per_s: 491.52e6, format: Format::Sc16 }));
+        assert_eq!(one(Format::Sc12), Ok(()));
+        // exactly 400 MB/s is not below: 2 x 2 sc16 at 25 MS/s = 25e6 x 16
+        c.format = Format::Sc16;
+        c.rate_hz = 25e6;
+        assert_eq!(c.validate(), Err(Error::Bus { bytes_per_s: 400e6, format: Format::Sc16 }));
+        c.rate_hz = 24_999_999.0;
+        assert_eq!(c.validate(), Ok(()));
+        // rx alone at sc16 fits at the top rate
+        assert_eq!(with(|c| { c.rate_hz = 61.44e6; c.format = Format::Sc16; c.tx = None }), Ok(()));
+    }
+
+    #[test]
+    fn messages_name_the_key_the_value_and_the_way_out() {
+        let text = |r: Result<(), Error>| r.unwrap_err().to_string();
+        assert_eq!(text(with(|c| rx(c).lo_hz = 6_000_000_001.0)), "rx.lo_hz = 6000000001: outside 70000000 ..= 6000000000 Hz");
+        assert_eq!(text(with(|c| tx(c).ch0.as_mut().unwrap().gain_db = 0.1)), "tx.ch0.gain_db = 0.1: not a multiple of 0.25 dB");
+        let mut c = example();
+        c.format = Format::Sc16;
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "bus load 491.52 MB/s (rate_hz x bytes per sample time, rx + tx) is not below 400 MB/s; \
+             use format = \"sc12\", fewer channels or a lower rate"
+        );
+        assert_eq!(text(with(|c| rx(c).ch0 = None)), "[rx] has no channel: add ch0 and/or ch1, or remove the section");
+    }
+
+    // -- the plan: exact plans --------------------------------------------------
+
+    use super::Change as C;
+
+    fn mute(c: usize) -> Change {
+        C::Gain { direction: DTx, channel: c, db: 0.0 }
+    }
+
+    #[test]
+    fn from_unknown_everything_in_order() {
+        let all = Chains { rx: [true; 2], tx: [true; 2] };
+        assert_eq!(Config::changes(None, &example()), [
+            mute(0), mute(1), C::Chains(Chains::NONE),
+            C::Reference(Reference::Internal), C::Rate { hz: 30.72e6 },
+            C::Bandwidth { direction: DRx, hz: 20e6 }, C::Bandwidth { direction: DTx, hz: 20e6 },
+            C::Lo { direction: DRx, hz: 2.45e9 }, C::Lo { direction: DTx, hz: 2.45e9 },
+            C::Chains(all),
+            C::Antenna { channel: 0, antenna: Antenna::Rx2 }, C::Antenna { channel: 1, antenna: Antenna::Rx2 },
+            C::Format(Format::Sc12), C::RxSpp(1024),
+            C::Gain { direction: DRx, channel: 0, db: 40.0 }, C::Gain { direction: DRx, channel: 1, db: 35.0 },
+            C::Gain { direction: DTx, channel: 0, db: 60.0 }, C::Gain { direction: DTx, channel: 1, db: 55.5 },
+        ]);
+    }
+
+    #[test]
+    fn identical_configs_need_nothing() {
+        for text in [EXAMPLE, MINIMAL] {
+            let c = Config::parse(text).unwrap();
+            assert_eq!(Config::changes(Some(&c), &c), []);
+        }
+    }
+
+    #[test]
+    fn one_value_one_change() {
+        let old = example();
+        let one = |f: fn(&mut Config), want: Change| {
+            let mut new = old.clone();
+            f(&mut new);
+            new.validate().unwrap();
+            assert_eq!(Config::changes(Some(&old), &new), [want]);
+        };
+        one(|c| rx(c).ch1.as_mut().unwrap().gain_db = 36.0, C::Gain { direction: DRx, channel: 1, db: 36.0 });
+        one(|c| tx(c).ch0.as_mut().unwrap().gain_db = 61.25, C::Gain { direction: DTx, channel: 0, db: 61.25 });
+        one(|c| rx(c).ch0.as_mut().unwrap().antenna = Antenna::TxRx, C::Antenna { channel: 0, antenna: Antenna::TxRx });
+        one(|c| rx(c).spp = Some(2000), C::RxSpp(2000));
+        one(|c| rx(c).spp = None, C::RxSpp(2728));
+        // an rx filter change does not transmit: no mute
+        one(|c| rx(c).bandwidth_hz = 10e6, C::Bandwidth { direction: DRx, hz: 10e6 });
+    }
+
+    #[test]
+    fn implicit_spp_follows_the_format() {
+        let old = Config::parse(MINIMAL).unwrap();
+        let new = Config::parse(&MINIMAL.replace("sc16", "sc12")).unwrap();
+        assert_eq!(Config::changes(Some(&old), &new), [C::Format(Format::Sc12), C::RxSpp(5456)]);
+    }
+
+    #[test]
+    fn transmit_risks_are_muted_and_gains_restored_last() {
+        let old = example();
+        let unmute = [C::Gain { direction: DTx, channel: 0, db: 60.0 }, C::Gain { direction: DTx, channel: 1, db: 55.5 }];
+        // an rx LO change moves the tx LO during calibration
+        let mut new = old.clone();
+        rx(&mut new).lo_hz = 915e6;
+        assert_eq!(Config::changes(Some(&old), &new), [mute(0), mute(1), C::Lo { direction: DRx, hz: 915e6 }, unmute[0], unmute[1]]);
+        // a rate change recalibrates; both filters are set again
+        let mut new = old.clone();
+        new.rate_hz = 25e6;
+        assert_eq!(Config::changes(Some(&old), &new), [
+            mute(0), mute(1), C::Rate { hz: 25e6 },
+            C::Bandwidth { direction: DRx, hz: 20e6 }, C::Bandwidth { direction: DTx, hz: 20e6 },
+            unmute[0], unmute[1],
+        ]);
+        // without tx there is nothing to mute
+        let old = Config::parse(MINIMAL).unwrap();
+        let mut new = old.clone();
+        rx(&mut new).lo_hz = 433e6;
+        assert_eq!(Config::changes(Some(&old), &new), [C::Lo { direction: DRx, hz: 433e6 }]);
+    }
+
+    #[test]
+    fn tx_chains_off_muted_first_on_at_maximum_attenuation() {
+        let both = example();
+        let mut one = both.clone();
+        tx(&mut one).ch1 = None;
+        let rx2_tx1 = Chains { rx: [true; 2], tx: [true, false] };
+        // off: mute that channel only (the port stays dual: 2 rx), then off
+        assert_eq!(Config::changes(Some(&both), &one), [mute(1), C::Chains(rx2_tx1)]);
+        // on: a new transmitter mutes the running one; gains last
+        assert_eq!(Config::changes(Some(&one), &both), [
+            mute(0), C::Chains(Chains { rx: [true; 2], tx: [true; 2] }),
+            C::Gain { direction: DTx, channel: 0, db: 60.0 }, C::Gain { direction: DTx, channel: 1, db: 55.5 },
+        ]);
+    }
+
+    #[test]
+    fn channel_count_falls_before_a_rate_rise_and_rises_after_a_rate_fall() {
+        // 2 rx at 30.72 MS/s <-> 1 rx at 61.44 MS/s (sc12, rx only)
+        let two = Config::parse("rate_hz = 30.72e6\nformat = \"sc12\"\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 20e6\n\
+                                 ch0 = { gain_db = 10 }\nch1 = { gain_db = 10 }\n").unwrap();
+        let mut one = two.clone();
+        one.rate_hz = 61.44e6;
+        rx(&mut one).ch1 = None;
+        let rx0 = Chains { rx: [true, false], tx: [false; 2] };
+        let rx01 = Chains { rx: [true; 2], tx: [false; 2] };
+        assert_eq!(Config::changes(Some(&two), &one), [
+            C::Chains(rx0), C::Rate { hz: 61.44e6 }, C::Bandwidth { direction: DRx, hz: 20e6 }, C::RxSpp(5456),
+        ]);
+        assert_eq!(Config::changes(Some(&one), &two), [
+            C::Rate { hz: 30.72e6 }, C::Bandwidth { direction: DRx, hz: 20e6 }, C::Chains(rx01),
+            // a channel switched on gets every setting: `one` left its antenna unknown
+            C::Antenna { channel: 1, antenna: Antenna::Rx2 }, C::RxSpp(2728),
+            C::Gain { direction: DRx, channel: 1, db: 10.0 },
+        ]);
+    }
+
+    #[test]
+    fn a_port_mode_dip_between_the_ends_is_muted() {
+        // 1 rx + 2 tx -> 2 rx + 1 tx: 2-channel at both ends, 1 + 1 after
+        // step 2 (found by the generated pairs)
+        let old = Config::parse("rate_hz = 25e6\nformat = \"sc12\"\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\n\
+                                 ch1 = { gain_db = 0 }\n[tx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\n\
+                                 ch0 = { gain_db = 40 }\nch1 = { gain_db = 40 }\n").unwrap();
+        let mut new = old.clone();
+        rx(&mut new).ch0 = Some(RxChannel { gain_db: 76.0, antenna: Antenna::Rx2 });
+        tx(&mut new).ch0 = None;
+        assert_eq!(Config::changes(Some(&old), &new), [
+            mute(0), mute(1),
+            C::Chains(Chains { rx: [false, true], tx: [false, true] }),
+            C::Chains(Chains { rx: [true, true], tx: [false, true] }),
+            C::Antenna { channel: 0, antenna: Antenna::Rx2 },
+            C::RxSpp(2728), // full sc12 packet, now of 2 channels
+            C::Gain { direction: DRx, channel: 0, db: 76.0 },
+            C::Gain { direction: DTx, channel: 1, db: 40.0 },
+        ]);
+    }
+
+    // -- the plan: properties over generated pairs --------------------------------
+
+    /// A radio that holds what it was told and checks, independently of
+    /// `changes`, the rules a plan must keep: TX muted before anything that
+    /// could transmit, a tx chain off only at 0 dB, the filters after the
+    /// rate, the rate limit in every intermediate state, no write of a
+    /// value already held.
+    #[derive(Clone, Debug, Default)]
+    struct Model {
+        reference: Option<Reference>,
+        rate_hz: Option<f64>,
+        bandwidth_hz: [Option<f64>; 2],
+        lo_hz: [Option<f64>; 2],
+        chains: Option<Chains>,
+        antenna: [Option<Antenna>; 2],
+        rx_gain_db: [Option<f64>; 2],
+        tx_gain_db: [Option<f64>; 2],
+        format: Option<Format>,
+        rx_spp: Option<u32>,
+    }
+
+    fn put<T: PartialEq + Copy + fmt::Debug>(slot: &mut Option<T>, v: T, what: &str) -> Result<(), String> {
+        if *slot == Some(v) {
+            return Err(format!("{what} := {v:?}: the value already held"));
+        }
+        *slot = Some(v);
+        Ok(())
+    }
+
+    fn dual(c: Chains) -> bool {
+        c.rx == [true; 2] || c.tx == [true; 2]
+    }
+
+    impl Model {
+        fn muted(&self, what: &str) -> Result<(), String> {
+            if self.tx_gain_db == [Some(0.0); 2] { Ok(()) } else { Err(format!("{what} with tx gains {:?}", self.tx_gain_db)) }
+        }
+
+        fn rate_fits(&self) -> Result<(), String> {
+            if let (Some(r), Some(c)) = (self.rate_hz, self.chains) {
+                let max = if dual(c) { 30.72e6 } else { 61.44e6 };
+                if r > max {
+                    return Err(format!("rate {r} with chains {c:?}"));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl Radio for Model {
+        type Error = String;
+        fn set_reference(&mut self, r: Reference) -> Result<(), String> {
+            self.muted("reference")?;
+            put(&mut self.reference, r, "reference")
+        }
+        fn set_rate(&mut self, hz: f64) -> Result<(), String> {
+            self.muted("rate")?;
+            if self.chains.is_none() {
+                return Err("rate with unknown chains".into());
+            }
+            put(&mut self.rate_hz, hz, "rate")?;
+            self.bandwidth_hz = [None; 2]; // the contract
+            self.rate_fits()
+        }
+        fn set_bandwidth(&mut self, d: Direction, hz: f64) -> Result<(), String> {
+            if d == DTx {
+                self.muted("tx bandwidth")?;
+            }
+            match self.rate_hz {
+                None => return Err("bandwidth before rate".into()),
+                Some(r) if hz > r => return Err(format!("bandwidth {hz} above rate {r}")),
+                _ => {}
+            }
+            put(&mut self.bandwidth_hz[d as usize], hz, "bandwidth")
+        }
+        fn set_lo(&mut self, d: Direction, hz: f64) -> Result<(), String> {
+            self.muted("lo")?;
+            put(&mut self.lo_hz[d as usize], hz, "lo")
+        }
+        fn set_chains(&mut self, c: Chains) -> Result<(), String> {
+            let old = self.chains;
+            let tx_on = (0..2).any(|k| c.tx[k] && !old.is_some_and(|o| o.tx[k]));
+            if tx_on || old.is_none_or(|o| dual(o) != dual(c)) {
+                self.muted("chains")?;
+            }
+            for k in 0..2 {
+                if !c.tx[k] && self.tx_gain_db[k] != Some(0.0) {
+                    return Err(format!("tx chain {k} off at gain {:?}", self.tx_gain_db[k]));
+                }
+            }
+            put(&mut self.chains, c, "chains")?;
+            self.rate_fits()
+        }
+        fn set_antenna(&mut self, channel: usize, a: Antenna) -> Result<(), String> {
+            put(&mut self.antenna[channel], a, "antenna")
+        }
+        fn set_gain(&mut self, d: Direction, channel: usize, db: f64) -> Result<(), String> {
+            match d {
+                DRx => put(&mut self.rx_gain_db[channel], db, "rx gain"),
+                DTx => {
+                    if db != 0.0 && !self.chains.is_some_and(|c| c.tx[channel]) {
+                        return Err(format!("tx gain {db} on tx chain {channel}, which is off"));
+                    }
+                    put(&mut self.tx_gain_db[channel], db, "tx gain")
+                }
+            }
+        }
+        fn set_format(&mut self, f: Format) -> Result<(), String> {
+            put(&mut self.format, f, "format")
+        }
+        fn set_rx_spp(&mut self, n: u32) -> Result<(), String> {
+            put(&mut self.rx_spp, n, "rx spp")
+        }
+    }
+
+    /// The model holds what `c` says, read from `c` directly.
+    fn holds(m: &Model, c: &Config) -> Result<(), String> {
+        let mut bad = Vec::new();
+        let mut check = |ok: bool, what: &str| if !ok { bad.push(what.to_string()) };
+        check(m.reference == Some(c.reference), "reference");
+        check(m.rate_hz == Some(c.rate_hz), "rate");
+        check(m.format == Some(c.format), "format");
+        let present = |a: bool, b: bool| [a, b];
+        let rx_on = c.rx.as_ref().map_or([false; 2], |r| present(r.ch0.is_some(), r.ch1.is_some()));
+        let tx_on = c.tx.as_ref().map_or([false; 2], |t| present(t.ch0.is_some(), t.ch1.is_some()));
+        check(m.chains == Some(Chains { rx: rx_on, tx: tx_on }), "chains");
+        if let Some(r) = &c.rx {
+            check(m.bandwidth_hz[0] == Some(r.bandwidth_hz), "rx bandwidth");
+            check(m.lo_hz[0] == Some(r.lo_hz), "rx lo");
+            let bytes = match c.format { Format::Sc16 => 4, Format::Sc12 => 3 };
+            let n = rx_on.iter().filter(|&&on| on).count() as u32;
+            check(m.rx_spp == Some(r.spp.unwrap_or(16_368 / (bytes * n))), "rx spp");
+            for (k, ch) in [r.ch0, r.ch1].into_iter().enumerate() {
+                if let Some(ch) = ch {
+                    check(m.antenna[k] == Some(ch.antenna), "antenna");
+                    check(m.rx_gain_db[k] == Some(ch.gain_db), "rx gain");
+                }
+            }
+        }
+        if let Some(t) = &c.tx {
+            check(m.bandwidth_hz[1] == Some(t.bandwidth_hz), "tx bandwidth");
+            check(m.lo_hz[1] == Some(t.lo_hz), "tx lo");
+        }
+        let tx = c.tx.as_ref();
+        for (k, ch) in [tx.and_then(|t| t.ch0), tx.and_then(|t| t.ch1)].into_iter().enumerate() {
+            check(m.tx_gain_db[k] == Some(ch.map_or(0.0, |ch| ch.gain_db)), "tx gain (0 when off)");
+        }
+        if bad.is_empty() { Ok(()) } else { Err(format!("model differs in {bad:?}: {m:?}")) }
+    }
+
+    /// What a plan did, for the coverage check.
+    #[derive(Debug, Default)]
+    struct Seen {
+        mute: bool,
+        chains_off: bool,
+        chains_on: bool,
+        reference: bool,
+        rate: bool,
+        bandwidth: bool,
+        lo: bool,
+        gain: bool,
+        other: bool,
+    }
+
+    /// Runs `plan` on a model configured as `old` (by the plan from
+    /// unknown) and checks every rule: the model's, the order of the module
+    /// doc, each value written at most once (a tx gain: mute, then its
+    /// value), a mute only when the plan could transmit or switches that
+    /// chain off, and the model holding `new` at the end.
+    fn check_plan(old: Option<&Config>, new: &Config, plan: &[Change]) -> Result<Seen, String> {
+        let mut m = Model::default();
+        if let Some(old) = old {
+            for ch in Config::changes(None, old) {
+                ch.apply(&mut m).map_err(|e| format!("configuring old: {e}"))?;
+            }
+            holds(&m, old)?;
+        }
+        let mut seen = Seen::default();
+        let (mut last, mut prefix, mut could_transmit) = (-1, true, false);
+        let mut muted = [false; 2];
+        let mut switched_off = [false; 2];
+        let mut writes = std::collections::HashMap::new();
+        for ch in plan {
+            let before = m.chains;
+            let class = match *ch {
+                C::Gain { direction: DTx, channel, db } if prefix && db == 0.0 => {
+                    muted[channel] = true;
+                    seen.mute = true;
+                    -1
+                }
+                C::Chains(c) => {
+                    let sub = |a: [bool; 2], b: [bool; 2]| (0..2).all(|k| !a[k] || b[k]);
+                    let off = before.is_none_or(|o| sub(c.rx, o.rx) && sub(c.tx, o.tx));
+                    let on = before.is_some_and(|o| sub(o.rx, c.rx) && sub(o.tx, c.tx));
+                    if (0..2).any(|k| c.tx[k] && !before.is_some_and(|o| o.tx[k]))
+                        || before.is_none_or(|o| dual(o) != dual(c))
+                    {
+                        could_transmit = true;
+                    }
+                    for (k, off) in switched_off.iter_mut().enumerate() {
+                        *off |= !c.tx[k] && before.is_none_or(|o| o.tx[k]);
+                    }
+                    if off {
+                        seen.chains_off = true;
+                        0
+                    } else if on {
+                        seen.chains_on = true;
+                        7
+                    } else {
+                        return Err(format!("{ch:?} switches chains both on and off"));
+                    }
+                }
+                C::Reference(_) => { could_transmit = true; seen.reference = true; 1 }
+                C::Rate { .. } => { could_transmit = true; seen.rate = true; 2 }
+                C::Bandwidth { direction: DRx, .. } => { seen.bandwidth = true; 3 }
+                C::Bandwidth { direction: DTx, .. } => { could_transmit = true; seen.bandwidth = true; 4 }
+                C::Lo { direction, .. } => { could_transmit = true; seen.lo = true; 5 + direction as i32 }
+                C::Antenna { .. } => { seen.other = true; 8 }
+                C::Format(_) => { seen.other = true; 9 }
+                C::RxSpp(_) => { seen.other = true; 10 }
+                C::Gain { direction, .. } => { seen.gain = true; 11 + direction as i32 }
+            };
+            if class != -1 {
+                prefix = false;
+            }
+            if class < last {
+                return Err(format!("{ch:?} after an operation of a later step"));
+            }
+            last = class;
+            let key = match *ch {
+                C::Gain { direction, channel, .. } => format!("gain {direction:?} {channel}"),
+                C::Bandwidth { direction, .. } => format!("bandwidth {direction:?}"),
+                C::Lo { direction, .. } => format!("lo {direction:?}"),
+                C::Antenna { channel, .. } => format!("antenna {channel}"),
+                C::Chains(_) => format!("chains {class}"),
+                _ => format!("{:?}", std::mem::discriminant(ch)),
+            };
+            let n = writes.entry(key.clone()).or_insert(0);
+            *n += 1;
+            if *n > if key.starts_with("gain Tx") { 2 } else { 1 } {
+                return Err(format!("{key} written {n} times"));
+            }
+            ch.apply(&mut m)?;
+        }
+        // a mute is a 0 dB written first and undone later (a single 0 dB is
+        // just the gain new asks for)
+        for k in 0..2 {
+            let undone = writes.get(&format!("gain Tx {k}")) == Some(&2);
+            if muted[k] && undone && !could_transmit && !switched_off[k] {
+                return Err(format!("tx {k} muted without a reason"));
+            }
+        }
+        holds(&m, new)?;
+        Ok(seen)
+    }
+
+    /// xorshift64*: deterministic, so a failure reproduces.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
+            xs[self.below(xs.len())]
+        }
+        fn coin(&mut self) -> bool {
+            self.below(2) == 0
+        }
+    }
+
+    // Few values per key, the limits among them, so that generated
+    // configurations often share values and differ in few.
+    const RATES: [f64; 6] = [220e3, 1e6, 10e6, 25e6, 30.72e6, 61.44e6];
+    const LOS: [f64; 4] = [70e6, 915e6, 2.45e9, 6e9];
+    const BANDWIDTHS: [f64; 4] = [200e3, 1e6, 20e6, 56e6];
+    const SPPS: [Option<u32>; 4] = [None, Some(16), Some(1000), Some(2046)];
+    const RX_GAINS: [f64; 3] = [0.0, 31.0, 76.0];
+    const TX_GAINS: [f64; 3] = [0.0, 40.25, 89.75];
+
+    fn rx_channel(r: &mut Rng) -> Option<RxChannel> {
+        r.coin().then(|| RxChannel { gain_db: r.pick(&RX_GAINS), antenna: r.pick(&[Antenna::Rx2, Antenna::TxRx]) })
+    }
+
+    fn tx_channel(r: &mut Rng) -> Option<TxChannel> {
+        r.coin().then(|| TxChannel { gain_db: r.pick(&TX_GAINS) })
+    }
+
+    fn random_rx(r: &mut Rng) -> Rx {
+        Rx { lo_hz: r.pick(&LOS), bandwidth_hz: r.pick(&BANDWIDTHS), spp: r.pick(&SPPS), ch0: rx_channel(r), ch1: rx_channel(r) }
+    }
+
+    fn random_tx(r: &mut Rng) -> Tx {
+        Tx { lo_hz: r.pick(&LOS), bandwidth_hz: r.pick(&BANDWIDTHS), ch0: tx_channel(r), ch1: tx_channel(r) }
+    }
+
+    fn random_config(r: &mut Rng) -> Config {
+        loop {
+            let c = Config {
+                rate_hz: r.pick(&RATES),
+                reference: r.pick(&[Reference::Internal, Reference::External]),
+                format: r.pick(&[Format::Sc16, Format::Sc12]),
+                rx: (r.below(5) != 0).then(|| random_rx(r)),
+                tx: (r.below(3) != 0).then(|| random_tx(r)),
+            };
+            if c.validate().is_ok() {
+                return c;
+            }
+        }
+    }
+
+    /// `c` with one to three keys changed, valid.
+    fn mutate(r: &mut Rng, c: &Config) -> Config {
+        loop {
+            let mut m = c.clone();
+            for _ in 0..1 + r.below(3) {
+                match r.below(12) {
+                    0 => m.rate_hz = r.pick(&RATES),
+                    1 => m.reference = r.pick(&[Reference::Internal, Reference::External]),
+                    2 => m.format = r.pick(&[Format::Sc16, Format::Sc12]),
+                    3 => m.rx = if m.rx.is_some() { None } else { Some(random_rx(r)) },
+                    4 => m.tx = if m.tx.is_some() { None } else { Some(random_tx(r)) },
+                    5 => if let Some(x) = &mut m.rx { x.lo_hz = r.pick(&LOS) },
+                    6 => if let Some(x) = &mut m.tx { x.lo_hz = r.pick(&LOS) },
+                    7 => if let Some(x) = &mut m.rx { x.bandwidth_hz = r.pick(&BANDWIDTHS) },
+                    8 => if let Some(x) = &mut m.tx { x.bandwidth_hz = r.pick(&BANDWIDTHS) },
+                    9 => if let Some(x) = &mut m.rx { x.spp = r.pick(&SPPS) },
+                    10 => if let Some(x) = &mut m.rx {
+                        if r.coin() { x.ch0 = rx_channel(r) } else { x.ch1 = rx_channel(r) }
+                    },
+                    _ => if let Some(x) = &mut m.tx {
+                        if r.coin() { x.ch0 = tx_channel(r) } else { x.ch1 = tx_channel(r) }
+                    },
+                }
+            }
+            if m.validate().is_ok() {
+                return m;
+            }
+        }
+    }
+
+    #[test]
+    fn plans_keep_every_rule_over_generated_pairs() {
+        const PAIRS: usize = 5000;
+        let mut r = Rng(0x9E37_79B9_7F4A_7C15);
+        let mut counts = [0usize; 9];
+        let (mut empty, mut identical) = (0, 0);
+        for i in 0..PAIRS {
+            let a = random_config(&mut r);
+            let b = if r.coin() { mutate(&mut r, &a) } else { random_config(&mut r) };
+            for old in [Some(&a), None] {
+                let plan = Config::changes(old, &b);
+                let seen = check_plan(old, &b, &plan)
+                    .unwrap_or_else(|e| panic!("pair {i}: {e}\nold {old:?}\nnew {b:?}\nplan {plan:?}"));
+                let flags = [seen.mute, seen.chains_off, seen.chains_on, seen.reference, seen.rate,
+                             seen.bandwidth, seen.lo, seen.gain, seen.other];
+                for (n, f) in counts.iter_mut().zip(flags) {
+                    *n += f as usize;
+                }
+                if old.is_some() && plan.is_empty() {
+                    empty += 1;
+                }
+            }
+            if a == b {
+                identical += 1;
+                assert_eq!(Config::changes(Some(&a), &b), [], "pair {i}");
+            }
+            assert_eq!(Config::changes(Some(&b), &b), [], "pair {i}");
+        }
+        // coverage: every kind of step occurred often, so no rule held vacuously
+        assert!(counts.iter().all(|&n| n > PAIRS / 20), "{counts:?}");
+        assert!(identical > 0 && empty >= identical, "{identical} identical, {empty} empty plans");
+    }
+
+    #[test]
+    fn the_checker_rejects_broken_plans() {
+        let old = example();
+        let mut new = old.clone();
+        new.rate_hz = 25e6;
+        rx(&mut new).bandwidth_hz = 10e6;
+        tx(&mut new).ch0.as_mut().unwrap().gain_db = 61.0;
+        let good = Config::changes(Some(&old), &new);
+        assert_eq!(good, [
+            mute(0), mute(1), C::Rate { hz: 25e6 },
+            C::Bandwidth { direction: DRx, hz: 10e6 }, C::Bandwidth { direction: DTx, hz: 20e6 },
+            C::Gain { direction: DTx, channel: 0, db: 61.0 }, C::Gain { direction: DTx, channel: 1, db: 55.5 },
+        ]);
+        assert!(check_plan(Some(&old), &new, &good).is_ok());
+        let broken = |f: &dyn Fn(&mut Vec<Change>)| {
+            let mut p = good.clone();
+            f(&mut p);
+            check_plan(Some(&old), &new, &p).unwrap_err()
+        };
+        // no mute before the rate change
+        assert!(broken(&|p| { p.drain(..2); }).starts_with("rate with tx gains"));
+        // a gain first
+        assert!(broken(&|p| { let g = p.pop().unwrap(); p.insert(2, g) }).contains("later step"));
+        // a filter before the rate (rate known from old: caught by order)
+        assert!(broken(&|p| p.swap(2, 3)).contains("later step"));
+        // a value written twice
+        assert!(broken(&|p| p.insert(3, C::Rate { hz: 25e6 })).contains("written 2 times"));
+        // an operation missing: the model does not reach new
+        assert!(broken(&|p| { p.remove(4); }).contains("model differs"));
+        // a value written that the radio already holds
+        let mut g = old.clone();
+        rx(&mut g).ch0.as_mut().unwrap().gain_db = 41.0;
+        let one = Config::changes(Some(&old), &g);
+        assert_eq!(one, [C::Gain { direction: DRx, channel: 0, db: 41.0 }]);
+        let mut p = one.clone();
+        p.push(C::Gain { direction: DRx, channel: 1, db: 35.0 });
+        assert!(check_plan(Some(&old), &g, &p).unwrap_err().contains("already held"));
+        // a mute without a reason
+        let mut p = one.clone();
+        p.insert(0, mute(0));
+        p.push(C::Gain { direction: DTx, channel: 0, db: 60.0 });
+        assert!(check_plan(Some(&old), &g, &p).unwrap_err().contains("without a reason"));
+    }
+}

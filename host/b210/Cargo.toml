@@ -9,4 +9,6 @@ description = "Driver for the B210 board running this repository's FPGA image"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 nusb = "0.2"
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+toml = "1"
