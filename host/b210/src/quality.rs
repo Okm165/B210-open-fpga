@@ -25,6 +25,13 @@
 //! balance; `circular` says which case applies. The spectrum gives an
 //! independent IRR when a tone is present: the image bin at -f.
 //!
+//! Caveat, measured: `rho` is the received signal's own statistic, so a
+//! strong external carrier moves the time-domain estimate (two captures of
+//! the same receiver, 44.2 dB and 59.4 dB, differed only in which ambient
+//! carrier fell in band). Read it on noise alone (circular by construction)
+//! or, with a tone, from the spectrum's image bin, which does not depend on
+//! what else is in band.
+//!
 //! Tone (frequency domain, when one bin stands 30 dB above the median bin):
 //!   power     the main lobe, +-`dsp::LOBE` bins
 //!   SNR       tone / noise, noise = every bin except the tone, DC (+-3
