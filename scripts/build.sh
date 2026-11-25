@@ -39,6 +39,9 @@ SRCS="${SRCS:-$(grep '^src/' scripts/sources.txt | tr '\n' ' ')}"
 [[ "$DESIGN" == b200 ]] || SRCS+=" src/top/$DESIGN.v"
 XDC="${XDC:-src/constraints/b210.xdc}"
 [[ -f "$XDC" ]] || { echo "build: no constraints file $XDC" >&2; exit 2; }
+# What this image is built from is fixed now, before the first tool reads a
+# file: the build takes hours and the repository moves on meanwhile.
+SOURCE="$(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src scripts container)" ]] || echo ' + uncommitted changes')"
 for tool in "$NEXTPNR" "$CHIPDB"; do
   [[ -s "$tool" ]] || { echo "build: missing $tool (scripts/toolchain.sh builds it)" >&2; exit 2; }
 done
@@ -94,7 +97,7 @@ scripts/assemble.sh $OUT/pnr/$NAME.fasm $OUT/usrp_$NAME.bin
 { echo "image    $(sha256sum $OUT/usrp_$NAME.bin | cut -d' ' -f1)"
   echo "design   $DESIGN ${PARAMS:-}"
   echo "xdc      $XDC"
-  echo "source   $(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src scripts container)" ]] || echo ' + uncommitted changes')"
+  echo "source   $SOURCE"
   echo "nextpnr  $(sha256sum "$NEXTPNR" | cut -c1-16) chipdb $(sha256sum "$CHIPDB" | cut -c1-16)"
   echo "tools    ${FPGA_IMAGE:-b210-open-fpga:0.3.0} $(podman image inspect -f '{{.Id}}' "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" | cut -c1-16)"
   [[ -z "${PNR_EXTRA:-}" ]] || echo "pnr opts $PNR_EXTRA"
