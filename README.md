@@ -35,10 +35,29 @@ just gate     # hardware acceptance on the connected board                      
 
 `img` defaults to `build/fpga/usrp_b200.bin`.
 
+## Python
+
+`host/b210.py` drives the board from Python through UHD's C API (ctypes, no
+compiled bindings): both receive and both transmit channels, rate, frequency,
+gains, antenna, timed two-channel captures that raise on any lost sample.
+`host/sdr.py` uses it to record, transmit, and show spectra (Welch average over
+the whole capture, scipy's zoom FFT for a narrow band, strongest peaks listed):
+
+```sh
+just sdr rx --freq 433.9e6 --gain 40 --zoom -100e3:100e3   # record both channels, plot, list peaks
+just sdr live --freq 98e6 --rate 7.68e6                    # capture after capture (PNG without a display)
+just sdr rx --test loopback --tone 1e6                     # transmit path through the AD9361, no RF
+just sdr tx --tone 250e3 --secs 30 --tx-gain 50            # transmit 250 kHz on ch0, 500 kHz on ch1
+just sdr fft build/captures/<time>.npy --zoom 0:50e3       # analyse a recording again
+```
+
+Recordings are `build/captures/<UTC>.npy` (complex64, one row per channel,
+full scale 1.0) with the radio settings beside them in `.json`.
+
 ## What the host needs
 
 - `just`, `podman`, `git`, `curl`, `cmake`, a C++20 compiler, boost, eigen3 and
-  libusb-1.0 headers, `python3` with `mako`, `numpy` and `pyusb`, Icarus
+  libusb-1.0 headers, `python3` with `mako`, `numpy`, `scipy`, `matplotlib` and `pyusb`, Icarus
   Verilog; about 6 GB of disk, and network access while the tools build;
 - for the streaming measurements, permission to run at real-time priority
   (`ulimit -r` 50 or more). Without it the tools still run and say so.

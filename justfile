@@ -67,6 +67,11 @@ stream dir="rx" chans="0,1" rate="30.72e6" otw="sc16" secs="10" img=bin:
     {{ host }} $rt {{ uhd }}/bin/benchmark_rate --duration {{ secs }} --channels {{ chans }} "${args[@]}" \
       --args "{{ dev }},fpga=$(realpath {{ img }}),num_recv_frames=512,recv_frame_size=$frame,num_send_frames=256,send_frame_size=$frame"
 
+# Python receiver/transmitter: just sdr rx|tx|fft|live [options] (host/sdr.py --help)
+[group('board')]
+sdr *args:
+    python3 host/sdr.py {{ args }}
+
 # AD9361 interface eye and its margin at 61.44 MHz
 [group('board')]
 eye img=bin:
