@@ -1,26 +1,62 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# b210.xdc - pins and clocks of fpga/rtl/b210.v (step 1), for nextpnr.
+# b210.xdc - pins and clocks of fpga/rtl/b210.v (step 2), for nextpnr.
 #
 # Pin lines are the board's map as v1 used and measured it (file
 # src/constraints/b210.xdc at tag v1-ettus-uhd), only for the pins this top has. nextpnr does
 # not time the external interfaces; the FX3 bus timing is fixed by I/O-block
-# registers and the IFCLK phase measured on the board (fx3_pads.v, b210.v).
+# registers and the IFCLK phase measured on the board (fx3_pads.v, b210.v),
+# the AD9361 sample port by I/O-block registers (IDDR / ODDR), the fixed
+# input delay and the AD9361's delay settings, measured on the board
+# (ad9361_io.v).
 #
-# Clocks: the 40 MHz reference, and the MMCM outputs by net name (nextpnr
-# does not derive them): bus_clk 100 MHz, sclk 1200 / 19.5 = 61.54 MHz.
+# Clocks: the 40 MHz reference; bus_clk 100 MHz, an MMCM output by net name
+# (as in v1); the AD9361's DATA_CLK on its pad, 61.44 MHz at most (v1 line
+# 22). nextpnr carries a pad's clock through the input buffer and the BUFG,
+# so the data clock's domain is the BUFG's output net, dclk; the 200 MHz
+# IDELAYCTRL reference (MMCM 1200 / 6) clocks no flip-flop.
 create_clock -period 25.000 [get_ports codec_main_clk_p]
 create_clock -period 10.000 [get_nets bus_clk]
-create_clock -period 16.250 [get_nets sclk]
+create_clock -period 16.276 [get_ports codec_data_clk_p]
 
-# Clock-domain crossings, bus_clk <-> sclk, asynchronous: Gray-coded
-# pointers and counters (cdc_fifo, sample_domain, gray_sync) and settings
-# held stable under a request/acknowledge (time set) or while no stream
-# runs (rx_source, strobe_div). The bits of one Gray value must arrive within one
-# period of the faster clock (10 ns) of each other; scripts/build.sh checks
-# these bounds on the routed design.
-set_max_delay -datapath_only -from [get_clocks bus_clk] -to [get_clocks sclk] 8.000
-set_max_delay -datapath_only -from [get_clocks sclk] -to [get_clocks bus_clk] 8.000
+# The data-clock BUFG on the bottom-row site v1 used (v1 line 41,
+# b200_io_i0.bufr_rx_clk): codec_data_clk_p (AB16, IO_L12P_T1_MRCC_32, a
+# clock-capable pad) reaches BUFGCTRL_X0Y1 through CCIO -> CK_IN -> the
+# BUFG cascade, so the capture clock passes exactly one global buffer, the
+# placement the receive eye was measured with (ad9361_io.v).
+set_property LOC BUFGCTRL_X0Y1 [get_cells radio.b_dclk]
+
+# Clock-domain crossings, bus_clk <-> dclk, asynchronous: Gray-coded
+# pointers and counters (cdc_fifo, sample_domain, gray_sync), resets into
+# synchronisers (x_rst -> srst), and settings held stable under a
+# request/acknowledge (time set) or while no stream runs (rx_source, 2R2T).
+# The bits of one Gray value must arrive within one period of the faster
+# clock (10 ns) of each other; scripts/build.sh checks these bounds on the
+# routed design.
+set_max_delay -datapath_only -from [get_clocks bus_clk] -to [get_clocks dclk] 8.000
+set_max_delay -datapath_only -from [get_clocks dclk] -to [get_clocks bus_clk] 8.000
+
+# The AD9361 sample port's pin timing (AD9361 data sheet Rev. F, p. 6, CMOS
+# 1.8 V): rx data launched tDDRX = 0 .. 1.5 ns, RX_FRAME tDDDV = 0 .. 1.0 ns
+# after each DATA_CLK edge; tx data and TX_FRAME need tSTX >= 1 ns setup and
+# tHTX >= 0 hold at each FB_CLK edge. At the pins, without the AD9361's
+# programmable clock / data delays (0x006, 0x007) or the board. For
+# documentation and for a tool that times I/O: nextpnr does not (it
+# skips these commands with a warning, and scripts/build.sh reads only the
+# set_max_delay lines); v1 had none.
+create_generated_clock -name fb_clk -source [get_pins radio.o_fb/C] -multiply_by 1 [get_ports codec_fb_clk_p]
+set_input_delay -clock [get_clocks codec_data_clk_p] -max 1.500 [get_ports {rx_codec_d[*]}]
+set_input_delay -clock [get_clocks codec_data_clk_p] -min 0.000 [get_ports {rx_codec_d[*]}]
+set_input_delay -clock [get_clocks codec_data_clk_p] -clock_fall -max 1.500 -add_delay [get_ports {rx_codec_d[*]}]
+set_input_delay -clock [get_clocks codec_data_clk_p] -clock_fall -min 0.000 -add_delay [get_ports {rx_codec_d[*]}]
+set_input_delay -clock [get_clocks codec_data_clk_p] -max 1.000 [get_ports rx_frame_p]
+set_input_delay -clock [get_clocks codec_data_clk_p] -min 0.000 [get_ports rx_frame_p]
+set_input_delay -clock [get_clocks codec_data_clk_p] -clock_fall -max 1.000 -add_delay [get_ports rx_frame_p]
+set_input_delay -clock [get_clocks codec_data_clk_p] -clock_fall -min 0.000 -add_delay [get_ports rx_frame_p]
+set_output_delay -clock [get_clocks fb_clk] -max 1.000 [get_ports {tx_codec_d[*] tx_frame_p}]
+set_output_delay -clock [get_clocks fb_clk] -min 0.000 [get_ports {tx_codec_d[*] tx_frame_p}]
+set_output_delay -clock [get_clocks fb_clk] -clock_fall -max 1.000 -add_delay [get_ports {tx_codec_d[*] tx_frame_p}]
+set_output_delay -clock [get_clocks fb_clk] -clock_fall -min 0.000 -add_delay [get_ports {tx_codec_d[*] tx_frame_p}]
 
 set_property LOC AA17 [get_ports codec_main_clk_p]
 set_property IOSTANDARD LVDS [get_ports codec_main_clk_p]
@@ -157,6 +193,91 @@ set_property LOC B20 [get_ports cat_mosi]
 set_property IOSTANDARD LVCMOS18 [get_ports cat_mosi]
 set_property LOC G22 [get_ports cat_miso]
 set_property IOSTANDARD LVCMOS18 [get_ports cat_miso]
+# AD9361 control pins (v1 lines 242 .. 249, 277 .. 284)
+set_property LOC E23 [get_ports codec_en_agc]
+set_property IOSTANDARD LVCMOS18 [get_ports codec_en_agc]
+set_property LOC E22 [get_ports codec_enable]
+set_property IOSTANDARD LVCMOS18 [get_ports codec_enable]
+set_property LOC G24 [get_ports codec_txrx]
+set_property IOSTANDARD LVCMOS18 [get_ports codec_txrx]
+set_property LOC E21 [get_ports codec_sync]
+set_property IOSTANDARD LVCMOS18 [get_ports codec_sync]
+set_property LOC A24 [get_ports {codec_ctrl_in[0]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {codec_ctrl_in[0]}]
+set_property LOC B21 [get_ports {codec_ctrl_in[1]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {codec_ctrl_in[1]}]
+set_property LOC C21 [get_ports {codec_ctrl_in[2]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {codec_ctrl_in[2]}]
+set_property LOC A23 [get_ports {codec_ctrl_in[3]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {codec_ctrl_in[3]}]
+# AD9361 sample port, bank 32 (v1 lines 285 .. 340)
+set_property LOC Y18 [get_ports {tx_codec_d[0]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[0]}]
+set_property LOC Y17 [get_ports {tx_codec_d[1]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[1]}]
+set_property LOC V17 [get_ports {tx_codec_d[2]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[2]}]
+set_property LOC V16 [get_ports {tx_codec_d[3]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[3]}]
+set_property LOC AA15 [get_ports {tx_codec_d[4]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[4]}]
+set_property LOC AA14 [get_ports {tx_codec_d[5]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[5]}]
+set_property LOC W19 [get_ports {tx_codec_d[6]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[6]}]
+set_property LOC W18 [get_ports {tx_codec_d[7]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[7]}]
+set_property LOC Y16 [get_ports {tx_codec_d[8]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[8]}]
+set_property LOC Y15 [get_ports {tx_codec_d[9]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[9]}]
+set_property LOC AB20 [get_ports {tx_codec_d[10]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[10]}]
+set_property LOC AB19 [get_ports {tx_codec_d[11]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {tx_codec_d[11]}]
+set_property LOC AF20 [get_ports {rx_codec_d[0]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[0]}]
+set_property LOC AF19 [get_ports {rx_codec_d[1]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[1]}]
+set_property LOC AE20 [get_ports {rx_codec_d[2]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[2]}]
+set_property LOC AD20 [get_ports {rx_codec_d[3]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[3]}]
+set_property LOC AE16 [get_ports {rx_codec_d[4]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[4]}]
+set_property LOC AD16 [get_ports {rx_codec_d[5]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[5]}]
+set_property LOC AB15 [get_ports {rx_codec_d[6]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[6]}]
+set_property LOC AB14 [get_ports {rx_codec_d[7]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[7]}]
+set_property LOC AD14 [get_ports {rx_codec_d[8]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[8]}]
+set_property LOC AC14 [get_ports {rx_codec_d[9]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[9]}]
+set_property LOC AD19 [get_ports {rx_codec_d[10]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[10]}]
+set_property LOC AC19 [get_ports {rx_codec_d[11]}]
+set_property IOSTANDARD LVCMOS18 [get_ports {rx_codec_d[11]}]
+set_property LOC AB16 [get_ports codec_data_clk_p]
+set_property IOSTANDARD LVCMOS18 [get_ports codec_data_clk_p]
+set_property LOC AA19 [get_ports rx_frame_p]
+set_property IOSTANDARD LVCMOS18 [get_ports rx_frame_p]
+set_property LOC AB17 [get_ports tx_frame_p]
+set_property IOSTANDARD LVCMOS18 [get_ports tx_frame_p]
+set_property LOC AC18 [get_ports codec_fb_clk_p]
+set_property IOSTANDARD LVCMOS18 [get_ports codec_fb_clk_p]
+# band-select switches (v1 lines 357 .. 366)
+set_property LOC H14 [get_ports tx_bandsel_a]
+set_property IOSTANDARD LVCMOS33 [get_ports tx_bandsel_a]
+set_property LOC G12 [get_ports tx_bandsel_b]
+set_property IOSTANDARD LVCMOS33 [get_ports tx_bandsel_b]
+set_property LOC F14 [get_ports rx_bandsel_a]
+set_property IOSTANDARD LVCMOS33 [get_ports rx_bandsel_a]
+set_property LOC F12 [get_ports rx_bandsel_b]
+set_property IOSTANDARD LVCMOS33 [get_ports rx_bandsel_b]
+set_property LOC F13 [get_ports rx_bandsel_c]
+set_property IOSTANDARD LVCMOS33 [get_ports rx_bandsel_c]
 set_property LOC A15 [get_ports SFDX1_RX]
 set_property IOSTANDARD LVCMOS33 [get_ports SFDX1_RX]
 set_property LOC B12 [get_ports SFDX1_TX]

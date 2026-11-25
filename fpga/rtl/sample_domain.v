@@ -26,18 +26,31 @@
 //   burst   one entry per strobe; END_OF_BURST ends the burst after its
 //           sample (or before the strobe for an entry without a sample) and
 //           counts one BURST_ACK - but only if a burst was playing: a
-//           header-only END_OF_BURST in idle counts nothing.
+//           header-only END_OF_BURST in idle counts nothing. A burst of a
+//           single sample (START_ and END_OF_BURST on one entry) counts
+//           one.
 //           No entry at a strobe: UNDERFLOW (counted once per gap), the DAC
 //           gets 0, no BURST_ACK is possible for this burst any more, and
 //           the burst goes on when entries come. Because a packet carries a
 //           time only at START_OF_BURST, every sample after the gap plays
 //           shifted by the gap; the host must therefore treat an UNDERFLOW
 //           as "this burst's timeline is broken" and start a new burst.
-//           A timed START_OF_BURST during a burst ends the burst (no
-//           BURST_ACK) and waits for its time.
+//           Any START_OF_BURST during a burst starts a new burst: the old
+//           one ends with no BURST_ACK (it never got its END_OF_BURST) and
+//           the new one's ack state starts clean (an underflow of the old
+//           burst does not cost the new one its ack). Timed with its time
+//           ahead, it ends the old burst at once and waits for its time
+//           (DAC 0, tx_active low); with its time passed it is LATE.
+// Abort entry {present 0, sob 1, eob 1} (tx_deframer makes it, only while
+// a burst is open, and no other case makes it; it never appears on the
+// wire): the burst ends at once, no BURST_ACK, DAC 0. It is taken at its
+// strobe like a header-only END_OF_BURST (in idle it does nothing; in
+// DISCARD it is a START_OF_BURST: left at the head, taken in idle).
 // Discard: entries are taken until END_OF_BURST, or until a START_OF_BURST
 // of the next burst, which is left at the head and starts it.
 // Event counts leave Gray-coded (gray_sync on the bus side), so do now.
+// Reset (srst): from the edge it is seen at, idle (no burst, no gap), now
+// 0, tx_active 0 and dac 0; the event counts keep counting (not cleared).
 `default_nettype none
 
 module sample_domain (
@@ -100,9 +113,12 @@ module sample_domain (
   // At a strobe, in IDLE or BURST, the entry at the head decides:
   //   timed START_OF_BURST, time ahead   wait (a burst in progress ends)
   //   timed START_OF_BURST, time passed  LATE: discard to END_OF_BURST
-  //   no sample                          END_OF_BURST: the burst ends
+  //   no sample                          END_OF_BURST or abort: the burst ends
   //   else                               play it; END_OF_BURST ends the burst
+  // `fresh`: the head starts a new burst (none is playing, or it carries
+  // START_OF_BURST), so the old burst's gap does not count against it.
   wire timed = tx_valid && e_sob && e_timed;
+  wire fresh = state != BURST || e_sob;
   wire early = timed && e_at > now;
   wire late  = timed && e_at < now;
   wire live  = stb && state != DISCARD && tx_valid && !early;   // the head is used now
@@ -118,13 +134,16 @@ module sample_domain (
         gap <= 0;
         if (late) begin lates <= lates + 1; state <= e_eob ? IDLE : DISCARD; gapped <= 0; end
         else if (!e_present || e_eob) begin
-          // one ack per burst that played through without a gap: a
-          // header-only END_OF_BURST in idle (no burst) counts nothing, and
-          // neither does one after an underflow (its samples played shifted)
-          if (state == BURST && !gapped) burst_acks <= burst_acks + 1;
+          // one ack per burst that played through without a gap. A burst
+          // starting at this entry (fresh) had no gap: acked if the entry
+          // has a sample. One that started earlier: acked unless gapped
+          // (its samples after the underflow played shifted). So an entry
+          // without a sample acks nothing in idle, and the abort entry
+          // (sob = 1, no sample) ends the open burst with no ack.
+          if (fresh ? e_present : !gapped) burst_acks <= burst_acks + 1;
           state <= IDLE; gapped <= 0;
         end else begin
-          if (state != BURST) gapped <= 0;      // a new burst starts here
+          if (fresh) gapped <= 0;               // a new burst starts here
           state <= BURST;
         end
       end
@@ -136,12 +155,12 @@ module sample_domain (
       if (state == DISCARD && tx_valid && (e_eob || e_sob)) state <= IDLE;
     end
     // a gap means the DAC is silent: antenna switches and the PA follow
-    tx_active <= state == BURST && !gap;
+    tx_active <= !srst && state == BURST && !gap;
   end
   // one wire for the DAC and for the loopback source, so a bench checks
   // what the DAC really gets
   wire [47:0] dac_now = play ? e_data : 48'd0;
-  always @(posedge sclk) if (stb) dac <= dac_now;
+  always @(posedge sclk) if (srst) dac <= 0; else if (stb) dac <= dac_now;
 
   // -- rx ----------------------------------------------------------------------------------
   wire [11:0] t = now[11:0];

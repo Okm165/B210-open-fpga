@@ -8,7 +8,10 @@
 //   0x001 version     r   protocol version [31:16], build number [15:0]
 //   0x002 build       r   first 32 bits of the source commit
 //   0x003 scratch     rw  free, for bus tests
-//   0x004 status      r   [0] clocks locked, [1] sample clock running
+//   0x004 status      r   [0] clocks locked, [1] sample clock running,
+//                         [2] input delays calibrated (IDELAYCTRL ready),
+//                         [3] sample path out of reset: streams and bursts
+//                         can run (b210.v, x_rst low)
 //   0x005 sample_rate r   sample strobes in the last 1 ms of the bus clock,
 //                         i.e. the sample rate in kS/s (a time set makes the
 //                         next window wrong; it is right again 1 ms later)
@@ -28,8 +31,14 @@
 //   0x024 rx_spp      rw  sample times per packet: values above 8191 are
 //                         saturated to 8191, and rx_framer clamps them to
 //                         16 .. the full packet of the running format
-//   0x030 radio       rw  [0] AD9361 RESETB: 0 holds the AD9361 in reset
-//                         (after power-up and after a reset), 1 releases it
+//   0x030 radio       rw  [0] AD9361 RESETB: 0 holds the AD9361 in reset,
+//                         1 releases it (reset value 0)
+//                         [1] 2R2T: 0 the data port carries one channel
+//                         (1R1T), 1 two (2R2T); change it only while no
+//                         stream or burst runs (reset value 0)
+//   0x031 bands       rw  band-select switches, straight to the pins:
+//                         [0] rx_bandsel_a, [1] rx_bandsel_b, [2] rx_bandsel_c,
+//                         [3] tx_bandsel_a, [4] tx_bandsel_b (reset value 0)
 //   0x080 + k - 1     r   event counter of code k (PROTOCOL.md 5): 1
 //                         OVERFLOW, 2 UNDERFLOW, 3 LATE, 4 SEQ_ERROR,
 //                         5 BURST_ACK, 6 BAD_PACKET
@@ -46,8 +55,6 @@
 //                         (2^16 words = 256 KiB; 65536 = full)
 //   0x08B tx_hwm      rw  as rx_hwm, for the tx ring
 //   0x0F0 rx_source   rw  0 radio, 1 pattern f(t), 2 tx loopback
-//   0x0F1 strobe_div  rw  step 1 only: a sample strobe every strobe_div + 1
-//                         cycles of the 61.54 MHz test clock (1200/19.5)
 `default_nettype none
 
 module regs #(
@@ -60,7 +67,7 @@ module regs #(
   input  wire [31:0]  reg_wdata,
   output reg  [31:0]  reg_rdata = 0,
   // status
-  input  wire         locked, sample_running,
+  input  wire         locked, sample_running, delay_ready, sample_ready,
   // time
   input  wire [63:0]  now,
   output reg  [63:0]  time_set = 0,
@@ -85,9 +92,10 @@ module regs #(
   input  wire [16:0]  sample_ksps,       // strobes in the last 1 ms
   // radio
   output reg          resetb = 0,        // AD9361 RESETB pin
-  // step-1 sample source
-  output reg  [1:0]   rx_source = 0,
-  output reg  [15:0]  strobe_div = 0
+  output reg          two = 0,           // 2R2T
+  output reg  [4:0]   bands = 0,         // {tx_bandsel_b, tx_bandsel_a, rx_bandsel_c, rx_bandsel_b, rx_bandsel_a}
+  // rx sample source
+  output reg  [1:0]   rx_source = 0
 );
   localparam [15:0] PROTOCOL_VERSION = 1;
   reg [31:0] scratch = 0, time_hi = 0;
@@ -101,7 +109,7 @@ module regs #(
       // every writable register starts at its safe value: no stream, no
       // time set, radio in reset
       rx_timed <= 0; rx_format <= 1; rx_channels <= 1; rx_count <= 0; rx_at <= 0;
-      rx_spp <= 4096; rx_source <= 0; strobe_div <= 0; resetb <= 0; time_set <= 0;
+      rx_spp <= 4096; rx_source <= 0; resetb <= 0; two <= 0; bands <= 0; time_set <= 0;
       time_req <= 0; rx_hwm <= 0; tx_hwm <= 0;
     end else begin
       if (rx_used > rx_hwm) rx_hwm <= rx_used;
@@ -120,11 +128,11 @@ module regs #(
         16'h023: rx_at[63:32] <= reg_wdata;
         // saturate, never wrap: 8192 would otherwise read as 0
         16'h024: rx_spp <= |reg_wdata[31:13] ? 13'h1FFF : reg_wdata[12:0];
-        16'h030: resetb <= reg_wdata[0];
+        16'h030: begin resetb <= reg_wdata[0]; two <= reg_wdata[1]; end
+        16'h031: bands <= reg_wdata[4:0];
         16'h089: rx_hwm <= 0;
         16'h08B: tx_hwm <= 0;
         16'h0F0: rx_source <= reg_wdata[1:0];
-        16'h0F1: strobe_div <= reg_wdata[15:0];
         default: ;
       endcase
       if (reg_re) case (reg_addr)
@@ -132,7 +140,7 @@ module regs #(
         16'h001: reg_rdata <= {PROTOCOL_VERSION, BUILD_NUMBER};
         16'h002: reg_rdata <= BUILD_COMMIT;
         16'h003: reg_rdata <= scratch;
-        16'h004: reg_rdata <= {30'd0, sample_running, locked};
+        16'h004: reg_rdata <= {28'd0, sample_ready, delay_ready, sample_running, locked};
         16'h005: reg_rdata <= {15'd0, sample_ksps};
         16'h010: begin reg_rdata <= now[31:0]; time_hi <= now[63:32]; end
         16'h011: reg_rdata <= time_hi;
@@ -144,7 +152,8 @@ module regs #(
         16'h022: reg_rdata <= rx_at[31:0];
         16'h023: reg_rdata <= rx_at[63:32];
         16'h024: reg_rdata <= {19'd0, rx_spp};
-        16'h030: reg_rdata <= {31'd0, resetb};
+        16'h030: reg_rdata <= {30'd0, two, resetb};
+        16'h031: reg_rdata <= {27'd0, bands};
         16'h080, 16'h081, 16'h082, 16'h083, 16'h084, 16'h085:
                  reg_rdata <= counts[32 * (reg_addr - 16'h080) +: 32];
         16'h086: reg_rdata <= rx_cdc_lost;
@@ -154,7 +163,6 @@ module regs #(
         16'h08A: reg_rdata <= {15'd0, tx_used};
         16'h08B: reg_rdata <= {15'd0, tx_hwm};
         16'h0F0: reg_rdata <= {30'd0, rx_source};
-        16'h0F1: reg_rdata <= {16'd0, strobe_div};
         default: ;
       endcase
     end

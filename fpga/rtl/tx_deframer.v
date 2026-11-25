@@ -14,14 +14,21 @@
 //   or 8 from format x channels), and the reserved bits zero:
 //   h0[27:26] = 0 and h1[31:20] = 0. h1[19] (OVERFLOW) is not reserved: it
 //   means nothing on a tx packet and is ignored.
+// A header-only START_OF_BURST without END_OF_BURST (L = 16, no samples)
+// fails the rule too: a burst cannot begin with nothing to play.
+// (Header-only START_OF_BURST + END_OF_BURST is legal: an empty burst.)
 // A packet that fails the rule is not played and `bad_packets` rises by
 // exactly one; it is checked before its samples, so its sequence field and
-// the expected sequence are left untouched: the next good packet is still
-// compared with the same count, and dropping a bad packet never shows up as
-// a sequence jump. A buffer that ends before its last sample time is the one
-// other `bad_packets` fault: its header was good, so its sequence was
-// consumed as usual and the sample times whose words all arrived are played
-// (without an END_OF_BURST); it is counted once, not twice.
+// the expected sequence are left untouched (and the burst state too): the
+// next good packet is still compared with the same count, and dropping a
+// bad packet never shows up as a sequence jump. A buffer that ends before
+// its last sample time is the one other `bad_packets` fault: its header was
+// good, so its sequence was consumed as usual and the sample times whose
+// words all arrived are played (without an END_OF_BURST); it is counted
+// once, not twice. If a burst is open (this packet opened it or continues
+// it, END_OF_BURST or not) the cut-short packet ends it: the abort entry
+// below follows its samples and the burst is closed. Outside a burst
+// nothing more is emitted.
 //
 // Sequence: it is checked within a burst only. START_OF_BURST opens a burst
 // and restarts the expectation at that packet's sequence without comparing
@@ -36,13 +43,15 @@
 //   HAS_TIME (h1[16]) is honoured only together with START_OF_BURST: s_timed
 //   is set on the burst's first sample and s_at carries words 2-3; on any
 //   other packet the time words are ignored.
-//   START_OF_BURST (h1[17]) also begins a new burst: a timed
-//   START_OF_BURST arriving during a burst ends that burst at the previous
-//   sample (the top counts no BURST_ACK for the burst it cuts off), because
-//   the old burst never showed its END_OF_BURST.
+//   START_OF_BURST (h1[17]) also begins a new burst: any START_OF_BURST
+//   (timed or not) arriving during a burst ends that burst at the previous
+//   sample (sample_domain counts no BURST_ACK for the burst it cuts off),
+//   because the old burst never showed its END_OF_BURST.
 //   END_OF_BURST (h1[18]) marks the packet's last sample s_eob. A
 //   header-only END_OF_BURST (L = 16) emits one s_present = 0 entry and no
-//   sample; outside a burst that is all it does (nothing plays).
+//   sample; outside a burst that is all it does (nothing plays). With
+//   START_OF_BURST as well (an empty burst) during a burst, that entry is
+//   the abort entry: the open burst ends without a BURST_ACK.
 //
 // Output: one entry per sample time, valid/full (s_full: the receiver
 // cannot take one, cdc_fifo's w_full):
@@ -53,10 +62,22 @@
 //   s_timed, s_at   on the s_sob entry: play it at this time (HAS_TIME)
 //   s_present 0 only for the entry a header-only END_OF_BURST packet
 //            makes: the burst ended with the previous sample
+//   abort    {s_present 0, s_sob 1, s_eob 1}: the open burst ended without
+//            its END_OF_BURST (cut-short packet, or a header-only
+//            START_OF_BURST + END_OF_BURST during a burst); sample_domain
+//            ends the burst with no BURST_ACK. Internal only (the wire
+//            format has no such packet); no other case makes this entry,
+//            and it is made only while a burst is open.
 // sc16 values are taken from bits 15:4 of each 16-bit field (the low 4
 // bits carry nothing, PROTOCOL.md 3). Words after the n-th sample time up
 // to the buffer's end are padding and skipped. A buffer that ends before
-// its n samples is counted in `bad_packets`; the samples it had are played.
+// its n samples is counted in `bad_packets`; the samples it had are played,
+// then the abort entry if a burst is open.
+//
+// Reset (rst): from the edge it is seen at, idle with no burst open,
+// s_valid 0 and r_take 0 (the entry fields mean nothing without s_valid);
+// bad_packets and seq_errors keep their counts (not cleared). The packet
+// FIFO must be reset with it: a packet half read is not resumed.
 //
 // Throughput: one word taken and one sample time given per cycle at most,
 // so 2 channels sc16 (2 words per sample time) run at 50 M sample times/s.
@@ -84,8 +105,8 @@ module tx_deframer (
 );
 
   `include "protocol.vh"
-  // IDLE 0, HEAD 1, CHECK 2, BODY 3, SKIP 4, EOB_ONLY 5 (tb_tx_deframer covers
-  // every one of them)
+  // IDLE 0, HEAD 1, CHECK 2, BODY 3, SKIP 4, EOB_ONLY 5 (also gives the abort
+  // entry; tb_tx_deframer covers every one of them)
   localparam IDLE = 0, HEAD = 1, CHECK = 2, BODY = 3, SKIP = 4, EOB_ONLY = 5;
   reg [2:0]  state = IDLE;
   reg [1:0]  hw = 0;
@@ -95,6 +116,8 @@ module tx_deframer (
   reg        first_sample = 0;   // the next sample is the packet's first
   reg [15:0] seq_next = 0;
   reg        in_burst = 0;       // between START_ and END_OF_BURST
+  reg        open = 0;           // this packet is in a burst (opened or continued it)
+  reg        abort = 0;          // EOB_ONLY makes the abort entry (s_sob = 1)
   reg [12:0] n = 0;              // sample times still to give
   reg [95:0] acc = 0;
   reg [6:0]  nb = 0;
@@ -122,6 +145,8 @@ module tx_deframer (
   wire        good  = h0[31:28] == VERSION && h0[19:16] == T_TX && h0[27:26] == 0 &&
                       (fmt == 4'd1 || fmt == 4'd2) && chans != 0 &&
                       len >= 16 && len <= 16384 && back == pbytes;
+  // header-only START_OF_BURST without END_OF_BURST: malformed
+  wire        sob_empty = n_hdr == 0 && h1[START_OF_BURST] && !h1[END_OF_BURST];
 
   // decoding: take a word when the next sample time is not complete and the
   // buffer has words left; give a sample time when it is complete
@@ -156,12 +181,14 @@ module tx_deframer (
         if (hw == 3) state <= CHECK;
         else if (r_last) begin bad_packets <= bad_packets + 1; state <= IDLE; end   // shorter than a header
       end
-      CHECK: if (!good || h1[31:20] != 0) begin
+      CHECK: if (!good || h1[31:20] != 0 || sob_empty) begin
         bad_packets <= bad_packets + 1; state <= ended ? IDLE : SKIP;
       end else begin
         if (in_burst && !h1[START_OF_BURST] && h1[15:0] != seq_next) seq_errors <= seq_errors + 1;
         seq_next <= h1[15:0] + 1;
         in_burst <= !h1[END_OF_BURST] && (h1[START_OF_BURST] || in_burst);       // EOB closes, SOB opens
+        open <= h1[START_OF_BURST] || in_burst;
+        abort <= h1[START_OF_BURST] && in_burst;  // header-only SOB + EOB cuts the open burst off
         n <= n_hdr; first_sample <= 1; acc <= 0; nb <= 0;
         if (n_hdr != 0) state <= BODY;
         else if (h1[END_OF_BURST]) state <= EOB_ONLY;                 // END_OF_BURST, no samples
@@ -179,11 +206,15 @@ module tx_deframer (
         acc <= (give ? acc >> tbits : acc) | (take_body ? {64'd0, r_data} << nb1 : 96'd0);
         nb  <= nb1 + (take_body ? 7'd32 : 7'd0);
         if (give && n == 1) state <= (ended || (take_body && r_last)) ? IDLE : SKIP;
-        else if (ended && !give && nb < tbits) begin bad_packets <= bad_packets + 1; state <= IDLE; end
+        else if (ended && !give && nb < tbits) begin                  // cut short
+          bad_packets <= bad_packets + 1;
+          if (open) begin abort <= 1; in_burst <= 0; state <= EOB_ONLY; end   // end the burst: abort entry
+          else state <= IDLE;
+        end
       end
       SKIP: if (r_avail && r_last) state <= IDLE;
-      EOB_ONLY: if (!s_valid || !s_full) begin
-        s_valid <= 1; s_present <= 0; s_sob <= 0; s_eob <= 1; s_timed <= 0; s_data <= 0;
+      EOB_ONLY: if (!s_valid || !s_full) begin                          // header-only END_OF_BURST, or abort
+        s_valid <= 1; s_present <= 0; s_sob <= abort; s_eob <= 1; s_timed <= 0; s_data <= 0;
         state <= ended ? IDLE : SKIP;
       end
       default: state <= IDLE;

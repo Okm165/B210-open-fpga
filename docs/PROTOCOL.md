@@ -122,11 +122,17 @@ A tx packet describes itself (format, channels in its header): there is
 no tx configuration register. Rules, as built:
 
 - **Malformed** (version, type, format, channels, reserved bits, or L not
-  16 + a whole number of sample times, L <= 16384): not played, counted
-  once in BAD_PACKET; the sequence expectation does not move.
+  16 + a whole number of sample times, L <= 16384; also a header-only
+  START_OF_BURST without END_OF_BURST, L = 16): not played, counted once
+  in BAD_PACKET; neither the sequence expectation nor the burst state
+  moves. (Header-only START_OF_BURST + END_OF_BURST is legal: an empty
+  burst.)
 - **Cut short** (the buffer ends before its last sample time): the sample
   times whose words all arrived play, the packet consumes its sequence, it
-  carries no END_OF_BURST, and it counts once in BAD_PACKET.
+  carries no END_OF_BURST, and it counts once in BAD_PACKET. If a burst is
+  open (the packet opened it or continues it, with END_OF_BURST or not),
+  the burst ends after those samples with no BURST_ACK, and the next
+  packet's sequence is not compared. Outside a burst nothing else happens.
 - **Sequence**: checked only within a burst. START_OF_BURST restarts the
   expectation at its own sequence (any value); each later packet up to the
   END_OF_BURST must be the previous + 1, else SEQ_ERROR rises (the packet
@@ -136,11 +142,23 @@ no tx configuration register. Rules, as built:
   sample at the tick equal to its time; if that tick has passed, the burst
   is LATE and its samples are discarded up to its END_OF_BURST or the next
   START_OF_BURST (which then starts). Any other packet plays at once.
-- A timed START_OF_BURST arriving during a burst, with its time ahead,
-  ends that burst (no BURST_ACK) and waits for its time.
+- **New burst**: any START_OF_BURST arriving during a burst (timed or not)
+  starts a new burst. The old burst ends at its previous sample with no
+  BURST_ACK (it never sent its END_OF_BURST); the new burst starts with a
+  clean record, so an underflow of the old burst does not cost it its
+  BURST_ACK. Timed with its time ahead, it waits for its time (DAC 0,
+  burst not active meanwhile); with its time passed, it is LATE as above.
+  A header-only START_OF_BURST + END_OF_BURST during a burst is an empty
+  new burst: the old one ends without BURST_ACK and nothing plays.
 - **BURST_ACK** counts a burst that played to its END_OF_BURST without an
-  underflow gap. A header-only END_OF_BURST (L = 16) ends the burst at the
-  previous sample; outside a burst it counts nothing.
+  underflow gap (a one-sample burst included). A header-only END_OF_BURST
+  (L = 16) ends the burst at the previous sample; outside a burst it
+  counts nothing.
+- Internally (not on the wire; the packet format is unchanged), the tx
+  deframer tells the sample-clock side that a burst ended without its
+  END_OF_BURST (cut short, or an empty burst during a burst) by an abort
+  entry, {present 0, START_OF_BURST, END_OF_BURST}, which no other case
+  produces; it ends the burst at once with DAC 0 and no BURST_ACK.
 - **UNDERFLOW**: a tick inside a burst with no sample ready. Counted once
   per gap; during the gap the DAC gets 0 and the burst is not active
   (antenna switches, LED); the rest of the burst plays when samples come,
@@ -225,7 +243,7 @@ returns every writable register to the value given.
 | 0x001 | version | r | protocol version [31:16] (1), build number [15:0] |
 | 0x002 | build | r | first 32 bits of the source commit |
 | 0x003 | scratch | rw | free, for bus tests |
-| 0x004 | status | r | clocks locked [0], sample clock running [1] (it toggled within the last 10.24 us) |
+| 0x004 | status | r | clocks locked [0]; sample clock running [1] (the AD9361's DATA_CLK toggled within the last 10.24 us); input delays calibrated [2] (IDELAYCTRL ready); sample path out of reset [3]: streams and bursts can run (DATA_CLK has run for 10.2 us with RESETB high and the delays calibrated; a stream ended by losing the clock has closed) |
 | 0x005 | sample_rate | r | [16:0] sample strobes in the last 1 ms = the sample rate in kS/s (wrong for the 1 ms window in which the time is set) |
 | 0x010 | time_lo | r | time now [31:0]; reading it latches time_hi |
 | 0x011 | time_hi | r | time [63:32] as of the last time_lo read |
@@ -235,7 +253,8 @@ returns every writable register to the value given.
 | 0x021 | rx_count | rw | sample times in the stream, 0 = until stopped (0) |
 | 0x022 / 0x023 | rx_at_lo / hi | rw | start time (with timed) (0) |
 | 0x024 | rx_spp | rw | [12:0] sample times per packet: a write above 8191 saturates to 8191; the stream clamps it to 16 .. the full count of section 3 (4096) |
-| 0x030 | radio | rw | AD9361 RESETB [0]: 0 holds the AD9361 in reset, 1 releases it (0) |
+| 0x030 | radio | rw | AD9361 RESETB [0]: 0 holds the AD9361 in reset, 1 releases it (0); 2R2T [1]: 0 the data port carries one channel (1R1T: a sample time per DATA_CLK period, channel 1 reads 0), 1 two (2R2T: a sample time per two periods); it must match the AD9361's data-port setting and change only while no stream or burst runs (0) |
+| 0x031 | bands | rw | band-select switches, straight to the pins: rx_bandsel_a [0], rx_bandsel_b [1], rx_bandsel_c [2], tx_bandsel_a [3], tx_bandsel_b [4] (0) |
 | 0x080 + k - 1 | events | r | counter of event code k (section 5), k = 1 .. 6 |
 | 0x086 | rx_cdc_lost | r | sample times lost crossing to the bus clock (nonzero = a design error); also counted in event 1 OVERFLOW |
 | 0x087 | cmd_dropped | r | command packets dropped as malformed |
@@ -244,7 +263,6 @@ returns every writable register to the value given.
 | 0x08A | tx_used | r | [16:0] words now in the tx ring, 0 .. 2^16 (256 KiB) |
 | 0x08B | tx_hwm | rw | [16:0] as rx_hwm, for the tx ring (0) |
 | 0x0F0 | rx_source | rw | [1:0] 0 radio, 1 pattern, 2 tx loopback (0) |
-| 0x0F1 | strobe_div | rw | [15:0] step 1 only: a sample strobe every strobe_div + 1 cycles of the 61.54 MHz test clock (1200 MHz / 19.5) (0) |
 
 rx_ctrl's format, channels, spp, timed and start time are latched at the
 start: a running stream keeps them to its END_OF_BURST (the stop write

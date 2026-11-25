@@ -74,6 +74,8 @@ tx_deframer PASS SEED=2
 tx_deframer PASS SEED=3 N=1500
 tx_deframer FAIL SEED=1 FAULT=1
 tx_deframer FAIL SEED=1 FAULT=2
+tx_deframer FAIL SEED=1 FAULT=3
+tx_deframer FAIL SEED=1 FAULT=4
 sample_domain PASS SEED=1 STB=1
 sample_domain PASS SEED=2 STB=2
 sample_domain PASS SEED=3 STB=1 BURSTS=300
@@ -81,6 +83,8 @@ sample_domain PASS SEED=4 STB=2 BURSTS=300
 sample_domain FAIL SEED=1 FAULT=1
 sample_domain FAIL SEED=1 FAULT=2
 sample_domain FAIL SEED=1 FAULT=3
+sample_domain FAIL SEED=1 FAULT=4
+sample_domain FAIL SEED=1 FAULT=5
 events PASS SEED=1
 events PASS SEED=2 INTERVAL=1
 events PASS SEED=3 SLOW=1
@@ -117,7 +121,7 @@ sources() {
     events) echo fpga/tests/tb_events.v fpga/rtl/events.v fpga/rtl/packet_mux.v fpga/rtl/packet_fifo.v ;;
     regs) echo fpga/tests/tb_regs.v fpga/rtl/regs.v ;;
     ad9361_io) echo fpga/tests/tb_ad9361_io.v fpga/tests/ad9361_port_model.v fpga/rtl/ad9361_io.v ;;
-    b210) echo fpga/tests/tb_b210.v fpga/tests/fx3_model.v fpga/tests/spi_model.v fpga/rtl/*.v ;;
+    b210) echo fpga/tests/tb_b210.v fpga/tests/fx3_model.v fpga/tests/spi_model.v fpga/tests/ad9361_port_model.v fpga/rtl/*.v ;;
   esac
   echo fpga/tests/prims.v
 }
