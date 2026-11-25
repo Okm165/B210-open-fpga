@@ -51,7 +51,7 @@ module tx_player (
   output reg  [31:0] short = 0
 );
   localparam VERSION = 4'd1, T_TX = 4'd1;
-  localparam IDLE = 0, HEAD = 1, CHECK = 2, BODY = 3, SKIP = 4, EOB_ONLY = 5;
+  localparam IDLE = 0, HEAD = 1, CHECK = 2, BODY = 3, SKIP = 4, EOB_ONLY = 5, WAIT = 6;
   reg [2:0]  state = IDLE;
   reg [1:0]  hw = 0;
   reg [31:0] h0 = 0, h1 = 0, tl = 0;
@@ -72,15 +72,21 @@ module tx_player (
   wire        two   = chans == 2'b11;
   wire [6:0]  tbits = sc12 ? (two ? 7'd48 : 7'd24) : (two ? 7'd64 : 7'd32);
   wire [15:0] pbytes = len - 16;
-  wire [3:0]  bpt   = tbits[6:3];                    // bytes per sample time: 3 4 6 8
-  // n = pbytes / bpt without a divider: x / 3 = floor(x * 43691 / 2^17) for
-  // every x < 2^16 (3 * 43691 = 2^17 + 1), x / 6 = (x / 3) / 2, 4 and 8 shift
-  wire [31:0] third = pbytes * 32'd43691;
+  // n = pbytes / bytes-per-sample-time (3 4 6 8) without a divider:
+  // x / 3 = floor(x * 43691 / 2^17) for every x < 2^16 (3 * 43691 = 2^17 +
+  // 1), x / 6 = (x / 3) / 2, 4 and 8 shift. The multiply is registered at
+  // the end of HEAD (CHECK reads it a cycle later: a DSP and the checks
+  // after it do not fit one 10 ns cycle).
+  reg  [31:0] third = 0;
+  always @(posedge clk) third <= pbytes * 32'd43691;
   wire [14:0] q3    = third[31:17];
   wire [12:0] n_hdr = sc12 ? (two ? q3 >> 1 : q3) : (two ? pbytes >> 3 : pbytes >> 2);
+  // n * bpt by shifts: 3 n = 2 n + n, 6 n = 2 (3 n)
+  wire [15:0] n3    = {n_hdr, 1'b0} + n_hdr;
+  wire [15:0] back  = sc12 ? (two ? {n3[14:0], 1'b0} : n3) : (two ? {n_hdr, 3'b0} : {n_hdr, 2'b0});
   wire        good  = h0[31:28] == VERSION && h0[19:16] == T_TX && h0[27:26] == 0 &&
                       (fmt == 4'd1 || fmt == 4'd2) && chans != 0 &&
-                      len >= 16 && len <= 16384 && n_hdr * bpt == pbytes;
+                      len >= 16 && len <= 16384 && back == pbytes;
 
   // decoding: take a word when the next sample time is not complete and the
   // buffer has words left; give a sample time when it is complete
@@ -112,7 +118,7 @@ module tx_player (
           default: t0 <= {r_data, tl};
         endcase
         if (r_last) ended <= 1;
-        if (hw == 3) state <= CHECK;
+        if (hw == 3) state <= WAIT;
         else if (r_last) begin bad <= bad + 1; state <= IDLE; end   // shorter than a header
       end
       CHECK: if (!good || h1[31:20] != 0) begin
@@ -139,6 +145,7 @@ module tx_player (
         else if (ended && !give && nb < tbits) begin short <= short + 1; state <= IDLE; end
       end
       SKIP: if (r_avail && r_last) state <= IDLE;
+      WAIT: state <= CHECK;                         // `third` registers h0's length
       EOB_ONLY: if (!o_valid || o_ready) begin
         o_valid <= 1; o_present <= 0; o_sob <= 0; o_eob <= 1; o_timed <= 0; o_data <= 0;
         state <= ended ? IDLE : SKIP;

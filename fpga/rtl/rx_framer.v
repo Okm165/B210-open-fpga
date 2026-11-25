@@ -105,10 +105,12 @@ module rx_framer (
   wire [31:0] want  = endless ? spp_c : (left < spp_c ? left : spp_c);
   wire [12:0] n_new = want[12:0];
   wire        last_packet = !endless && left == want || stopping;
-  // L = 16 + n * tbits / 8 bytes; words = ceil(L / 4), + 1 if that is a
+  // L = 16 + n * B bytes, B = tbits / 8 = 3 4 6 8, by shifts and one add
+  // (3 n = 2 n + n, 6 n = 2 (3 n)); words = ceil(L / 4), + 1 if that is a
   // multiple of 256 below the full 4096
-  wire [19:0] payload_bits = n_new * tbits;
-  wire [15:0] len   = 16 + (payload_bits >> 3);
+  wire [15:0] n3    = {n_new, 1'b0} + n_new;
+  wire [15:0] pbytes = sc12 ? (two ? {n3[14:0], 1'b0} : n3) : (two ? {n_new, 3'b0} : {n_new, 2'b0});
+  wire [15:0] len   = 16 + pbytes;
   wire [12:0] w_raw = (len + 3) >> 2;
   wire [12:0] w_all = w_raw + (w_raw[7:0] == 0 && w_raw != FULL_WORDS);
 

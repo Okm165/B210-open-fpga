@@ -6,3 +6,7 @@ license.workspace = true
 description = "Driver for the B210 board running this repository's FPGA image"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+nusb = "0.2"
+thiserror = "2"
