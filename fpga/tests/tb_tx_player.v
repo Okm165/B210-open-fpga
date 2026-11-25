@@ -72,7 +72,8 @@ module tb_tx_player;
       L = 16 + n * nv * vb / 8;
       sob = rnd(3) == 0; eob = kind == 2 || rnd(3) == 0; ht = rnd(2);
       t = {$random(seed), $random(seed)};
-      if (kind == 3) seq = seq + 1 + rnd(100);
+      if (kind == 3) seq = seq + 1 + rnd(100);              // a jump: counted unless sob
+      else if (sob && kind != 0 && rnd(2)) seq = $random(seed);   // a burst starting at any sequence: never counted (a malformed packet is dropped, so it cannot)
       for (j = 0; j < 4200; j = j + 1) pkt[j] = 0;
       pkt[0] = {4'd1, 2'd0, ch[1:0], fmt[3:0], 4'd1, L[15:0]};
       pkt[1] = {12'd0, 1'b0, eob, sob, ht, seq};
@@ -114,7 +115,7 @@ module tb_tx_player;
         endcase
         exp_bad = exp_bad + 1;
       end else begin
-        if (kind == 3 && any_good) exp_seq = exp_seq + 1;   // the first packet has no predecessor
+        if (kind == 3 && any_good && !sob) exp_seq = exp_seq + 1;   // the first packet has no predecessor
         any_good = 1;
         seq = seq + 1;
       end

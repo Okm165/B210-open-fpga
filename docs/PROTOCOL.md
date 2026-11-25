@@ -40,7 +40,7 @@ Constraints of the firmware's DMA channels (2 buffers per channel: data
 | 0 | 23:20 | `format`: 0 none, 1 sc16, 2 sc12 |
 | 0 | 27:24 | `channels`: bit c set = channel c present |
 | 0 | 31:28 | `version`: 1 |
-| 1 | 15:0 | `sequence`: per type and direction, +1 per packet, mod 2^16 |
+| 1 | 15:0 | `sequence`: per type and direction, +1 per packet, mod 2^16 (tx: checked within a burst; a START_OF_BURST packet may start at any value) |
 | 1 | 16 | `HAS_TIME`: words 2-3 are valid |
 | 1 | 17 | `START_OF_BURST` |
 | 1 | 18 | `END_OF_BURST` |

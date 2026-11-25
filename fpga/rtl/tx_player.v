@@ -9,8 +9,11 @@
 //   version 1, type 1 (tx), format sc16 or sc12, channels 01/10/11,
 //   16 <= L <= 16384, (L - 16) a whole number of sample times
 // A packet failing this is skipped whole and counted in `bad`.
-// The sequence must count up by one per packet (mod 2^16); a jump is
-// counted in `seq_errors` (the packet still plays).
+// Within a burst the sequence must count up by one per packet (mod 2^16);
+// a jump is counted in `seq_errors` (the packet still plays). A packet with
+// START_OF_BURST starts the count afresh, so a host may begin each burst at
+// any sequence (a new process at 0): a lost packet inside a burst is still
+// a jump, a lost END_OF_BURST shows as a missing BURST_ACK.
 //
 // Output: one entry per sample time, valid/ready:
 //   o_data   {Q1, I1, Q0, I0}, 12-bit codes; a 1-channel packet fills its
@@ -124,7 +127,7 @@ module tx_player (
       CHECK: if (!good || h1[31:20] != 0) begin
         bad <= bad + 1; state <= ended ? IDLE : SKIP;
       end else begin
-        if (synced && h1[15:0] != seq_next) seq_errors <= seq_errors + 1;
+        if (synced && !h1[17] && h1[15:0] != seq_next) seq_errors <= seq_errors + 1;
         seq_next <= h1[15:0] + 1; synced <= 1;
         n <= n_hdr; first <= 1; acc <= 0; nb <= 0;
         if (n_hdr != 0) state <= BODY;
