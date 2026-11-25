@@ -19,10 +19,9 @@ no Ettus RTL, no Python.
 | Wire formats | sc12 (lossless; required for full duplex) and sc16 (code x 16) |
 | Host | one Rust workspace; no Python |
 | Configuration | one declarative TOML, applied whole, only differences written |
-
-Open (researching, then the owner decides): source of the AD9361 driver's
-undocumented values; FPGA sample clock (data clock + strobe or divided
-radio clock).
+| AD9361 driver | UHD's GPL-3 sequence (the one that runs this board in v1), rewritten minimal in Rust; proven write for write against v1's SPI log on the board, then BIST tone, PRBS, loopback |
+| Sample clock | the AD9361 data clock alone (61.44 MHz in both modes) with a sample strobe in 2-channel mode, as ADI's Pluto and Ettus' 7-series e310_io; the rx/tx rings are the only crossing to the bus clock; the bus side counts data-clock edges to see it alive |
+| USB crate | nusb (pure Rust usbfs, many transfers in flight, zero-copy buffers) |
 
 ## FPGA: what it does
 
