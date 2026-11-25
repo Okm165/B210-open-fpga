@@ -36,12 +36,13 @@
 #
 #   scripts/toolchain.sh uhd
 #
-# builds the measuring UHD instead: EttusResearch/uhd $UHD_REV +
-# container/patches/uhd-3.15-eyescan.patch into .tools/uhd315 (libuhd,
-# uhd_usrp_probe, benchmark_rate, and scripts/rx_dump.cpp compiled against
-# it).  It is what scripts/eyescan.sh and scripts/sample_check.py run.  The
-# system UHD stays what the design is validated against; this one only
-# measures.
+# builds the host side instead, the only UHD the flow uses: EttusResearch/uhd
+# $UHD_REV + container/patches/uhd-3.15-eyescan.patch into .tools/uhd315
+# (libuhd, uhd_usrp_probe, benchmark_rate, and scripts/rx_dump.cpp compiled
+# against it), and into .tools/uhd315/images the stock FX3 firmware, unmodified:
+# Ettus's b2xx_common_fw_default archive of UHD 4.9.0.1, checked against the
+# sha256 that release's images/manifest.txt lists for it and against the
+# sha256 of the firmware file itself.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$ROOT/.tools"
@@ -81,7 +82,20 @@ if [[ "${1:-}" == uhd ]]; then
   cp build/utils/uhd_usrp_probe build/examples/benchmark_rate "$T/uhd315/bin/"
   g++ -O2 -std=c++14 -I host/include -I build/include "$ROOT/scripts/rx_dump.cpp" \
     -L build/lib -luhd -lboost_system -lpthread -o "$T/uhd315/bin/rx_dump"
-  echo "instrument: $T/uhd315 ($UHD_REV)"
+  FW_ZIP=b2xx/uhd-7f7d016/b2xx_common_fw_default-g7f7d016.zip
+  mkdir -p "$T/uhd315/images"
+  curl -fsSL -o "$T/uhd315/images/fw.zip" "https://files.ettus.com/binaries/cache/$FW_ZIP"
+  python3 -I - "$T/uhd315/images" <<'PY'
+import hashlib, sys, zipfile
+d = sys.argv[1]
+z = open(d + '/fw.zip', 'rb').read()
+assert hashlib.sha256(z).hexdigest() == '22ac0e54cc90d53d8494d481439447a0c89b9bbaced6fabe24df260eda3ce3a3', 'archive'
+fw = zipfile.ZipFile(d + '/fw.zip').read('usrp_b200_fw.hex')
+assert hashlib.sha256(fw).hexdigest() == 'cc8e4bc968d91d1a67c63871ce5b2c1613c49676fe363bf2f6e336059899ae5c', 'firmware'
+open(d + '/usrp_b200_fw.hex', 'wb').write(fw)
+PY
+  rm "$T/uhd315/images/fw.zip"
+  echo "host side: $T/uhd315 ($UHD_REV), FX3 firmware in $T/uhd315/images"
   exit 0
 fi
 NEXTPNR_REV=be38ec6ff1233c0eb01022e17b0e332510118522

@@ -298,8 +298,9 @@ def echo(dev, count, out_ep, in_ep, max_bytes, label):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('fpga')
-    ap.add_argument('--fw', default=os.path.join(os.environ.get('UHD_IMAGES_DIR', '/usr/share/uhd/images'),
-                                                 'usrp_b200_fw.hex'))
+    ap.add_argument('--fw', default=os.path.join(os.environ.get('UHD_IMAGES_DIR', os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.tools', 'uhd315', 'images')),
+        'usrp_b200_fw.hex'))
     ap.add_argument('--regs', action='store_true')
     ap.add_argument('--peek', type=int, default=0)
     ap.add_argument('--drain', type=int, default=None, help='default 8 MB, or none with --echo')

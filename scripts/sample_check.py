@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sample_check.py - sample content of an image against known digital signals.
 
-  sample_check.py <image.bin> [--ref <reference.bin>] <mode> [options]
+  sample_check.py <image.bin> <mode> [--sfdr DB --sinad DB] [options]
 
 Modes (the AD9361 supplies or returns the signal, no RF is involved):
 
@@ -23,15 +23,22 @@ crossings, the DDC/DUC, the framing and the USB transport.  --mcr above
 --rate puts the rate-changing filters in the path as well.
 
 The whole capture is analysed, in overlapping windows, and the worst window
-counts.  With --ref the same capture is first taken from the reference image
-and this image must match it: level within 0.3 dB, SFDR, SINAD and DC within
-3 dB, the phase relation between the two channels within 2 degrees (or one
-sample of skew away from it, which the reference image itself shows from
-session to session), and in --prbs mode the same channel polarities and gain.  The --prbs requirements
-are absolute and do not depend on the reference: zero errors, and both
-channels carrying the same word at the same index (the AD9361 sends one word
-to both receivers per sample period, so anything else is a one-sample skew
-between the channels).
+counts.  Every signal is digital and deterministic, so a healthy image gives
+the same numbers every time (within 0.5 dB over all recorded runs); the
+requirements are those numbers:
+
+  tone, loopback  level LEVEL_DBFS within 0.3 dB, at the right frequency,
+                  I and Q equal, DC below MAX_DC_DBFS, SFDR and SINAD at most
+                  TOL_DB below the values given with --sfdr and --sinad (the
+                  values measured for that mode, listed in scripts/hw_gate.sh),
+                  and the two channels at a phase relation of 180 degrees
+                  within 2 (UHD inverts the second receive DDC; one sample of
+                  skew between the channels moves it by 11 degrees or more).
+  prbs            zero errors, the samples on the PRBS levels, the DDC gain
+                  PRBS_GAIN, channel 0 not inverted and channel 1 inverted,
+                  and both channels carrying the same word at the same index
+                  (the AD9361 sends one word to both receivers per sample
+                  period, so anything else is a one-sample skew).
 
 Uses .tools/uhd315/bin/rx_dump (scripts/toolchain.sh uhd).
 """
@@ -52,6 +59,11 @@ UHD = os.path.join(ROOT, '.tools', 'uhd315')
 SKIP = 64
 GUARD = 6            # half width of the Blackman main lobe, in bins
 BIST_TONE, BIST_PRBS = '0x1B', '0x09'
+# The expected values (see the docstring).  LEVEL_DBFS and PRBS_GAIN are what
+# the receive DDC makes of the AD9361 test tone, the half-scale host tone and
+# the PRBS codes; the vendor image gave the same.
+LEVEL_DBFS, PRBS_GAIN, POLARITY = -3.66, 0.99927, (+1, -1)
+TOL_DB, MAX_DC_DBFS = 2.0, -63.0
 # The capture runs with real-time priority when the account may use it, as
 # UHD asks for at these rates; otherwise other work on the host shows up as
 # overflows (reported, never hidden).
@@ -65,7 +77,7 @@ def capture(image, a):
     os.makedirs(out, exist_ok=True)
     prefix = os.path.join(out, os.path.basename(image).replace('.bin', ''))
     env = dict(os.environ, LD_LIBRARY_PATH=os.path.join(UHD, 'lib'),
-               UHD_IMAGES_DIR=os.environ.get('UHD_IMAGES_DIR', '/usr/share/uhd/images'))
+               UHD_IMAGES_DIR=os.environ.get('UHD_IMAGES_DIR', os.path.join(UHD, 'images')))
     tail = []
     if a.loopback is not None:
         env['UHD_AD936X_LOOPBACK'] = '1'
@@ -236,7 +248,6 @@ def main():
     global SKIP
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('image')
-    ap.add_argument('--ref', help='reference image this one must match (the vendor image)')
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument('--tone', action='store_true')
     mode.add_argument('--prbs', action='store_true')
@@ -249,27 +260,17 @@ def main():
     ap.add_argument('--skip', type=int, default=SKIP,
                     help='start-of-stream samples left out of every check '
                          '(default %d; 0 checks that a new stream starts clean)' % SKIP)
-    ap.add_argument('--min-sfdr', type=float, default=None,
-                    help='absolute SFDR floor in dB (default: 60, or 50 with --ref)')
+    ap.add_argument('--sfdr', type=float, help='SFDR a healthy image gives in this mode (dB)')
+    ap.add_argument('--sinad', type=float, help='SINAD a healthy image gives in this mode (dB)')
     a = ap.parse_args()
     a.mcr = a.mcr or a.rate
     SKIP = a.skip
-    if a.min_sfdr is None:
-        # With a reference image the comparison with it does the real work, but
-        # an absolute floor keeps a board fault that degrades both images from
-        # passing: the worst healthy measurement recorded here is 69.8 dB.
-        a.min_sfdr = 50.0 if a.ref else 60.0
     if a.prbs and (a.mcr != a.rate or a.otw != 'sc16'):
         sys.exit('--prbs needs decimation 1 (mcr == rate) and the sc16 wire format')
+    if not a.prbs and (a.sfdr is None or a.sinad is None):
+        sys.exit('--tone and --loopback need the expected --sfdr and --sinad')
 
     problems = []
-    ref = None
-    if a.ref:
-        ref = measure(os.path.abspath(a.ref), a)
-        show('reference: ', a, *ref)
-        if ref[1] is None:
-            print('RESULT: INCONCLUSIVE - no capture from the reference image')
-            sys.exit(3)
     summary, m, rel = measure(os.path.abspath(a.image), a)
     show('', a, summary, m, rel)
     if m is None:
@@ -278,7 +279,6 @@ def main():
 
     for n, c in enumerate(m):
         ch = a.chans.split(',')[n]
-        r = ref[1][n] if ref else None
         if c['rails']:
             problems.append(f"ch{ch}: {c['rails']} values at the rails")
         if a.prbs:
@@ -291,39 +291,28 @@ def main():
             if not (c['residual'] < 8.0):
                 problems.append(f"ch{ch}: samples are {c['residual']:.1f} counts off the "
                                 f"PRBS levels, limit 8")
-            if r and (c['sign'] != r['sign'] or abs(c['gain'] - r['gain']) > 2e-4):
+            if c['sign'] != POLARITY[int(ch)] or abs(c['gain'] - PRBS_GAIN) > 2e-4:
                 problems.append(f"ch{ch}: polarity/gain {c['sign']:+d}/{c['gain']:.5f}, "
-                                f"reference {r['sign']:+d}/{r['gain']:.5f}")
+                                f"expected {POLARITY[int(ch)]:+d}/{PRBS_GAIN:.5f}")
             continue
         if abs(c['freq_err']) > a.rate / 4096:
             problems.append(f"ch{ch}: tone at the wrong frequency")
         if abs(c['iq_db']) > 0.1:
             problems.append(f"ch{ch}: I and Q amplitudes differ")
-        if c['sfdr'] < a.min_sfdr:
-            problems.append(f"ch{ch}: SFDR {c['sfdr']:.1f} dB below {a.min_sfdr:.0f}")
-        if r:
-            if max(abs(c['level_lo'] - r['level_lo']), abs(c['level_hi'] - r['level_hi'])) > 0.3:
-                problems.append(f"ch{ch}: level differs from the reference")
-            for key, name in (('sfdr', 'SFDR'), ('sinad', 'SINAD')):
-                if c[key] < r[key] - 3.0:
-                    problems.append(f"ch{ch}: {name} {c[key]:.1f} dB, reference {r[key]:.1f}")
-            if c['dc'] > max(r['dc'], -80.0) + 3.0:
-                problems.append(f"ch{ch}: DC {c['dc']:.1f} dBFS, reference {r['dc']:.1f}")
+        if max(abs(c['level_lo'] - LEVEL_DBFS), abs(c['level_hi'] - LEVEL_DBFS)) > 0.3:
+            problems.append(f"ch{ch}: level {c['level_lo']:.2f}..{c['level_hi']:.2f} dBFS, "
+                            f"expected {LEVEL_DBFS}")
+        for key, name, want in (('sfdr', 'SFDR', a.sfdr), ('sinad', 'SINAD', a.sinad)):
+            if c[key] < want - TOL_DB:
+                problems.append(f"ch{ch}: {name} {c[key]:.1f} dB, a healthy image gives {want:.1f}")
+        if c['dc'] > MAX_DC_DBFS:
+            problems.append(f"ch{ch}: DC {c['dc']:.1f} dBFS, limit {MAX_DC_DBFS:.0f}")
     if len(m) == 2:
         if a.prbs and rel != 0:
             problems.append('the two channels are skewed against each other' if rel is not None
                             else 'the two channels do not carry the same sequence')
-        if ref and ref[2] is not None:
-            if not a.prbs:
-                # One sample of skew between the channels moves the relation
-                # by `step`.  The reference image itself comes up with or
-                # without that skew from session to session, so either is
-                # accepted here; --prbs decides the alignment exactly.
-                step = 360.0 / 32 if a.loopback is None else 360.0 * 2 * a.loopback / a.mcr
-                d = min(abs((rel - ref[2] - k * step + 180.0) % 360.0 - 180.0) for k in (-1, 0, 1))
-                if d > 2.0:
-                    problems.append(f'channel phase relation {rel:.1f} deg, reference {ref[2]:.1f} '
-                                    f'(one sample of skew is {step:.1f})')
+        if not a.prbs and abs((rel + 360.0) % 360.0 - 180.0) > 2.0:
+            problems.append(f'channel phase relation {rel:.1f} deg, expected 180')
     for p in problems:
         print('  problem: ' + p)
     print('RESULT: ' + ('FAIL' if problems else 'PASS'))
