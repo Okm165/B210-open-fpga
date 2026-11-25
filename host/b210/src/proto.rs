@@ -155,7 +155,7 @@ pub fn transfer_size(length: usize, buffer: usize) -> usize {
         return buffer;
     }
     let words = length.div_ceil(4) * 4;
-    words + if words % 1024 == 0 { 4 } else { 0 }
+    words + if words.is_multiple_of(1024) { 4 } else { 0 }
 }
 
 /// Samples lost between two consecutive packets of one stream:
@@ -169,8 +169,8 @@ pub fn lost(previous_time: u64, previous_times: usize, time: u64) -> i64 {
 /// sc12: value v occupies bits [12 v, 12 v + 12) of the little-endian
 /// byte stream, low bit first; two values make three bytes.
 pub fn pack_sc12(values: &[i16], out: &mut [u8]) {
-    assert!(values.len() % 2 == 0 && out.len() >= values.len() / 2 * 3);
-    for (pair, b) in values.chunks_exact(2).zip(out.chunks_exact_mut(3)) {
+    assert!(values.len().is_multiple_of(2) && out.len() >= values.len() / 2 * 3);
+    for (pair, b) in values.as_chunks::<2>().0.iter().zip(out.as_chunks_mut::<3>().0) {
         let (a, c) = (pair[0] as u16 & 0xFFF, pair[1] as u16 & 0xFFF);
         b[0] = a as u8;
         b[1] = (a >> 8) as u8 | (c << 4) as u8;
@@ -180,9 +180,9 @@ pub fn pack_sc12(values: &[i16], out: &mut [u8]) {
 
 /// Inverse of `pack_sc12`; each 12-bit field is sign-extended.
 pub fn unpack_sc12(bytes: &[u8], out: &mut [i16]) {
-    assert!(bytes.len() % 3 == 0 && out.len() >= bytes.len() / 3 * 2);
+    assert!(bytes.len().is_multiple_of(3) && out.len() >= bytes.len() / 3 * 2);
     let sext = |x: u16| ((x << 4) as i16) >> 4;
-    for (b, pair) in bytes.chunks_exact(3).zip(out.chunks_exact_mut(2)) {
+    for (b, pair) in bytes.as_chunks::<3>().0.iter().zip(out.as_chunks_mut::<2>().0) {
         pair[0] = sext(b[0] as u16 | (b[1] as u16 & 0xF) << 8);
         pair[1] = sext((b[1] as u16) >> 4 | (b[2] as u16) << 4);
     }
@@ -191,16 +191,16 @@ pub fn unpack_sc12(bytes: &[u8], out: &mut [i16]) {
 /// sc16: each value the 16-bit word c << 4 (full scale 32768).
 pub fn pack_sc16(values: &[i16], out: &mut [u8]) {
     assert!(out.len() >= 2 * values.len());
-    for (v, b) in values.iter().zip(out.chunks_exact_mut(2)) {
+    for (v, b) in values.iter().zip(out.as_chunks_mut::<2>().0) {
         b.copy_from_slice(&(v << 4).to_le_bytes());
     }
 }
 
 /// Inverse of `pack_sc16`: c = word >> 4 (arithmetic shift).
 pub fn unpack_sc16(bytes: &[u8], out: &mut [i16]) {
-    assert!(bytes.len() % 2 == 0 && out.len() >= bytes.len() / 2);
-    for (b, v) in bytes.chunks_exact(2).zip(out.iter_mut()) {
-        *v = i16::from_le_bytes([b[0], b[1]]) >> 4;
+    assert!(bytes.len().is_multiple_of(2) && out.len() >= bytes.len() / 2);
+    for (b, v) in bytes.as_chunks::<2>().0.iter().zip(out.iter_mut()) {
+        *v = i16::from_le_bytes(*b) >> 4;
     }
 }
 
@@ -291,9 +291,11 @@ pub struct Reply {
 /// The results in a result packet's payload.
 pub fn replies(payload: &[u8]) -> Vec<Reply> {
     payload
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|b| {
-            let a = u32::from_le_bytes(b[0..4].try_into().unwrap());
+            let a = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
             Reply {
                 opcode: (a >> 24) as u8,
                 status: match (a >> 16) as u8 {
@@ -304,7 +306,7 @@ pub fn replies(payload: &[u8]) -> Vec<Reply> {
                     s => Status::Other(s),
                 },
                 addr: a as u16,
-                data: u32::from_le_bytes(b[4..8].try_into().unwrap()),
+                data: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
             }
         })
         .collect()
@@ -332,7 +334,9 @@ pub struct Event {
 /// The events in an event packet's payload.
 pub fn events(payload: &[u8]) -> Vec<Event> {
     payload
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .map(|b| Event {
             code: match b[0] {
                 1 => EventCode::Overflow,
@@ -343,8 +347,8 @@ pub fn events(payload: &[u8]) -> Vec<Event> {
                 c => EventCode::Other(c),
             },
             channels: b[1],
-            count: u32::from_le_bytes(b[4..8].try_into().unwrap()),
-            time: u64::from_le_bytes(b[8..16].try_into().unwrap()),
+            count: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+            time: u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]),
         })
         .collect()
 }
@@ -404,8 +408,8 @@ mod tests {
         for buffer in [DATA_BUFFER, CONTROL_BUFFER] {
             for length in HEADER..=buffer {
                 let s = transfer_size(length, buffer);
-                assert!(s >= length && s - length < 8 && s % 4 == 0);
-                assert!(s == buffer || s % 1024 != 0, "length {length}: {s}");
+                assert!(s >= length && s - length < 8 && s.is_multiple_of(4));
+                assert!(s == buffer || !s.is_multiple_of(1024), "length {length}: {s}");
             }
         }
     }
