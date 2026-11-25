@@ -2,7 +2,7 @@
 //
 // tb_ad9361_io - ad9361_io against the AD9361 data-port model
 // (ad9361_port_model.v) at 61.44 MHz, both directions at once, with the
-// sample side driven as sample_core drives it (dac changes at strobes).
+// sample side driven as sample_domain drives it (dac changes at strobes).
 //
 // Phases: 1R1T, a change to 2R2T, 2R2T with RX_FRAME held low for a while
 // and back, a change to 1R1T. The model and the design change mode a

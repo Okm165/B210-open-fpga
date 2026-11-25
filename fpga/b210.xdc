@@ -14,9 +14,9 @@ create_clock -period 10.000 [get_nets bus_clk]
 create_clock -period 16.250 [get_nets sclk]
 
 # Clock-domain crossings, bus_clk <-> sclk, asynchronous: Gray-coded
-# pointers and counters (cdc_fifo, sample_core, gray_sync) and settings
+# pointers and counters (cdc_fifo, sample_domain, gray_sync) and settings
 # held stable under a request/acknowledge (time set) or while no stream
-# runs (test, test_div). The bits of one Gray value must arrive within one
+# runs (rx_source, strobe_div). The bits of one Gray value must arrive within one
 # period of the faster clock (10 ns) of each other; scripts/build.sh checks
 # these bounds on the routed design.
 set_max_delay -datapath_only -from [get_clocks bus_clk] -to [get_clocks sclk] 8.000

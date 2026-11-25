@@ -1,57 +1,55 @@
 #!/usr/bin/env bash
-# build.sh - Verilog -> FX3-loadable .bin through the one open flow.
+# build.sh - the v2 FPGA (fpga/rtl, fpga/b210.xdc) -> FX3-loadable .bin.
 #
-#   scripts/build.sh                                         the B210 image
-#   DESIGN=diag_echo NAME=echo PARAMS="IFCLK_STEPS=66" scripts/build.sh
+#   scripts/build.sh                       build/fpga/usrp_v2.bin + usrp_v2.txt
+#   NAME=try PARAMS="BUILD_NUMBER=7" scripts/build.sh
 #
-#   DESIGN   top module (default b200: the full 2 RX + 2 TX design, sources
-#            from scripts/sources.txt); any other top is src/top/$DESIGN.v on
-#            top of the same sources
-#   NAME     output name, default $DESIGN -> build/fpga/usrp_$NAME.bin
-#   PARAMS   "K=V ..." top-level parameter overrides
-#   SRCS     source list override
-#   XDC      constraints override (default src/constraints/b210.xdc for
-#            every top: lines about pins a design does not have are ignored)
+#   DESIGN   top module (default b210)
+#   NAME     output name (default v2) -> build/fpga/usrp_$NAME.bin
+#   PARAMS   "K=V ..." top-level parameter overrides.  BUILD_COMMIT defaults
+#            to the first 8 hex digits of HEAD (as a decimal number)
+#   SRCS     source list override (default fpga/rtl/*.v)
+#   XDC      constraints override (default fpga/b210.xdc)
 #   ALLOW_TIMING_FAIL=1  still produce the image when a clock misses its
-#            constraint; the build record says so and scripts/hw_gate.sh
-#            refuses such an image.  For measurements only.
-#   PNR_EXTRA="..."  extra nextpnr arguments, e.g. PNR_EXTRA="-o timing-opt=15"
-#            (the timing-driven placement refinement).  Recorded in usrp_$NAME.txt.
+#            constraint; the build record says so.  For measurements only.
+#   PNR_EXTRA="..."  extra nextpnr arguments, e.g. PNR_EXTRA="-o timing-opt=15".
+#   NEXTPNR, CHIPDB, PRJXRAY_DB, FPGA_IMAGE  tool overrides.
 #
-# Outputs of an earlier run under the same NAME are removed before anything
-# is built, so a .bin that exists afterwards came from this run; what it was
-# built from is recorded beside it in usrp_$NAME.txt.
+# Outputs of an earlier run under the same NAME are removed first, so a .bin
+# that exists afterwards came from this run; what it was built from is
+# recorded beside it in usrp_$NAME.txt.
 #
-# Flow: yosys (container) -> nextpnr-himbaechel (host build from pinned
-# sources, scripts/toolchain.sh) -> scripts/assemble.sh (frames/bit/bin).
-# No seed knob: the seed was never the variable.
+# Flow: yosys (container image from container/Dockerfile) -> nextpnr-himbaechel
+# (scripts/toolchain.sh) -> scripts/assemble.sh (frames/bit/bin).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DESIGN="${DESIGN:-b200}"
-NAME="${NAME:-$DESIGN}"
+DESIGN="${DESIGN:-b210}"
+NAME="${NAME:-v2}"
 PART=xc7k325tffg676-1
 NEXTPNR="${NEXTPNR:-$ROOT/.tools/nextpnr-himbaechel}"
 CHIPDB="${CHIPDB:-$ROOT/.tools/chipdb-xc7k325t.bin}"
 OUT=build/fpga
 LOGS=build/fpga/logs
 cd "$ROOT"
-SRCS="${SRCS:-$(grep '^src/' scripts/sources.txt | tr '\n' ' ')}"
-[[ "$DESIGN" == b200 || ! -f src/top/$DESIGN.v ]] || SRCS+=" src/top/$DESIGN.v"
-XDC="${XDC:-src/constraints/b210.xdc}"
+SRCS="${SRCS:-$(echo fpga/rtl/*.v)}"
+XDC="${XDC:-fpga/b210.xdc}"
 [[ -f "$XDC" ]] || { echo "build: no constraints file $XDC" >&2; exit 2; }
 # What this image is built from is fixed now, before the first tool reads a
 # file: the build takes hours and the repository moves on meanwhile.
-SOURCE="$(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src fpga scripts container)" ]] || echo ' + uncommitted changes')"
+HEAD="$(git rev-parse HEAD)"
+SOURCE="$HEAD$([[ -z "$(git status --porcelain -- fpga scripts container)" ]] || echo ' + uncommitted changes')"
+# The commit register: from git, never typed by hand.
+[[ " ${PARAMS:-} " == *" BUILD_COMMIT="* ]] || PARAMS="BUILD_COMMIT=$((16#${HEAD:0:8}))${PARAMS:+ $PARAMS}"
 for tool in "$NEXTPNR" "$CHIPDB"; do
   [[ -s "$tool" ]] || { echo "build: missing $tool (scripts/toolchain.sh builds it)" >&2; exit 2; }
 done
 mkdir -p $OUT/synth $OUT/pnr $LOGS
 rm -f $OUT/synth/$NAME.json $OUT/pnr/$NAME.fasm $OUT/usrp_$NAME.bin $OUT/usrp_$NAME.txt
-CHP=""; for kv in ${PARAMS:-}; do CHP+="chparam -set ${kv%%=*} ${kv#*=} $DESIGN; "; done
+CHP=""; for kv in $PARAMS; do CHP+="chparam -set ${kv%%=*} ${kv#*=} $DESIGN; "; done
 
 podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -w /work -e HOME=/work/build \
   "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" bash -c \
-  "yosys -p 'read_verilog -I src/rtl/control $SRCS; $CHP synth_xilinx -flatten -abc9 -family xc7 -top $DESIGN; write_json $OUT/synth/$NAME.json' > $LOGS/$NAME-synth.log 2>&1" \
+  "yosys -p 'read_verilog -I fpga/rtl $SRCS; $CHP synth_xilinx -flatten -abc9 -family xc7 -top $DESIGN; write_json $OUT/synth/$NAME.json' > $LOGS/$NAME-synth.log 2>&1" \
   || { tail -20 $LOGS/$NAME-synth.log; exit 1; }
 
 # A fixed thread count: the router splits the device by it, so the routed

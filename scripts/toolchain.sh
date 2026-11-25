@@ -37,9 +37,10 @@
 #   scripts/toolchain.sh uhd
 #
 # builds the host side instead, the only UHD the flow uses: EttusResearch/uhd
-# $UHD_REV + container/patches/uhd-3.15-eyescan.patch into .tools/uhd315
-# (libuhd, uhd_usrp_probe, benchmark_rate, and scripts/rx_dump.cpp compiled
-# against it), and into .tools/uhd315/images the stock FX3 firmware, unmodified:
+# $UHD_REV + container/patches/uhd-3.15-eyescan.patch: the sources in
+# .tools/src/uhd (the AD9361 driver that host/b210/tests/ad9361_golden/
+# generate.sh compiles), libuhd, uhd_usrp_probe and benchmark_rate in
+# .tools/uhd315, and into .tools/uhd315/images the stock FX3 firmware, unmodified:
 # Ettus's b2xx_common_fw_default archive of UHD 4.9.0.1, checked against the
 # sha256 that release's images/manifest.txt lists for it and against the
 # sha256 of the firmware file itself.
@@ -80,8 +81,6 @@ if [[ "${1:-}" == uhd ]]; then
   mkdir -p "$T/uhd315/lib" "$T/uhd315/bin"
   cp -a build/lib/libuhd.so* "$T/uhd315/lib/"
   cp build/utils/uhd_usrp_probe build/examples/benchmark_rate "$T/uhd315/bin/"
-  g++ -O2 -std=c++14 -I host/include -I build/include "$ROOT/scripts/rx_dump.cpp" \
-    -L build/lib -luhd -lboost_system -lpthread -o "$T/uhd315/bin/rx_dump"
   FW_ZIP=b2xx/uhd-7f7d016/b2xx_common_fw_default-g7f7d016.zip
   mkdir -p "$T/uhd315/images"
   curl -fsSL -o "$T/uhd315/images/fw.zip" "https://files.ettus.com/binaries/cache/$FW_ZIP"
@@ -125,18 +124,18 @@ rm -f build/himbaechel/uarch/xilinx/chipdb-xc7k325t.* build/share/himbaechel/xil
 TMPDIR="$T/tmp" cmake --build build --parallel "${JOBS:-$(nproc)}" > "$T/build.log" 2>&1 \
   || { tail -20 "$T/build.log" >&2; exit 1; }
 
-# An engine is installed only if it times DSP48E1 paths: tests/dsp_timing.v
+# An engine is installed only if it times DSP48E1 paths: scripts/dsp_timing.v
 # has a multiplier without registers between flip-flops, 4.39 ns that must
 # show as the critical path and miss the 5 ns clock.  An engine that ignores
 # the cell reports over 1 GHz and passes.
 cd "$ROOT"
 mkdir -p build/tmp
 podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -w /work -e HOME=/work/build \
-  "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" yosys -q -p "read_verilog tests/dsp_timing.v;
+  "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" yosys -q -p "read_verilog scripts/dsp_timing.v;
     synth_xilinx -flatten -abc9 -family xc7 -nodsp -top dsp_timing; write_json build/tmp/dsp_timing.json" \
   > build/tmp/dsp_timing-synth.log 2>&1 || { tail -5 build/tmp/dsp_timing-synth.log >&2; exit 1; }
 "$SRC/build/nextpnr-himbaechel" --device xc7k325tffg676-1 --chipdb "$SRC/build/share/himbaechel/xilinx/chipdb-xc7k325t.bin" \
-  --json build/tmp/dsp_timing.json -o xdc=tests/dsp_timing.xdc --timing-allow-fail > build/tmp/dsp_timing-pnr.log 2>&1 \
+  --json build/tmp/dsp_timing.json -o xdc=scripts/dsp_timing.xdc --timing-allow-fail > build/tmp/dsp_timing-pnr.log 2>&1 \
   || { tail -5 build/tmp/dsp_timing-pnr.log >&2; exit 1; }
 grep -Eq "Source u_comb\.P[0-9]+" build/tmp/dsp_timing-pnr.log && grep -q "(FAIL at 200.00 MHz)" build/tmp/dsp_timing-pnr.log \
   || { echo "toolchain: this engine does not time DSP48E1 paths; see build/tmp/dsp_timing-pnr.log" >&2; exit 1; }

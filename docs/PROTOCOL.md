@@ -148,19 +148,19 @@ with the radio step.
 | 0x011 | time_hi | r | time [63:32] as of the last time_lo read |
 | 0x012 / 0x013 | time_set_lo / hi | rw | the time to set |
 | 0x014 | time_ctrl | w / r | write 1: set the time at the next sample; read [0]: a set is pending |
-| 0x020 | rx_ctrl | rw | write: start [0], stop [1] (strobes), at time [3], format [7:4], channels [9:8]; read: the same, [0] = a stream runs |
+| 0x020 | rx_ctrl | rw | write: start [0], stop [1] (strobes), timed [3], format [7:4], channels [9:8]; read: the same, [0] = a stream runs |
 | 0x021 | rx_count | rw | sample times in the stream, 0 = until stopped |
-| 0x022 / 0x023 | rx_at_lo / hi | rw | start time (with at time) |
+| 0x022 / 0x023 | rx_at_lo / hi | rw | start time (with timed) |
 | 0x024 | rx_spp | rw | sample times per packet (clamped to 16 .. full) |
 | 0x030 | radio | rw | AD9361 RESETB [0]: 0 holds the AD9361 in reset (the value after power-up and after an FPGA reset), 1 releases it |
 | 0x080 + k - 1 | events | r | counter of event code k (section 5), k = 1 .. 6 |
-| 0x086 | rx_lost | r | sample times lost crossing to the bus clock (nonzero = a design error) |
+| 0x086 | rx_cdc_lost | r | sample times lost crossing to the bus clock (nonzero = a design error) |
 | 0x087 | cmd_dropped | r | command packets dropped as malformed |
-| 0x0F0 | test | rw | rx source: 0 radio, 1 pattern, 2 tx loopback |
-| 0x0F1 | test_div | rw | step 1 only: a sample strobe every test_div + 1 cycles of the 61.44 MHz test clock |
+| 0x0F0 | rx_source | rw | 0 radio, 1 pattern, 2 tx loopback |
+| 0x0F1 | strobe_div | rw | step 1 only: a sample strobe every strobe_div + 1 cycles of the 61.44 MHz test clock |
 
-The pattern (test = 1) for the sample time t is I0 = t, Q0 = ~t, I1 = 7 t,
-Q1 = 13 t + 5, each modulo 2^12, as 12-bit codes. In loopback (test = 2) rx
+The pattern (rx_source = 1) for the sample time t is I0 = t, Q0 = ~t, I1 = 7 t,
+Q1 = 13 t + 5, each modulo 2^12, as 12-bit codes. In loopback (rx_source = 2) rx
 carries the tx sample played at the same tick, 0 outside bursts.
 
 tx packets describe themselves (format, channels in the header): there is

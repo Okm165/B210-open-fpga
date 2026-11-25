@@ -33,15 +33,15 @@
 //   IDLE    pick the next thread, after the current one, whose local side
 //           can take a whole buffer (out_room) or holds a whole packet
 //           (in_avail); put its address on A.
-//   SETTLE  SETTLE cycles: flags valid for this address and for the end of
-//           any previous transfer. Then, if READY:
+//   SETTLE  SETTLE_CYCLES cycles: flags valid for this address and for the
+//           end of any previous transfer. Then, if READY:
 //   WRITE   one word per cycle until in_last (PKTEND# with it, unless it
 //           fills the buffer, which commits by itself).
 //   READ    burst: SLRD# while WMARK is high. On WMARK low 3 strobes are
 //           still in flight (seen at E, decided E, on the pad E+1), so of
 //           the W - 1 = 4 words at most 1 is left:
-//   PEEK    PEEK cycles, then one more read if READY still says words are
-//           left; else the buffer is done and its last word is marked.
+//   PEEK    PEEK_CYCLES cycles, then one more read if READY still says
+//           words are left; else the buffer is done and its last word is marked.
 //           READY can only fall once the buffer is empty, so a low READY
 //           in any cycle of the wait ends the buffer: the FX3 must show
 //           the gap between two buffers for 1 cycle (it takes "up to a few
@@ -54,8 +54,9 @@
 // after SLOE# rises), and stops driving before a read: SETTLE of a read
 // thread already leaves D to the FX3.
 //
-// Throughput: per visit 1 + SETTLE cycles plus, for reads, about 2 * PEEK;
-// for a 4096-word data buffer 99.5 % (write) / 99.3 % (read) of the bus.
+// Throughput: per visit 1 + SETTLE_CYCLES cycles plus, for reads, about
+// 2 * PEEK_CYCLES; for a 4096-word data buffer 99.5 % (write) / 99.3 %
+// (read) of the bus.
 `default_nettype none
 
 module fx3_master #(
@@ -78,18 +79,18 @@ module fx3_master #(
   output reg         out_last,
   // IN streams (FPGA -> host), index c, show-ahead
   input  wire [1:0]  in_avail,    // source c holds a whole packet (never withdrawn untaken)
-  input  wire [31:0] in_data0, in_data1,
+  input  wire [63:0] in_data,     // source c's word in bits 32 c + 31 : 32 c
   input  wire [1:0]  in_last,
   output reg  [1:0]  in_take
 );
   localparam ADDR_LAT = 2, RD_LAT = 2, WR_LAT = 3;
   // The IDLE cycle after a transfer adds one: last write decided at n, IDLE
-  // at n+1, decision at n+1+SETTLE >= n + 3 + WR_LAT + MARGIN. That also
-  // covers the address (2 + ADDR_LAT) and the end of a read (3 + RD_LAT).
-  localparam SETTLE = 2 + WR_LAT + MARGIN;
-  localparam PEEK   = 3 + RD_LAT + MARGIN;
+  // at n+1, decision at n+1+SETTLE_CYCLES >= n + 3 + WR_LAT + MARGIN. That
+  // also covers the address (2 + ADDR_LAT) and the end of a read (3 + RD_LAT).
+  localparam SETTLE_CYCLES = 2 + WR_LAT + MARGIN;
+  localparam PEEK_CYCLES   = 3 + RD_LAT + MARGIN;
 
-  localparam IDLE = 3'd0, SET = 3'd1, WRITE = 3'd2, READ = 3'd3, PEEKING = 3'd4;
+  localparam IDLE = 3'd0, SETTLE = 3'd1, WRITE = 3'd2, READ = 3'd3, PEEK = 3'd4;
   reg [2:0]  state = IDLE, state_n;
   reg [3:0]  cnt = 0, cnt_n;          // SETTLE / PEEK countdown
   reg [12:0] n = 0, n_n;              // words written in this visit
@@ -103,7 +104,7 @@ module fx3_master #(
   wire        c    = t[1];
   wire        in   = t[0];
   wire [12:0] size = c ? CTRL : DATA;
-  wire [31:0] src  = c ? in_data1 : in_data0;
+  wire [31:0] src  = c ? in_data[63:32] : in_data[31:0];
   wire        src_last = c ? in_last[1] : in_last[0];
 
   // thread th's local side is ready for a whole buffer: index th = {c, in}
@@ -128,9 +129,9 @@ module fx3_master #(
     end
     case (state)
       IDLE: if (any) begin
-        thread = next_t; state_n = SET; cnt_n = SETTLE - 1;
+        thread = next_t; state_n = SETTLE; cnt_n = SETTLE_CYCLES - 1;
       end
-      SET: if (cnt != 0) cnt_n = cnt - 1;
+      SETTLE: if (cnt != 0) cnt_n = cnt - 1;
         else if (!ready || !eligible[t]) state_n = IDLE;
         else if (in) begin
           wr = 1; dout = src; in_take[c] = 1; n_n = 1;
@@ -138,7 +139,7 @@ module fx3_master #(
           if (src_last) state_n = IDLE; else state_n = WRITE;
         end else begin
           oe = 1; rd = 1;
-          state_n = wmark ? READ : PEEKING; cnt_n = PEEK - 1;
+          state_n = wmark ? READ : PEEK; cnt_n = PEEK_CYCLES - 1;
         end
       WRITE: begin
         wr = 1; dout = src; in_take[c] = 1; n_n = n + 1;
@@ -147,12 +148,12 @@ module fx3_master #(
       end
       READ: begin
         oe = 1; rd = wmark;
-        if (!wmark) begin state_n = PEEKING; cnt_n = PEEK - 1; end
+        if (!wmark) begin state_n = PEEK; cnt_n = PEEK_CYCLES - 1; end
       end
-      PEEKING: begin
+      PEEK: begin
         oe = 1;
         if (cnt != 0) begin cnt_n = cnt - 1; gap_n = gap || !ready; end
-        else if (ready && !gap) begin rd = 1; cnt_n = PEEK - 1; end
+        else if (ready && !gap) begin rd = 1; cnt_n = PEEK_CYCLES - 1; end
         else begin                         // buffer done: release the last word
           oe = 0; out_valid[c] = 1; out_last = 1; hold_v_n = 0; state_n = IDLE;
         end
@@ -161,7 +162,7 @@ module fx3_master #(
     endcase
     // drive D in the next cycle only if SLOE# is high now and then, and not
     // while waiting to read (SETTLE of an OUT thread, READ, PEEK)
-    drive = !oe && !oe_q && !((state_n == SET && !thread[0]) || state_n == READ || state_n == PEEKING);
+    drive = !oe && !oe_q && !((state_n == SETTLE && !thread[0]) || state_n == READ || state_n == PEEK);
     if (rst) begin
       wr = 0; rd = 0; oe = 0; pkt_end = 0; in_take = 0; out_valid = 0;
       state_n = IDLE; hold_v_n = 0; drive = !oe_q;

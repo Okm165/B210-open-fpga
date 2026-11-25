@@ -49,7 +49,7 @@
 // adc and stb change together at the edge after the IDDRs present the
 // pair, so a sample time is on adc during the cycle stb marks.
 //
-// Transmit. sample_core changes dac at the edges where stb is high
+// Transmit. sample_domain changes dac at the edges where stb is high
 // (dac = the sample to play, held to the next strobe). At every edge:
 //   1R1T, or 2R2T with stb low:  channel 0 of dac,  TX_FRAME high, low (1R1T)
 //                                                   or high, high (2R2T)

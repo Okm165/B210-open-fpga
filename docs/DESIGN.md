@@ -26,25 +26,53 @@ no Ettus RTL, no Python.
 ## FPGA: what it does
 
 ```text
- AD9361 -- io (kept) --+-- rx_framer --> [rx ring] --> usb_tx --+
-                       +-- tx_player <-- [tx ring] <-- usb_rx --+-- fx3 bus master -- FX3
-                       time (64-bit sample counter, PPS)       |
- bus clock: ctrl (operation list) -> registers, spi (AD9361, ADF4001), gpio/atr
+ AD9361 -- io (kept) --+-- rx_framer ----> [rx ring] --> usb_tx --+
+                       +-- tx_deframer <-- [tx ring] <-- usb_rx --+-- fx3 bus master -- FX3
+                       sample_domain (64-bit sample counter, PPS) |
+ bus clock: command (operation list) -> registers, spi_master (AD9361, ADF4001), gpio/atr
             events -> control endpoint
  kept from v1: clk_gen, io, leds, diag_echo
 ```
 
 - **rx_framer**: both channels into one packet, sample-interleaved; drops
   a packet that does not fit the ring, counts it, flags the next.
-- **tx_player**: plays a burst from its time (or now); zero output when
-  idle, after a burst and on underflow; antenna switches follow.
-- **ctrl**: executes a list of operations per control packet: WRITE, READ,
+- **tx_deframer**: takes tx packets apart into sample times (the inverse of
+  rx_framer).
+- **sample_domain**: everything on the sample clock: the time counter, the
+  rx source, and tx bursts played from their time (or now); zero output
+  when idle, after a burst and on underflow; antenna switches follow.
+- **command**: executes a list of operations per control packet: WRITE, READ,
   SPI, WAIT, POLL, AT_TIME; one result per operation (status, value,
   tick it took effect).
 - **Registers** (all on the always-running bus clock): ID, version, build
   hash, scratch; status (locks, AD9361 clock present); time; rx and tx
   stream control; gpio/atr; counters (packets, drops, underflows, late,
   ring high-water marks).
+
+Sources (step 1):
+
+```text
+fpga/
+  b210.xdc          pins and clocks
+  rtl/
+    b210.v          top: clocks, resets, wiring, LEDs
+    fx3_pads.v      FX3 pad registers
+    fx3_master.v    FX3 slave-FIFO bus master, one buffer per visit
+    packet_fifo.v   FIFO of whole packets: rings, command, result, event FIFOs
+    packet_mux.v    results and events onto one IN thread
+    tx_deframer.v   tx packets -> sample times
+    rx_framer.v     sample times -> rx packets
+    cdc_fifo.v      sample times across bus clock <-> sample clock
+    gray_sync.v     Gray-coded counters to the bus clock
+    sample_domain.v the sample clock side: time, rx source, tx bursts
+    command.v       executes command packets
+    regs.v          the register map
+    spi_master.v    AD9361 and ADF4001 SPI
+    events.v        event packets from counters
+    ad9361_io.v     the AD9361 data port
+    protocol.vh     packet constants (PROTOCOL.md 2)
+  tests/            tb_<block>.v per block, device models, run.sh
+```
 
 ### Packet (16-byte header, 32-bit little-endian words)
 

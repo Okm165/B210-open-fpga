@@ -2,7 +2,7 @@
 //
 // tb_cdc_fifo - cdc_fifo between two unrelated clocks, through its ports
 // only, so the same bench runs on the RTL and on the synthesised netlist
-// (fpga/tests/postsyn.sh: `define POSTSYN, the netlist has its parameters
+// (with `define POSTSYN against a yosys netlist, whose parameters are
 // fixed at W = 112, AW = 4).
 //
 // The writer offers a random W-bit entry in random cycles and keeps it

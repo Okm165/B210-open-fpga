@@ -13,7 +13,7 @@
 //     with START/END_OF_BURST at T = now + 20000; they must come back on rx
 //     at exactly T .. T + 299 (zeros around); stop -> a header-only
 //     END_OF_BURST packet; a BURST_ACK event of count 1 arrives
-//   5 counters: overflow, underflow, late, sequence, bad, rx_lost all 0
+//   5 counters: overflow, underflow, late, sequence, bad, rx_cdc_lost all 0
 //   6 radio control: the AD9361 RESETB pin low until the radio register
 //     releases it, and low again when it is cleared; an AD9361 register
 //     written and read back over SPI (opcode 3) and POLLed over SPI; an
@@ -198,7 +198,7 @@ module tb_b210;
       if (res != (k == 5 ? 1 : 0)) begin fail("counter"); $display("  code %0d = %0d", k, res); end
       if (ev_sum[k] != (k == 5 ? 1 : 0)) begin fail("events"); $display("  code %0d events add to %0d", k, ev_sum[k]); end
     end
-    rd(16'h086); if (res != 0) fail("rx_lost");
+    rd(16'h086); if (res != 0) fail("rx_cdc_lost");
     rd(16'h087); if (res != 0) fail("cmd_dropped");
     $display("%0t 5 counters done", $time);
     // 6

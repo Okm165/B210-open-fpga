@@ -33,7 +33,8 @@ module events #(
   output reg          w_last = 0,
   output reg  [31:0]  w_data = 0
 );
-  localparam K = 6, VERSION = 4'd1, T_EVENT = 4'd4;
+  `include "protocol.vh"
+  localparam K = 6;
   reg [191:0] reported = 0, snap = 0;
   reg [31:0]  timer = 0;
   reg [15:0]  seq = 0;
@@ -84,7 +85,7 @@ module events #(
       HEAD: begin
         w_valid <= 1; hw <= hw + 1;
         case (hw)
-          0: w_data <= {15'd0, 1'b1, seq};          // HAS_TIME
+          0: w_data <= {15'd0, 1'b1, seq};          // flags: HAS_TIME only
           1: w_data <= t[31:0];
           default: begin w_data <= t[63:32]; k <= first; w <= 0; state <= BODY; end
         endcase
@@ -92,7 +93,7 @@ module events #(
       BODY: begin
         w_valid <= 1; w <= w + 1;
         case (w)
-          0: w_data <= {24'd0, 5'd0, k + 3'd1};
+          0: w_data <= {29'd0, k + 3'd1};
           1: w_data <= increase;
           2: w_data <= t[31:0];
           default: begin

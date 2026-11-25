@@ -49,7 +49,7 @@ module tb_fx3_master;
   wire        wr, rd, oe, pkt_end, drive, out_last;
   wire [1:0]  a, thread, out_valid, in_take;
   reg  [1:0]  out_room = 0, in_avail = 0;
-  wire [31:0] in_data0, in_data1;
+  wire [63:0] in_data;
   wire [1:0]  in_last;
 
   fx3_pads pads (.clk(clk), .d(d), .slwr(slwr), .slrd(slrd), .sloe(sloe), .pktend(pktend),
@@ -59,7 +59,7 @@ module tb_fx3_master;
     .wr(wr), .rd(rd), .oe(oe), .pkt_end(pkt_end), .drive(drive), .thread(thread), .dout(dout),
     .din(din), .ready(ready), .wmark(wmark),
     .out_room(out_room), .out_valid(out_valid), .out_data(out_data), .out_last(out_last),
-    .in_avail(in_avail), .in_data0(in_data0), .in_data1(in_data1), .in_last(in_last), .in_take(in_take));
+    .in_avail(in_avail), .in_data(in_data), .in_last(in_last), .in_take(in_take));
   wire fpga_drives = !pads.bit_[0].pad_t;
   fx3_model #(.DATA(DATA), .CTRL(CTRL), .ADDR_LAT(ADDR_LAT), .RD_LAT(RD_LAT), .WR_LAT(WR_LAT),
     .WM_LAT(WM_LAT), .SWITCH(SWITCH)) fx3 (.clk(clk), .d(d), .slwr(slwr), .slrd(slrd), .sloe(sloe),
@@ -142,8 +142,8 @@ module tb_fx3_master;
   // -- FPGA -> host: sources offer packets; the host checks each buffer --------
   integer iseq [0:1], ij [0:1], due [0:1];
   initial for (c = 0; c < 2; c = c + 1) begin iseq[c] = 0; ij[c] = 0; due[c] = 0; end
-  assign in_data0 = pat(1, iseq[0], ij[0]);
-  assign in_data1 = pat(3, iseq[1], ij[1]);
+  assign in_data[31:0]  = pat(1, iseq[0], ij[0]);
+  assign in_data[63:32] = pat(3, iseq[1], ij[1]);
   assign in_last  = {ij[1] == len[3*N + iseq[1]] - 1, ij[0] == len[1*N + iseq[0]] - 1};
   always @(posedge clk) for (c = 0; c < 2; c = c + 1) begin
     t = 2 * c + 1;

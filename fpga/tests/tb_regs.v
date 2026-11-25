@@ -7,7 +7,9 @@
 // read-only registers ignore writes and show their source; unlisted
 // addresses read 0; rx_spp saturates at 8191 instead of wrapping (a write
 // of 8192 must read 8191, not 0); the ring high-water registers follow
-// their used input and are cleared by a write; 0x005 reports the sample
+// their used input and are cleared by a write; the ring statistics are
+// full width (rx 0 .. 2^17, tx 0 .. 2^16 words: values above 8191 and, for
+// rx, above 65535 read back exactly); 0x005 reports the sample
 // rate input; start / stop strobe for exactly one cycle, only on a
 // write with their bit set; a time set toggles time_req only when none is
 // pending; reading time_lo then time_hi gives one coherent 64-bit time
@@ -32,26 +34,27 @@ module tb_regs;
   reg  [63:0] now = 64'h0000_0005_FFFF_FFC0;
   always @(posedge clk) now <= now + 1;
   reg         ack = 0;
-  wire [63:0] time_set, rx_time;
-  wire        time_req, rx_start, rx_stop, rx_at;
+  wire [63:0] time_set, rx_at;
+  wire        time_req, rx_start, rx_stop, rx_timed;
   wire [3:0]  rx_format;
-  wire [1:0]  rx_channels, test;
+  wire [1:0]  rx_channels, rx_source;
   wire        resetb;
   wire [31:0] rx_count;
   wire [12:0] rx_spp;
-  wire [15:0] test_div;
+  wire [15:0] strobe_div;
   reg  [191:0] ev;
-  reg  [12:0] rx_used = 0, tx_used = 0, rx_hwm = 0, tx_hwm = 0;
+  reg  [17:0] rx_used = 0, rx_hwm = 0;      // rx ring: 2^17 words
+  reg  [16:0] tx_used = 0, tx_hwm = 0;      // tx ring: 2^16 words
   reg  [16:0] sample_ksps = 17'd61540;
   initial ev = {32'h66, 32'h55, 32'h44, 32'h33, 32'h22, 32'h11};
   regs #(.BUILD_NUMBER(16'h1234), .BUILD_COMMIT(32'hC0FFEE01)) dut (.clk(clk), .rst(rst),
     .reg_we(we), .reg_re(re), .reg_addr(addr), .reg_wdata(wdata), .reg_rdata(rdata),
     .locked(1'b1), .sample_running(1'b0), .now(now), .time_set(time_set), .time_req(time_req), .time_ack(ack),
-    .rx_start(rx_start), .rx_stop(rx_stop), .rx_at(rx_at), .rx_format(rx_format), .rx_channels(rx_channels),
-    .rx_count(rx_count), .rx_time(rx_time), .rx_spp(rx_spp), .rx_running(1'b1),
-    .events(ev), .rx_lost(32'h77), .cmd_dropped(32'h88),
+    .rx_start(rx_start), .rx_stop(rx_stop), .rx_timed(rx_timed), .rx_format(rx_format), .rx_channels(rx_channels),
+    .rx_count(rx_count), .rx_at(rx_at), .rx_spp(rx_spp), .rx_running(1'b1),
+    .counts(ev), .rx_cdc_lost(32'h77), .cmd_dropped(32'h88),
     .rx_used(rx_used), .tx_used(tx_used), .sample_ksps(sample_ksps),
-    .resetb(resetb), .test(test), .test_div(test_div));
+    .resetb(resetb), .rx_source(rx_source), .strobe_div(strobe_div));
 
   // the time set is acknowledged a random while later
   always @(posedge clk) if (time_req != ack && rnd(20) == 0) ack <= time_req;
@@ -134,15 +137,21 @@ module tb_regs;
     wr(16'h024, 32'h0000_1000); rd(16'h024, 32'h1000);
     m[8'h24] = 32'h1000;
     // the high-water marks follow their used input and a write clears them
-    rx_used = 13'd900; tx_used = 13'd200; repeat (3) @(posedge clk);
+    rx_used = 18'd900; tx_used = 17'd200; repeat (3) @(posedge clk);
     rd(16'h088, 900); rd(16'h089, 900); rd(16'h08A, 200); rd(16'h08B, 200);
+    // full width: above 8191 (13 bits) and, for rx, above 65535 (16 bits);
+    // a full ring reads its depth, 2^17 / 2^16 words
+    rx_used = 18'd100000; tx_used = 17'd40000; repeat (3) @(posedge clk);
+    rd(16'h088, 100000); rd(16'h089, 100000); rd(16'h08A, 40000); rd(16'h08B, 40000);
+    rx_used = 18'd131072; tx_used = 17'd65536; repeat (3) @(posedge clk);
+    rd(16'h088, 131072); rd(16'h089, 131072); rd(16'h08A, 65536); rd(16'h08B, 65536);
     // a clear while the ring still holds words is undone at once (the mark
     // tracks its used input), so empty the rings first: that is the state a
     // host clears them in, before a run
-    rx_used = 13'd0; tx_used = 13'd0; repeat (2) @(posedge clk);
+    rx_used = 18'd0; tx_used = 17'd0; repeat (2) @(posedge clk);
     wr(16'h089, 32'h0); wr(16'h08B, 32'hFFFF_FFFF);
     rd(16'h089, 0); rd(16'h08B, 0);
-    rx_used = 13'd5; tx_used = 13'd3; repeat (3) @(posedge clk);
+    rx_used = 18'd5; tx_used = 17'd3; repeat (3) @(posedge clk);
     rd(16'h089, 5); rd(16'h08B, 3);
     // the sample rate is reported as written by the top
     sample_ksps = 17'd30770; rd(16'h005, 30770);
@@ -162,7 +171,7 @@ module tb_regs;
         @(negedge clk); we = 1; addr = rnd(2) ? 16'h020 : 16'h014; wdata = d; req0 = time_req; ack0 = ack;
         if (addr == 16'h020) begin
           want_start = d[0]; want_stop = d[1];
-          m[8'h20] = {20'd0, 2'd0, d[9:8], d[7:4], d[3], 3'd0};
+          m[8'h20] = {22'd0, d[9:8], d[7:4], d[3], 3'd0};
         end
         @(negedge clk); we = 0;
         // time_req toggles exactly when bit 0 is written with no set pending

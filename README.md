@@ -1,153 +1,57 @@
 # B210 open FPGA
 
-The FPGA image for the OpenSourceSDRLab B210 (Kintex-7 `xc7k325t-ffg676`,
-AD9361, Cypress FX3): two receive and two transmit channels, working with
-stock UHD, built from Verilog with open tools only (Yosys, nextpnr-himbaechel,
-Project X-Ray). Every tool, the host driver (UHD) and the chip database are
-built from pinned sources on top of the operating system's own packages
-(Ubuntu in the container, the host's distribution outside it). The one
-prebuilt file in the flow is the FX3's stock firmware, fetched from Ettus with
-its hash checked.
+Our own FPGA design and host software for the OpenSourceSDRLab B210
+(Kintex-7 `xc7k325t-ffg676`, AD9361, Cypress FX3 running its stock
+firmware). The FPGA is built from Verilog with open tools only (Yosys,
+nextpnr-himbaechel, Project X-Ray), every tool from pinned sources. The host
+side is a Rust crate talking to the board over USB, with no UHD.
 
-- `docs/STATUS.md`: what is measured to be true today, and what is open
-- `docs/DSP.md`: what the signal chains compute and how that is proven
+- `fpga/rtl/`, `fpga/b210.xdc`: the FPGA; `fpga/tests/`: its benches
+- `host/b210/`: the Rust crate, binaries `b210` and `b210-plot`
+- `scripts/`: the build flow (`build.sh`, `assemble.sh`, `toolchain.sh`)
+- `container/`: the Yosys / Project X-Ray image and the tool patches
+- `docs/PROTOCOL.md`: the USB protocol and register map; `docs/DESIGN.md`: the design
 
 ## Quick start
 
 ```sh
-just setup    # every tool from pinned sources: container, place and route, UHD   ~30 min
-just udev     # once, as root: USB access to the board
-just build    # Verilog -> build/fpga/usrp_b200.bin + build record               1.5 h and up
-just gate     # hardware acceptance on the connected board                        ~40 min
+just setup                                 # container, nextpnr + chipdb, UHD sources + FX3 firmware
+just udev                                  # once: USB access to the board (2500:0020)
+just build                                 # fpga/rtl -> build/fpga/usrp_v2.bin + build record (hours)
+(cd host && cargo build --release)
+just load                                  # b210 load build/fpga/usrp_v2.bin
+just check                                 # FPGA benches + cargo test + clippy
 ```
 
-`just` alone lists every command. The ones used day to day:
+`b210` needs the FX3 running Ettus's stock firmware and does not load it
+itself; after a power-up, `python3 scripts/fx3_raw_load.py <image> --drain 0` (pyusb)
+loads the firmware from `.tools/uhd315/images` and then the image.
 
-| Command | What it does |
-| --- | --- |
-| `just load [img]` | reboot the FX3, load the image, read every configuration layer over USB, with no UHD |
-| `just probe [img]` | UHD loads the image and initialises both radio cores |
-| `just stream rx 0,1 30.72e6` | stream for 10 s and count every lost sample (`dir` rx, tx or rxtx; `otw` sc16, sc12, sc8) |
-| `just eye [img]` | AD9361 interface eye scan and the timing margin at UHD's operating point |
-| `just gate [img]` | the full acceptance (below) |
-| `just test [names]` | the simulation benches in parallel, all or the named ones (`just test fifo io`) |
-| `just shell` | a shell in the tool container |
+`scripts/build.sh` takes `NAME`, `PARAMS` (`BUILD_COMMIT` defaults to HEAD),
+`SRCS`, `XDC`, `ALLOW_TIMING_FAIL`, `PNR_EXTRA`; see its header. The build
+record `build/fpga/usrp_<NAME>.txt` holds the image hash, sources, tools and timing.
 
-`img` defaults to `build/fpga/usrp_b200.bin`.
-
-## Python
-
-`host/b210.py` drives the board from Python through UHD's C API (ctypes, no
-compiled bindings): both receive and both transmit channels, rate, frequency,
-gains, antenna, timed two-channel captures that raise on any lost sample.
-`host/sdr.py` uses it to record, transmit, and show spectra (Welch average over
-the whole capture, scipy's zoom FFT for a narrow band, strongest peaks listed):
+## Command line
 
 ```sh
-just sdr rx --freq 433.9e6 --gain 40 --zoom -100e3:100e3   # record both channels, plot, list peaks
-just sdr live --freq 98e6 --rate 7.68e6                    # capture after capture (PNG without a display)
-just sdr rx --test loopback --tone 1e6                     # transmit path through the AD9361, no RF
-just sdr tx --tone 250e3 --secs 30 --tx-gain 50            # transmit 250 kHz on ch0, 500 kHz on ch1
-just sdr fft build/captures/<time>.npy --zoom 0:50e3       # analyse a recording again
+b210 load <IMAGE>          # load an FPGA image and start the bus
+b210 state                 # FX3 firmware state (1 ready, 2 configuring, 4 running)
+b210 read <ADDR>           # read a register (hex 0x.. or decimal)
+b210 write <ADDR> <VALUE>  # write a register
+b210 monitor [--interval-ms 500]       # live status, event counters, USB events
+b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
+b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
+b210 capture [STREAM] [--out capture.raw] [--source pattern|loopback]
+b210-plot <FILE> [--rate HZ] [--view spectrum|time|both] [--fft N] [--lo HZ] [--hi HZ]
 ```
 
-Recordings are `build/captures/<UTC>.npy` (complex64, one row per channel,
-full scale 1.0) with the radio settings beside them in `.json`.
+`STREAM` options: `--seconds`, `--format sc16|sc12`, `--channels 1|2`,
+`--div`, `--depth-ms`. `capture` writes interleaved i16 I/Q, one file per
+channel; `b210-plot` draws spectrum and I/Q in the terminal. `--help` on
+any command gives the full list and defaults.
 
-## What the host needs
+## v1
 
-- `just`, `podman`, `git`, `curl`, `cmake`, a C++20 compiler, boost, eigen3 and
-  libusb-1.0 headers, `python3` with `mako`, `numpy`, `scipy`, `matplotlib` and `pyusb`, Icarus
-  Verilog; about 6 GB of disk, and network access while the tools build;
-- for the streaming measurements, permission to run at real-time priority
-  (`ulimit -r` 50 or more). Without it the tools still run and say so.
-
-No UHD package, no vendor IDE and no vendor image is used.
-
-## Acceptance
-
-`just gate` runs every step on the board in this order. All requirements
-are absolute; nothing is compared with another image.
-
-| Step | Passes when |
-| --- | --- |
-| identity | the build record belongs to exactly these bytes, built from committed sources; all three clocks and all four clock-domain crossings meet their constraints |
-| raw | FX3 reboot and FPGA load; FPGA registers written and read back, the AD9361 product ID read over the FPGA's SPI master, 64 control transactions and an 8 MB drain, all without UHD |
-| init | UHD initialises both radio cores (register and codec loopback) |
-| eye | at 61.44 MHz the AD9361 interface has at least 8 delay steps of margin on receive and transmit |
-| samples | test tone and loopback tones with the level, SFDR, SINAD, DC and channel phase of a healthy image; the AD9361 pseudo-random sequence with zero errors in 8 two-channel sessions and at 61.44 MS/s |
-| dsp | the board's DSP output equals the RTL simulation on every sample, at decimation 1, 2, 3, 4, 8, 16 and loopback x1, x4 |
-| bus margin | the FX3 bus still works with its clock moved 2.1 ns earlier and later |
-| throughput | 10 s with no lost sample at 2 RX x 30.72, 2 TX x 30.72, 1 RX x 61.44 and 2R2T x 30.72 MS/s (12-bit), counted on a quiet host |
-
-Exit 0 is a pass, 1 a failure, 3 inconclusive (the host never stayed quiet
-through a throughput run), which is not a pass. Everything is written to
-`build/hw-gate-<UTC>/`, one file per step.
-
-## Board LEDs
-
-Green means data flowing, amber transmitting, red an alarm and nothing else.
-
-| LED | Meaning |
-| --- | --- |
-| TX/RX, RX2 (per channel) | green shimmering: receiving on this port; amber shimmering: transmitting; red for 0.2 s: samples lost (overflow or late command on RX2; underflow, late or out-of-sequence packet on TX/RX); dark: idle. The shimmer runs at the sample rate (7 blinks a second at 30.72 MS/s) |
-| CLK | green: the AD9361 clock runs, with a blink at every PPS; red: FPGA clocks unlocked or input delays not calibrated; dark: AD9361 not initialised yet |
-| USR | green flash: a control packet from the host; red: samples lost on some channel within the last 2 s |
-| STATUS | blue heartbeat |
-
-## How the board is controlled
-
-One USB 3 cable carries data and configuration. The layers, from the host
-down:
-
-| Layer | Carried by | Set there | Checked by |
-| --- | --- | --- | --- |
-| FX3 | USB control requests to the stock firmware | firmware load, FPGA load, FX3 reset | `just load` |
-| FPGA registers | control packets, endpoints 4 out / 8 in, local address 0x40 | reference and time source, MIMO mode, AD9361 reset, front-end switches, SPI master | `just load`: readback registers, a write read back |
-| AD9361 | the FPGA's SPI master | rates, frequencies, gains, filters, interface delays | `just load` (product ID), UHD for the rest |
-| Radio cores (two) | control packets to 0x10 and 0x20 | DSP tuning, decimation, interpolation, scaling; stream commands, packet size, time | `just probe` (register loopback), gate step `dsp` |
-| Sample streams | endpoints 6 in / 2 out, VITA packets | none | `just stream`, gate steps `samples` and `throughput` |
-| Host side | UHD device arguments | USB buffer pool (`num_recv_frames`, `recv_frame_size`, ...), wire format | `just stream` uses a deep pool (34 ms of receive data at 245 MB/s) |
-
-The FPGA implements every register UHD 3.15 writes; none is ignored on the
-streaming path.
-
-## Layout
-
-```text
-src/top/           b200.v (top), b200_io.v (AD9361 port), b200_leds.v, b200_core.v,
-                   b200_clk_gen.v, diag_echo.v (the FX3 bus alone, for bus tests)
-src/rtl/           radio, DSP, FIFO, FX3 bus and control RTL
-src/constraints/   b210.xdc: pins, clocks, buffer sites, crossing bounds
-scripts/           build flow (toolchain, build, assemble) and board instruments
-container/         the tool container (Dockerfile) and the upstream patches
-tests/             simulation benches, their runner and the Ettus reference RTL
-justfile           every command
-```
-
-| Instrument | Measures |
-| --- | --- |
-| `scripts/fx3_raw_load.py` | FX3 and FPGA load and the control path without UHD (`--regs`, `--peek N`); `--echo N` the bus alone, bit exact, on `diag_echo` |
-| `scripts/eyescan.sh` | the AD9361 interface eye over all 31 x 31 clock/data delays |
-| `scripts/sample_check.py` | tone, loopback and pseudo-random captures against fixed requirements |
-| `scripts/dsp_exact.py` | board captures against the RTL simulation, every sample |
-| `scripts/bus_window.py` | the FX3 bus timing window, by moving the forwarded clock in the bitstream |
-| `scripts/rx_dump.cpp` | the capture tool all of the above use (built by `just setup`) |
-
-## Settings
-
-| Variable | Used by | Meaning |
-| --- | --- | --- |
-| `SERIAL` | board commands | board serial, only with several B2xx on the host |
-| `WAIT_QUIET` | gate | seconds to wait, in all, for a quiet host before throughput runs (default 0) |
-| `QUIET_PSI` | gate | CPU pressure in percent below which the host counts as quiet (default 1) |
-| `FPGA_IMAGE` | container, build | container image name (default `b210-open-fpga:0.3.0`) |
-| `DESIGN`, `NAME`, `PARAMS` | build | another top from `src/top`, its output name, parameter overrides |
-
-The headers of `scripts/build.sh` and `scripts/hw_gate.sh` list the rest.
-
-## Licence
-
-The RTL under `src/rtl` and `src/top` derives from Ettus Research's USRP FPGA
-sources (LGPL-3.0-or-later); files written here carry their own SPDX line.
-Everything else is GPL-3.0; see `LICENSE`.
+The first version (Ettus's UHD-compatible image built with open tools, plus
+Python helpers) is tagged `v1-ettus-uhd`: `git checkout v1-ettus-uhd`, or
+`git show v1-ettus-uhd:<path>` for a single file.

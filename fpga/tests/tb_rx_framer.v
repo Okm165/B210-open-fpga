@@ -8,8 +8,8 @@
 // full queue is an error. The sample of time t is known to the checker:
 //   I0 = t, Q0 = ~t, I1 = 7 t, Q1 = 13 t + 5   (12 bits each)
 // While a stream runs, the framer's configuration inputs (format, channels,
-// spp, start_at, start_time) are scrambled at random: a stream must keep
-// what it started with (the host's stop write rewrites rx_ctrl's bits).
+// spp, timed, at) are scrambled at random: a stream must keep what it
+// started with (the host's stop write rewrites rx_ctrl's bits).
 // A start pulse while a stream runs must be ignored: the stream keeps its
 // sequence and never sees a second START_OF_BURST.
 //
@@ -38,10 +38,10 @@
 // size S(L), sequence, flags, time, every value, the padding bits zero.
 // For every stream: the first sample is the first at or after the start
 // time; times are contiguous except where OVERFLOW marks a gap; gaps add up
-// to the framer's dropped count; sent + dropped = count when the stream ran
-// to its count; every sample taken inside a packet or a drop is either in a
-// packet or in that count (the strobe accounting); START_OF_BURST on the
-// first packet, END_OF_BURST on the last.
+// to the framer's overflows count; sent + dropped = the count when the
+// stream ran to its count; every sample taken inside a packet or a drop is
+// either in a packet or in that count (the strobe accounting);
+// START_OF_BURST on the first packet, END_OF_BURST on the last.
 //
 // Coverage: the counters below record that each corner above really
 // happened. The run FAILS at the end if any is zero, so a bench that
@@ -68,8 +68,8 @@ module tb_rx_framer;
   reg  [3:0]  format = 1;
   reg  [1:0]  channels = 1;
   reg  [12:0] spp = 100;
-  reg         start = 0, stop = 0, start_at = 0;
-  reg  [63:0] start_time = 0;
+  reg         start = 0, stop = 0, timed = 0;
+  reg  [63:0] at = 0;
   // the stream's configuration, as it was at start; the inputs above are
   // scrambled while it runs
   reg  [3:0]  sf = 1;
@@ -125,12 +125,12 @@ module tb_rx_framer;
 
   // -- design ---------------------------------------------------------------------------
   wire        w_room, w_valid, w_last, running, r_avail, r_last;
-  wire [31:0] w_data, dropped, r_data;
+  wire [31:0] w_data, overflows, r_data;
   reg         r_take = 0;
   rx_framer dut (.clk(clk), .rst(rst), .s_valid(s_valid), .s_time(st), .s_data(s_data), .s_take(s_take),
-    .format(format), .channels(channels), .spp(spp), .start(start), .stop(stop), .start_at(start_at),
-    .start_time(start_time), .count(count), .w_room(w_room), .w_valid(w_valid), .w_last(w_last),
-    .w_data(w_data), .running(running), .dropped(dropped));
+    .format(format), .channels(channels), .spp(spp), .start(start), .stop(stop), .timed(timed),
+    .at(at), .count(count), .w_room(w_room), .w_valid(w_valid), .w_last(w_last),
+    .w_data(w_data), .running(running), .overflows(overflows));
   packet_fifo #(.AW(14), .MAX(4096)) ring (.clk(clk), .rst(rst), .w_room(w_room), .w_valid(w_valid),
     .w_last(w_last), .w_data(w_data), .r_avail(r_avail), .r_data(r_data),
     .r_last(r_last), .r_take(r_take));
@@ -172,17 +172,17 @@ module tb_rx_framer;
   integer cov_bad_cfg = 0, cov_fill = 0;
 
   reg [63:0] next_t = 0;          // time the next packet must start at (unless OVERFLOW)
-  reg        expect_first = 0, ended = 1, start_at_s = 0, t0_seen = 0;
-  integer    dropped0 = 0, tooks0 = 0;    // framer's counts before this stream
+  reg        expect_first = 0, ended = 1, timed_s = 0, t0_seen = 0;
+  integer    overflows0 = 0, tooks0 = 0;    // framer's counts before this stream
   // samples the framer took inside a packet or a drop: each one is either
-  // in a packet the checker saw or in `dropped`
+  // in a packet the checker saw or in `overflows`
   integer    tooks = 0;
   always @(posedge clk) if (s_take && (dut.state == 4 || dut.state == 5)) tooks = tooks + 1;
   always @(posedge clk) if (w_valid && w_last) written = written + 1;
   // the stream's first sample: the head when the framer first reaches START
   always @(posedge clk) if (!rst && !t0_seen && dut.state == 2) begin
     t0_seen = 1; next_t = st;
-    if (start_at_s && st != s_at) begin
+    if (timed_s && st != s_at) begin
       errors = errors + 1; $display("%0t stream starts at %0d, start time %0d", $time, st, s_at);
     end
   end
@@ -251,7 +251,7 @@ module tb_rx_framer;
   endtask
 
   // -- coverage counters ------------------------------------------------------------------
-  always @(posedge clk) if (dut.state == 1 && dut.run_at && s_valid && dut.s_time < dut.run_time)
+  always @(posedge clk) if (dut.state == 1 && dut.run_timed && s_valid && dut.s_time < dut.run_at)
     cov_wait = cov_wait + 1;
   always @(posedge clk) if (stop && dut.state == 5) cov_drop_stop = cov_drop_stop + 1;
 
@@ -277,15 +277,15 @@ module tb_rx_framer;
   endfunction
 
   task begin_stream(input [3:0] f, input [1:0] c, input [12:0] sp, input [31:0] cnt,
-                    input at, input [63:0] at_time);
+                    input tmd, input [63:0] at_time);
     begin
       scramble = 0;
       format = f; channels = c; spp = sp; count = cnt;
-      start_at = at; start_time = at_time;
-      sf = f; sc = c; s_at = at_time; start_at_s = at; t0_seen = 0;
+      timed = tmd; at = at_time;
+      sf = f; sc = c; s_at = at_time; timed_s = tmd; t0_seen = 0;
       seq_next = 0; expect_first = 1; ended = 0; sent = 0; gaps = 0;
       npkts = 0; eff = clamp_spp(sp, f, c);
-      dropped0 = dropped; tooks0 = tooks;
+      overflows0 = overflows; tooks0 = tooks;
       if (sp < 16) cov_spp_small = cov_spp_small + 1;
       if (sp > full_pkt(f, c)) cov_spp_full = cov_spp_full + 1;
       if (f == 2) cov_sc12 = cov_sc12 + 1; else cov_sc16 = cov_sc16 + 1;
@@ -300,21 +300,23 @@ module tb_rx_framer;
   endtask
 
   task end_stream(input integer id, input integer by_count);
-    integer k;
+    integer k, quiet;
     begin
       if (!ended) begin stop <= 1; @(posedge clk); stop <= 0; end
-      k = 0;
-      while (!ended && running && k < 2000000) begin @(posedge clk); k = k + 1; end
-      // drained: the framer idle and every packet it wrote read and checked
-      // (the word being written now and the read side, not the w_last
-      // counter: that one is updated by an always block at the same edge as
-      // this loop tests it)
-      k = 0;
-      while ((running || w_valid || r_avail || pw != 0) && k < 2000000) begin @(posedge clk); k = k + 1; end
-      if (running || w_valid || r_avail || pw != 0) begin
+      // drained: the framer idle, no word in flight, every packet it wrote
+      // read and checked. Two quiet cycles in a row: `written`, w_valid and
+      // r_avail are updated by other always blocks at the same edge this
+      // loop samples them, so one sample can still be stale.
+      k = 0; quiet = 0;
+      while (k < 2000000 && quiet < 2) begin
+        @(posedge clk); k = k + 1;
+        if (!running && !w_valid && !r_avail && pw == 0 && npackets == written) quiet = quiet + 1;
+        else quiet = 0;
+      end
+      if (quiet < 2) begin
         errors = errors + 1;
-        $display("stream %0d: not drained: running %b w_valid %b r_avail %b pw %0d state %0d",
-          id, running, w_valid, r_avail, pw, dut.state);
+        $display("stream %0d: not drained: running %b w_valid %b r_avail %b pw %0d state %0d written %0d read %0d",
+          id, running, w_valid, r_avail, pw, dut.state, written, npackets);
       end
       scramble = 0;
       // a stream stopped while waiting for its start time sends nothing
@@ -323,17 +325,17 @@ module tb_rx_framer;
           errors = errors + 1; $display("stream %0d: no END_OF_BURST", id);
         end else cov_no_packet = cov_no_packet + 1;
       end
-      if (gaps != dropped - dropped0) begin
-        errors = errors + 1; $display("stream %0d: gaps %0d, dropped %0d", id, gaps, dropped - dropped0);
+      if (gaps != overflows - overflows0) begin
+        errors = errors + 1; $display("stream %0d: gaps %0d, dropped %0d", id, gaps, overflows - overflows0);
       end
-      if (by_count && sent + (dropped - dropped0) != count) begin
+      if (by_count && sent + (overflows - overflows0) != count) begin
         errors = errors + 1; $display("stream %0d: %0d sent + %0d dropped != count %0d",
-          id, sent, dropped - dropped0, count);
+          id, sent, overflows - overflows0, count);
       end
       // every strobe taken inside a packet or a drop is in a packet or counted
-      if (tooks - tooks0 != sent + (dropped - dropped0)) begin
+      if (tooks - tooks0 != sent + (overflows - overflows0)) begin
         errors = errors + 1; $display("stream %0d: took %0d, %0d sent + %0d dropped", id,
-          tooks - tooks0, sent, dropped - dropped0);
+          tooks - tooks0, sent, overflows - overflows0);
       end
     end
   endtask
@@ -344,7 +346,7 @@ module tb_rx_framer;
     begin
       bad = 0;
       scramble = 0;
-      format = f; channels = c; spp = 100; count = 10; start_at = 0; start_time = 0;
+      format = f; channels = c; spp = 100; count = 10; timed = 0; at = 0;
       start <= 1; @(posedge clk); start <= 0;
       for (k = 0; k < 20; k = k + 1) begin
         @(posedge clk);
@@ -368,7 +370,8 @@ module tb_rx_framer;
     begin
       got = 0; tries = 0;
       while (!got && tries < 20) begin
-        while (s_valid) @(posedge clk);                 // queue empty
+        k = 0;
+        while (s_valid && k < 1000) begin @(posedge clk); k = k + 1; end   // queue empty
         src_hold <= 1; @(posedge clk);
         begin_stream(1, 1, 64, 0, 0, 0);                // ARMED, nothing to send
         repeat (10) @(posedge clk);
@@ -409,7 +412,7 @@ module tb_rx_framer;
         stall = 1;
         while (!ok && k < 1000000) begin
           @(posedge clk); k = k + 1;
-          if (dropped > dropped0 && dut.state == 5) ok = 1;
+          if (overflows > overflows0 && dut.state == 5) ok = 1;
         end
         if (ok) begin stop <= 1; @(posedge clk); stop <= 0; end    // stop in DROP
         repeat (200) @(posedge clk);
@@ -419,7 +422,7 @@ module tb_rx_framer;
         stall = 1;
         while (!ok && k < 1000000) begin
           @(posedge clk); k = k + 1;
-          if (dropped > dropped0 && dut.state == 5 && dut.left <= eff && dut.left > 0) ok = 1;
+          if (overflows > overflows0 && dut.state == 5 && dut.left <= eff && dut.left > 0) ok = 1;
         end
         stall = 0;
       end
@@ -428,7 +431,7 @@ module tb_rx_framer;
       while (!ended && k < 400000) begin @(posedge clk); k = k + 1; end
       stall = 0;
       end_stream(id, !stopit);
-      if (dropped - dropped0 == 0) begin
+      if (overflows - overflows0 == 0) begin
         errors = errors + 1; $display("fill stream %0d: the fifo never filled", id);
       end
       cov_fill = cov_fill + 1;
@@ -437,7 +440,7 @@ module tb_rx_framer;
   endtask
 
   // -- streams --------------------------------------------------------------------------
-  integer s_i, life, k, by_count, dropped_fill;
+  integer s_i, life, k, by_count, overflows_fill;
   initial begin
     repeat (5) @(posedge clk);
     rst = 0;
@@ -467,6 +470,7 @@ module tb_rx_framer;
     begin_stream(1, 1, 13'd64, 0, 0, 0);
     k = 0;
     while (npkts < 2 && k < 100000) begin @(posedge clk); k = k + 1; end
+    if (!running) begin errors = errors + 1; $display("stream 5: not running before the start pulse"); end
     start <= 1; @(posedge clk); start <= 0;
     cov_start_busy = cov_start_busy + 1;
     repeat (100) @(posedge clk);
@@ -479,7 +483,7 @@ module tb_rx_framer;
     fill(1, 7);
     stall = 0;
 
-    dropped_fill = dropped;
+    overflows_fill = overflows;
 
     // -- random streams -----------------------------------------------------------------
     for (s_i = 0; s_i < STREAMS; s_i = s_i + 1) begin
@@ -497,11 +501,14 @@ module tb_rx_framer;
         st + (s_i % 3 == 0 ? 1 + rnd(3000) : rnd(3000)));
       scramble = 1;
       if (s_i % 2 == 1) begin
-        // a start while the stream runs must be ignored
+        // a start while the stream runs must be ignored (if the stream has
+        // already ended there is nothing to test: skip it)
         k = 0;
-        while (npkts < 1 && k < 200000) begin @(posedge clk); k = k + 1; end
-        start <= 1; @(posedge clk); start <= 0;
-        cov_start_busy = cov_start_busy + 1;
+        while (npkts < 1 && running && k < 200000) begin @(posedge clk); k = k + 1; end
+        if (running) begin
+          start <= 1; @(posedge clk); start <= 0;
+          cov_start_busy = cov_start_busy + 1;
+        end
       end
       life = count == 0 || rnd(4) == 0 ? 2000 + rnd(40000) : -1;     // stop after `life` cycles
       while (!ended && (life != 0)) begin @(posedge clk); if (life > 0) life = life - 1; end
@@ -526,10 +533,10 @@ module tb_rx_framer;
     cover(cov_start_busy,     "a start while a stream runs");
     cover(cov_bad_cfg,        "an invalid configuration that must not start");
     cover(cov_fill,           "a stream that overflows the full fifo");
-    if (SLOW && dropped == dropped_fill) begin errors = errors + 1; $display("SLOW run without a dropped packet"); end
-    if (!SLOW && dropped != dropped_fill) begin errors = errors + 1; $display("%0d samples dropped with a fast reader", dropped - dropped_fill); end
+    if (SLOW && overflows == overflows_fill) begin errors = errors + 1; $display("SLOW run without a dropped packet"); end
+    if (!SLOW && overflows != overflows_fill) begin errors = errors + 1; $display("%0d samples dropped with a fast reader", overflows - overflows_fill); end
     if (npackets != written) begin errors = errors + 1; $display("%0d packets written, %0d read", written, npackets); end
-    $display("%0d streams, %0d packets, %0d samples dropped, %0d samples taken", STREAMS, npackets, dropped, tooks);
+    $display("%0d streams, %0d packets, %0d samples dropped, %0d samples taken", STREAMS, npackets, overflows, tooks);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");
     $finish;
   end
@@ -539,7 +546,7 @@ module tb_rx_framer;
   // strobe: the framer would then latch the scrambled values)
   always @(negedge clk) if (scramble && rnd(50) == 0) begin
     format <= rnd(4); channels <= rnd(4); spp <= rnd(8192);
-    start_at <= rnd(2); start_time <= {$random(seed), $random(seed)};
+    timed <= rnd(2); at <= {$random(seed), $random(seed)};
   end
 
   // a broken design floods: stop at 20 errors

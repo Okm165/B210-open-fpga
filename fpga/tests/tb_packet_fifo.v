@@ -6,26 +6,30 @@
 // queue and compares it with the module every cycle:
 //   w_room   with "fewer than MAX words in"
 //   w_used, r_used with the queue's length
-//   r_avail  with "a complete packet is in and its words are not all read"
+//   r_avail  safety: high only while a complete packet is in and its words
+//            are not all read; latency: high whenever words of complete
+//            packets committed 3 or more cycles ago are unread (the stated
+//            bound - one cycle more or less and this fails)
 //   r_data, r_last with the oldest unread word of a complete packet
 // Nothing of the module's pointers, memory or read path enters the
 // expectation: the reference queue counts the words offered and the packets
 // closed by a `last` mark.
 //
 // The writer never presents a word for a packet that does not fit whole
-// (queue length + packet length <= MAX), so the queue never holds more than
-// MAX words; if a word is presented at MAX the bench fails, which is the
-// writer's side of the room promise. The reader behaves like fx3_master: it
+// (queue length + packet length <= ROOM, the module's room), so the queue
+// never holds more than ROOM words; if a word is presented with no room the
+// bench fails, which is the writer's side of the room promise. The reader behaves like fx3_master: it
 // starts only on r_avail, then takes a packet one word per cycle to its
 // `last`, never pausing inside one - a packet whose words are not all there
 // when it starts, or that runs out mid-way, is a failure of the whole-packet
 // promise.
 //
-// Corners first, once: r_take held high while empty; MAX words written back
-// to back with only the last one marked last (w_room high before each of the
-// MAX, low right after the MAX-th; r_avail low for every one of them but the
-// last); w_room back in the cycle after one read; the rest drained back to
-// back and compared word by word; empty again with r_take high (ignored).
+// Corners first, once: r_take held high while empty; the FIFO filled with
+// whole packets of MAX words until w_room is low (with a depth of MAX or
+// 2*MAX that is one packet: w_room high before each of the MAX words, low
+// right after the MAX-th; the packet stays invisible until its last word);
+// w_room back in the cycle after one read; the rest drained back to back and
+// compared word by word; empty again with r_take high (ignored).
 // Then N random packets of 1..MAX words, words and packets separated by
 // gaps, and long random read stalls, so the FIFO fills and empties
 // throughout while packets arrive in pieces.
@@ -34,7 +38,7 @@
 // random long stalls; GAPS = 0 runs both back to back.
 //
 // FAULT 1 flips a data bit of an unread word in the memory     (data)
-// FAULT 2 clears the last bit of a packet's last word           (last)
+// FAULT 2 sets the last bit of a packet's third word              (last)
 // FAULT 3 makes the module believe one more word fits           (room off by one)
 // FAULT 4 makes r_avail high with no packet in the FIFO and takes (read when empty)
 // Each must make the bench FAIL.
@@ -79,13 +83,17 @@ module tb_packet_fifo;
   integer    held_max = 0;
   integer    phase = 0;               // 0 corners, 1 random packets, 2 done
   reg        busy = 0;                // the reader is inside a packet
+  integer    mc1 = 0, mc2 = 0, mc3 = 0; // mc as it was 1, 2, 3 samples ago
+  localparam LATENCY = 3;             // packet_fifo's header: commit, fetch, buffer
 
   always @(posedge clk) if (!rst) begin
     // what the module must show in this cycle, before this edge's transfers
     if (w_room !== (mn < ROOM)) begin err("w_room"); $display("  %0d words in, w_room %b", mn, w_room); end
     if (w_used !== mn)         begin err("w_used"); $display("  w_used %0d, %0d expected", w_used, mn); end
     if (r_used !== mn)         begin err("r_used"); $display("  r_used %0d, %0d expected", r_used, mn); end
-    if (r_avail !== (mc != mr)) begin err("r_avail"); $display("  %0d words of complete packets, r_avail %b", mc - mr, r_avail); end
+    if (r_avail && mc == mr) begin err("r_avail with no complete packet"); $display("  %0d words of complete packets", mc - mr); end
+    if (!r_avail && mc3 != mr) begin err("r_avail late"); $display("  %0d words committed %0d cycles ago unread", mc3 - mr, LATENCY); end
+    if (r_avail && mc2 == mr && mc != mr && mc3 == mr) begin err("r_avail early"); $display("  shown before the stated %0d cycles", LATENCY); end
     if (r_avail) begin
       if (r_data !== mq[mr % QN][31:0]) begin
         err("r_data"); $display("  word %0d: %h, expected %h", mr, r_data, mq[mr % QN][31:0]);
@@ -106,6 +114,7 @@ module tb_packet_fifo;
       else begin mr = mr + 1; mn = mn - 1; end
     end
     if (mn > held_max) held_max = mn;
+    mc3 = mc2; mc2 = mc1; mc1 = mc;
   end
 
   // -- reader: whole packets, one word per cycle, with random long stalls ------
@@ -166,6 +175,7 @@ module tb_packet_fifo;
     end
     if (w_room !== 0) err("w_room still high with the room used up");
     if (w_used !== filled || r_used !== filled) begin err("used after filling"); $display("  %0d, %0d expected", w_used, filled); end
+    repeat (LATENCY) @(negedge clk);
     if (r_avail !== 1) err("r_avail low with a complete packet in");
 
     // break one unread word: the read path must not repair it
