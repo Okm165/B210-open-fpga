@@ -2,8 +2,8 @@
 #
 # b210.xdc - pins and clocks of fpga/rtl/b210.v (step 1), for nextpnr.
 #
-# Pin lines are the board's map as v1 used and measured it (v1 file
-# src/constraints/b210.xdc), only for the pins this top has. nextpnr does
+# Pin lines are the board's map as v1 used and measured it (file
+# src/constraints/b210.xdc at tag v1-ettus-uhd), only for the pins this top has. nextpnr does
 # not time the external interfaces; the FX3 bus timing is fixed by I/O-block
 # registers and the IFCLK phase measured on the board (fx3_pads.v, b210.v).
 #

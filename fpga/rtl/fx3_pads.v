@@ -24,9 +24,12 @@
 // lines to 0 while SLOE# is high (the FX3 does not drive then): the bus at
 // rest, as in the measured v1 design.
 //
-// Measured on this board (docs/STATUS.md, "Board interfaces"): with these
-// registers the bus works for an IFCLK lag of 37 to 94 MMCM steps; the
-// design uses 66.
+// Measured on this board: with these registers the 100 MHz bus moved data
+// intact for a forwarded-clock (IFCLK) lag of 37 to 94 MMCM steps of
+// 45 / 12 degrees (3.85 to 9.79 ns, a 5.9 ns window); the design uses 66,
+// 3.0 ns from either end. Measured by patching the lag into copies of one
+// routed bus-echo design and checking both directions bit for bit at each
+// (v1 measurement, docs/STATUS.md at tag v1-ettus-uhd).
 `default_nettype none
 
 module fx3_pads (

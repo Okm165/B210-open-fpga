@@ -19,8 +19,10 @@
 // through one MMCM, VCO 40 * 30 = 1200 MHz:
 //   bus_clk  1200 / 12   = 100 MHz   everything but the sample side
 //   ifclk    1200 / 12   = 100 MHz   forwarded to the FX3 as IFCLK, lagging
-//            bus_clk by IFCLK_STEPS * 45 / 12 degrees (66 steps: the centre
-//            of the window 37 .. 94 measured on this board, docs/STATUS.md)
+//            bus_clk by IFCLK_STEPS * 45 / 12 degrees (66 steps: inside the
+//            window 37 .. 94 steps = 3.85 .. 9.79 ns in which the bus moved
+//            data intact on this board, 3.0 ns from either end; v1
+//            measurement, docs/STATUS.md at tag v1-ettus-uhd)
 //   sclk     1200 / 19.5 = 61.54 MHz the step-1 sample clock (the VCO has no
 //            exact 61.44; 0.16 % faster than the AD9361's top rate)
 // A sample strobe every strobe_div + 1 sclk cycles (register 0x0F1).

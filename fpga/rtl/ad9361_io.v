@@ -20,12 +20,16 @@
 // Receive timing. The AD9361 launches a word tDDRX = 0 .. 1.5 ns (frame
 // tDDDV = 0 .. 1.0 ns) after a DATA_CLK edge (data sheet Rev. F, p. 6),
 // plus its rx data delay (0x006[3:0] = 0xF, UHD's b200_impl.cpp; 0.24 ns a
-// step measured on this board: 3.6 ns). Here the capture clock reaches the
-// IDDRs 2.25 ns after the pad (pad -> BUFG, v1 src/constraints/b210.xdc),
+// step measured on this board: 3.6 ns; v1 measurement, docs/STATUS.md at
+// tag v1-ettus-uhd). Here the capture clock reaches the
+// IDDRs 2.25 ns after the pad (pad -> BUFG, src/constraints/b210.xdc at tag v1-ettus-uhd),
 // and every rx pin passes an IDELAYE2 of RX_IDELAY_TAPS taps of 1 / (64 x
-// 200 MHz) = 78.125 ps (UG471 "IDELAYE2"; 20 taps = 1.56 ns, the value v1
-// measured to centre the eye: STATUS.md, 11 steps = 2.6 ns to the nearest
-// transition at 61.44 MHz). A word launched at edge k thus settles 3.6 +
+// 200 MHz) = 78.125 ps (UG471 "IDELAYE2"; 20 taps = 1.56 ns, the value
+// that centres the capture: with it, at 61.44 MHz, the nearest data
+// transition lay 11 AD9361 delay steps = 2.6 ns from UHD's operating point
+// 0x006 = 0x007 = 0x0F, by the AD9361's digital loopback run over all
+// 31 x 31 clock / data delays (v1 measurement, docs/STATUS.md at tag
+// v1-ettus-uhd)). A word launched at edge k thus settles 3.6 +
 // 1.5 + 1.56 - 2.25 = 4.4 ns after the capture clock's edge k at the
 // latest, and is taken by its next edge, T/2 = 8.14 ns later: the word
 // launched on the rising edge (I) by the falling edge, the one launched on
@@ -33,7 +37,10 @@
 // figure 2-6) gives both at that rising edge: Q2 = the falling-edge sample,
 // Q1 = the rising-edge one, so {Q2, Q1} = {I, Q} of one sample, exactly the
 // pairing v1 used and proved on the board (b200_io.v: Q2 -> i, Q1 -> q;
-// BIST PRBS bit exact, test tone SFDR 73 dB).
+// the AD9361's BIST PRBS arrived with zero errors on both channels in 8 of
+// 8 sessions of 2.1 M samples, and its receive test tone measured SFDR
+// 73.4 dB, SINAD 62.5 dB at 2 x 30.72 and 1 x 61.44 MS/s; v1 measurement,
+// docs/STATUS.md at tag v1-ettus-uhd).
 //
 // Sample times (on dclk, registered): per period the pair {I, Q} and its
 // frame bits fi (with I), fq (with Q).
@@ -60,7 +67,10 @@
 // is low; FB_CLK = ODDR(1, 0) leaves with them, a copy of DATA_CLK with the
 // data's phase. The AD9361 takes P1 on FB_CLK after its tx data delay
 // (0x007[3:0] = 0xF, UHD), setup tSTX >= 1 ns, hold tHTX >= 0 (data sheet);
-// v1 measured this arrangement with 14 steps (3.4 ns) of margin.
+// at 61.44 MHz the nearest data transition lay 14 AD9361 delay steps
+// (3.4 ns) from UHD's 0x007 = 0x0F, by the AD9361's digital loopback run
+// over all 31 x 31 clock / data delays (v1 measurement, docs/STATUS.md at
+// tag v1-ettus-uhd).
 //
 // Latency (dclk periods, both modes): rx, from the rising edge that
 // captures a sample time's last word (Q0 in 1R1T, Q1 in 2R2T) to the edge

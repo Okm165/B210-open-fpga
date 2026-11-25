@@ -23,9 +23,10 @@ just load                                  # b210 load build/fpga/usrp_v2.bin
 just check                                 # FPGA benches + cargo test + clippy
 ```
 
-`b210` needs the FX3 running Ettus's stock firmware and does not load it
-itself; after a power-up, `python3 scripts/fx3_raw_load.py <image> --drain 0` (pyusb)
-loads the firmware from `.tools/uhd315/images` and then the image.
+After a power-up the FX3 is in its ROM bootloader (04b4:00f3); `b210 load`
+then first loads Ettus's stock FX3 firmware from `.tools/uhd315/images`
+(`--firmware FILE.hex` for another path; the file must match the SHA-256
+`scripts/toolchain.sh` pins), waits for 2500:0020 and loads the image.
 
 `scripts/build.sh` takes `NAME`, `PARAMS` (`BUILD_COMMIT` defaults to HEAD),
 `SRCS`, `XDC`, `ALLOW_TIMING_FAIL`, `PNR_EXTRA`; see its header. The build
@@ -34,7 +35,7 @@ record `build/fpga/usrp_<NAME>.txt` holds the image hash, sources, tools and tim
 ## Command line
 
 ```sh
-b210 load <IMAGE>          # load an FPGA image and start the bus
+b210 load <IMAGE> [--firmware FILE.hex]  # FX3 firmware if needed, then the FPGA image; start the bus
 b210 state                 # FX3 firmware state (1 ready, 2 configuring, 4 running)
 b210 read <ADDR>           # read a register (hex 0x.. or decimal)
 b210 write <ADDR> <VALUE>  # write a register
