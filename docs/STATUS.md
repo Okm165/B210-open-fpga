@@ -49,6 +49,13 @@ x 30.72 MS/s (12-bit; with 16 bits that point is 491 MB/s, above the FX3's
 400 MB/s bus) on a quiet host. The FPGA is not the limit: what is lost is
 lost on the host side, at the same rate on the vendor image.
 
+Gate run `hw-gate-20261125T100342Z` (this image): every step up to
+throughput passed, the bus margin included (the bus works with its clock
+2.08 ns earlier and later). Throughput ended INCONCLUSIVE, which is not a
+pass: the host's CPU pressure stayed at 6 to 19 % (1 % counts as quiet), so
+none of the five 2 RX x 30.72 MS/s runs counted, although all five lost
+nothing.
+
 Measured at 2 RX x 30.72 MS/s (245 MB/s):
 
 - UHD's receive queue depth decides most of it. With 32 frames (2.1 ms of
@@ -61,8 +68,10 @@ Measured at 2 RX x 30.72 MS/s (245 MB/s):
 - Not the cause: deferred USB completion work (the USB CPU's softirq thread
   ran 1 to 5 ms per 10 s run), memory (no reclaim or compaction stall in any
   run), sample conversion (about 1 s of CPU per 10 s, float or 16-bit), USB
-  sharing (the board is alone on its root hub), and where the streaming
-  process runs (pinning it to the interrupt's CPU makes it worse).
+  sharing (the board is alone on its root hub), where the streaming
+  process runs (pinning it to the interrupt's CPU makes it worse), and CPU
+  frequency or idle states (governor `performance`, deepest idle state
+  18 us).
 
 ## Board indicators
 
