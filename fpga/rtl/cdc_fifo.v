@@ -9,8 +9,18 @@
 // Pointers of AW + 1 bits cross Gray-coded through two registers, as in
 // packet_fifo (Cummings, SNUG 2002): each side's copy of the other's
 // pointer lags the truth, so w_full and !r_valid are never wrong in the
-// unsafe direction. A word written is visible to the reader 3 to 4 reader
-// cycles later.
+// unsafe direction.
+//
+// Read side, registered: r_data and r_valid come from registers in rclk, so
+// the only paths that cross are memory -> q (one LUT RAM read, a few ns)
+// and the Gray pointers, never memory -> the reader's logic. q is loaded
+// every cycle from the entry that is the head after this cycle's take
+// (rp_n); r_valid for that entry is decided from the writer's pointer as
+// the reader saw it in the SAME cycle. That pointer shows an entry only
+// after the write's edge, a wclk-register and an rclk synchroniser stage,
+// so the entry has been in memory for at least one whole rclk period when
+// q samples it: q is stable whenever r_valid says so. A word written is
+// visible to the reader 4 to 5 reader cycles later.
 `default_nettype none
 
 module cdc_fifo #(
@@ -45,13 +55,21 @@ module cdc_fifo #(
     end
   end
 
-  assign r_valid = rp_g != wp_g2;
-  assign r_data  = mem[rp[AW-1:0]];
-  wire [AW:0] rp_n = rp + 1;
+  reg         valid_q = 0;
+  reg [W-1:0] q = 0;
+  assign r_valid = valid_q;
+  assign r_data  = q;
+  wire        take = r_take && valid_q;
+  wire [AW:0] rp_n = rp + take;                   // the head after this cycle
+  wire [AW:0] rp_ng = rp_n ^ (rp_n >> 1);
   always @(posedge rclk) begin
     wp_g1 <= wp_g; wp_g2 <= wp_g1;
-    if (r_rst) begin rp <= 0; rp_g <= 0; end
-    else if (r_take && r_valid) begin rp <= rp_n; rp_g <= rp_n ^ (rp_n >> 1); end
+    q <= mem[rp_n[AW-1:0]];
+    if (r_rst) begin rp <= 0; rp_g <= 0; valid_q <= 0; end
+    else begin
+      rp <= rp_n; rp_g <= rp_ng;
+      valid_q <= rp_ng != wp_g2;
+    end
   end
 endmodule
 

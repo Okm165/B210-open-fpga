@@ -84,7 +84,10 @@ module tb_cdc_fifo;
     repeat (5) @(posedge rclk);
     rst = 0;
     // reset mid-traffic: half full, write and read pointers both off zero
-    while (wn < N / 2) @(posedge rclk);
+    // freeze the reader only with its pointer off a multiple of the depth:
+    // a frozen reader at 0 mod depth leaves the writer stopping (full) at
+    // 0 mod depth too, and the pattern below could never occur
+    while (wn < N / 2 || rn % (1 << AW) == 0 || r_take) @(posedge rclk);
     hold = 1;
     while (!(wn - rn >= (1 << AW) / 2 && wn % (1 << AW) != 0 && rn % (1 << AW) != 0 && !r_take))
       @(posedge rclk);
