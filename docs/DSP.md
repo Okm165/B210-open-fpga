@@ -70,7 +70,7 @@ Every check below compares against something independent of the thing
 being checked, and each has a negative control: the same check, given a
 known fault, has to fail.
 
-### 1. Against the original, in simulation (`just test-golden`)
+### 1. Against the original, in simulation (`just test golden`)
 
 - `tests/tb_ddc_golden.v` and `tests/tb_duc_golden.v` run this repository's
   chain and the original Ettus RTL (`tests/ref/ettus_dsp`, module names
@@ -91,7 +91,7 @@ known fault, has to fail.
 - `tests/tb_tx_dc.v` and `tests/tb_rx_saturate.v` check the guard bit and
   the receive clip: rails instead of sign changes.
 
-### 2. The same after synthesis (`just test-postsyn`)
+### 2. The same after synthesis (`just test postsyn`)
 
 The board runs what Yosys makes of the RTL, not the RTL. Yosys 0.69 has a
 DSP packing fault (YosysHQ/yosys#6311): a product or sum register with a

@@ -15,11 +15,10 @@ its hash checked.
 ## Quick start
 
 ```sh
-just container    # Yosys + Project X-Ray tools in a container image          ~15 min
-just toolchain    # .tools/: place-and-route engine, chip database, UHD 3.15   ~10 min
-just udev         # once, as root: USB access to the board
-just build        # Verilog -> build/fpga/usrp_b200.bin + build record       1.5 h and up
-just gate         # hardware acceptance on the connected board                ~40 min
+just setup    # every tool from pinned sources: container, place and route, UHD   ~30 min
+just udev     # once, as root: USB access to the board
+just build    # Verilog -> build/fpga/usrp_b200.bin + build record               1.5 h and up
+just gate     # hardware acceptance on the connected board                        ~40 min
 ```
 
 `just` alone lists every command. The ones used day to day:
@@ -31,7 +30,7 @@ just gate         # hardware acceptance on the connected board                ~4
 | `just stream rx 0,1 30.72e6` | stream for 10 s and count every lost sample (`dir` rx, tx or rxtx; `otw` sc16, sc12, sc8) |
 | `just eye [img]` | AD9361 interface eye scan and the timing margin at UHD's operating point |
 | `just gate [img]` | the full acceptance (below) |
-| `just test` | every simulation bench in parallel (`just test-<name>` for one) |
+| `just test [names]` | the simulation benches in parallel, all or the named ones (`just test fifo io`) |
 | `just shell` | a shell in the tool container |
 
 `img` defaults to `build/fpga/usrp_b200.bin`.
@@ -114,7 +113,7 @@ justfile           every command
 | `scripts/sample_check.py` | tone, loopback and pseudo-random captures against fixed requirements |
 | `scripts/dsp_exact.py` | board captures against the RTL simulation, every sample |
 | `scripts/bus_window.py` | the FX3 bus timing window, by moving the forwarded clock in the bitstream |
-| `scripts/rx_dump.cpp` | the capture tool all of the above use (built by `just toolchain`) |
+| `scripts/rx_dump.cpp` | the capture tool all of the above use (built by `just setup`) |
 
 ## Settings
 

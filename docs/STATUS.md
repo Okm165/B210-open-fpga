@@ -71,6 +71,22 @@ runs pinned to the two CPUs the USB interrupt may use in 2 of 8, and runs
 pinned to the one CPU that takes it in 8 of 8 (the interrupt and the
 reader then compete for one core).
 
+Where the remaining loss comes from, measured on image `0479bb71` at
+2 RX x 30.72 MS/s (25 Nov):
+
+- Host queue depth (15 interleaved runs each): 32 frames (2.1 ms of data)
+  lost samples in 7 runs, 128 frames (8.5 ms) in 1, 512 frames (34 ms) in 1.
+  The host stalls the reader for 2 to 8 ms often, and a deeper queue absorbs
+  it; beyond 8.5 ms the rate no longer falls measurably.  The FPGA's own
+  buffering (about 0.6 ms between the radio and USB) is not what limits it.
+- Not the cause: the USB completion work (it runs inline on interrupt exit;
+  the CPU's softirq thread ran 1 to 5 ms per run), memory (no memory stall,
+  compaction or reclaim during any run, lossy or not), sample conversion
+  (about 1 s of CPU per 10 s stream, in float and in 16-bit alike), and USB
+  bandwidth sharing (the board is alone on its root hub).
+- One lost event costs about 22 ms of samples (1.3 M at 61.44 MS/s): the
+  stock design stops the stream at an overflow and UHD restarts it.
+
 ### Board indicators
 
 `src/top/b200_leds.v` (built after the image above, simulated in eleven
