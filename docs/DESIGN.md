@@ -153,11 +153,13 @@ examples/config.toml     every configuration key
    At 2.45 GHz one 0.5 ms broadband burst (Wi-Fi-like) reached -0.8 dBFS
    with no clipping and no overflow; it appeared on channel 0 only and not
    in a 5 s capture, so it is an external emitter, not the data path.
-   Open, weak: a symmetric pair at +-1.31 MHz, about 5 dB above the median
-   bin (-80 dBFS total, 35 dB under the noise); it does not move with the
-   LO (2.450/2.455/2.460), stays with tx off, and moves to 1.294 MHz at
-   15.36 MS/s - internal, origin not yet identified, level far below any
-   signal of interest.
+   The +/-1.31 MHz "pair" first reported as an internal spur was the
+   spectrum's own noise maxima: with 64 averaged segments the largest noise
+   bin sits 4-5 dB over the median (measured), and the plotter listed the
+   six strongest local maxima unconditionally. A peak is now a spur only at
+   floor + 10 dB (quality::SPUR_DB, with a gamma-noise test that also pins
+   the 6 dB case as noise); the 2.45 GHz captures then report none, while
+   the FM stations (about 40 dB over the floor) stay listed.
    BIST/PRBS/eye scan are still v1 measurements, not repeated on this image.
 3. Device API, configuration applied through config.rs, CLI rx / tx /
    record; a board check in just.

@@ -121,6 +121,12 @@ pub struct Report {
 }
 
 use crate::dsp::LOBE;
+/// A peak must stand this far above the estimated floor to be called a
+/// spur. With `segments` averaged, the largest of the noise's own bins sits
+/// about 4-5 dB over the median (measured on the board: wifi-like noise, no
+/// carrier, 4096 bins, 64 segments), so 10 dB is not noise.
+pub const SPUR_DB: f64 = 10.0;
+
 /// A tone must stand this far above the median bin to be analysed as one.
 const TONE_DB: f64 = 30.0;
 
@@ -184,7 +190,7 @@ pub fn analyze(s: &[i16], rate: f64, fft: usize) -> Option<Report> {
     let near = |a: usize, b: usize| { let d = a.abs_diff(b); d.min(n - d) <= LOBE };
     let peak = (0..n).filter(|&k| !near(k, dc)).max_by(|a, b| sp.power[*a].total_cmp(&sp.power[*b]))?;
     let has_tone = sp.power[peak] > median * 10f64.powf(TONE_DB / 10.0);
-    let (tone, spurs) = if has_tone { tone(&sp, peak) } else { (None, spurs_of(&sp, None)) };
+    let (tone, spurs) = if has_tone { tone(&sp, peak) } else { (None, spurs_of(&sp, None, floor_bin)) };
     Some(Report {
         frames: s.len() / 2, rate, level, balance, tone, spurs,
         floor_dbfs_bin: dsp::dbfs(floor_bin),
@@ -234,17 +240,18 @@ fn tone(sp: &Spectrum, k0: usize) -> (Option<Tone>, Vec<Spur>) {
         enob: (sinad - 1.76 - dbfs) / 6.02,
         image_dbc: 10.0 * (p_image / p_tone).log10(),
     };
-    let spurs = spurs_of(sp, Some((k0, f, p_tone)));
+    let spurs = spurs_of(sp, Some((k0, f, p_tone)), 0.0);
     (Some(t), spurs)
 }
 
 /// The strongest local maxima outside DC and the tone, classified.
-fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>) -> Vec<Spur> {
+fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, floor_bin: f64) -> Vec<Spur> {
     let n = sp.n();
     let near = |a: usize, b: usize, r: usize| { let d = a.abs_diff(b); d.min(n - d) <= r };
     let p = &sp.power;
+    let above = floor_bin * 10f64.powf(SPUR_DB / 10.0);
     let mut peaks: Vec<usize> = (0..n).filter(|&k| {
-        p[k] > p[(k + n - 1) % n] && p[k] >= p[(k + 1) % n]
+        p[k] > above && p[k] > p[(k + n - 1) % n] && p[k] >= p[(k + 1) % n]
             && !near(k, n / 2, LOBE) && tone.is_none_or(|(k0, _, _)| !near(k, k0, LOBE))
     }).collect();
     peaks.sort_by(|a, b| p[*b].total_cmp(&p[*a]));
@@ -356,6 +363,33 @@ mod tests {
         assert!((t.snr_db - want).abs() < 1.5, "snr {} want {want}", t.snr_db);
         assert!((t.enob - 12.0).abs() < 0.3, "enob {}", t.enob);
         assert!(r.balance.irr_db > 60.0 && r.level.clipped == 0.0);
+    }
+
+    #[test]
+    fn a_spur_must_clear_the_noise_by_the_stated_margin() {
+        // noise alone: exponential power (the distribution of one averaged
+        // segment), 4096 bins; its largest bin must not be called a spur
+        let n = 4096usize;
+        let mut seed = 7u64;
+        let mut u = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                         ((seed >> 11) as f64 + 0.5) / (1u64 << 53) as f64 };
+        // each bin is the mean of `segments` exponential draws: the gamma
+        // distribution the analyser's floor estimate assumes
+        let power: Vec<f64> = (0..n).map(|_| (0..64).map(|_| -u().ln()).sum::<f64>() / 64.0).collect();
+        let mut sp = dsp::Spectrum { power, rate: 1e6, segments: 64 };
+        let mut sorted = sp.power.clone();
+        sorted.sort_by(f64::total_cmp);
+        let median = sorted[n / 2];
+        let floor = median / (1.0f64 - 1.0 / (9.0 * 64.0)).powi(3);
+        assert!(spurs_of(&sp, None, floor).is_empty(), "noise's own maximum listed as a spur");
+        // a line 6 dB over the floor is inside the noise's spread: not a spur
+        sp.power[1000] = floor * 10f64.powf(6.0 / 10.0);
+        assert!(spurs_of(&sp, None, floor).is_empty());
+        // 12 dB over it is: one spur, at that bin
+        sp.power[1000] = floor * 10f64.powf(12.0 / 10.0);
+        let got = spurs_of(&sp, None, floor);
+        assert_eq!(got.len(), 1);
+        assert!((got[0].freq - sp.freq(1000)).abs() < 1.0);
     }
 
     #[test]

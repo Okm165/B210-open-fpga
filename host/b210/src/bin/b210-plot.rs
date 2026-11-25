@@ -240,6 +240,9 @@ fn report(x: &[i16], rate: f64, n: usize) -> Result<()> {
         let unit = if r.tone.is_some() { "dBc" } else { "dBFS/bin" };
         println!("  spur      {} {:7.1} {unit}  {:?}", mhz(s.freq), s.db, s.kind);
     }
+    if r.spurs.is_empty() {
+        println!("  spur      none above the floor + {:.0} dB", quality::SPUR_DB);
+    }
     println!("FINDINGS");
     for (k, f) in quality::findings(&r).iter().enumerate() {
         println!("  {}. {f}", k + 1);
