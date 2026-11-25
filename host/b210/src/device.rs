@@ -39,6 +39,14 @@ use std::time::{Duration, Instant};
 
 /// regs::RADIO bit 0: the AD9361 RESETB pin, 0 = held in reset.
 pub const RESETB: u32 = 1 << 0;
+/// regs::RADIO bit 1: the data port carries two channels, a sample time
+/// every two DATA_CLK periods. It must match the AD9361's data port, which
+/// this driver always sets to 2R2T (0x010 = 0xC8, a 50 % frame pulse), and
+/// may change only while no stream runs.
+pub const TWO_R2T: u32 = 1 << 1;
+/// The AD9361 out of reset with its data port as configured: the value
+/// every release from reset writes.
+pub const RUN: u32 = RESETB | TWO_R2T;
 
 /// The AD9361 product id register and the value this board reads and the
 /// driver's `mock::settled` rule answers: product 0x08 (bits 7:3),
@@ -240,7 +248,7 @@ pub fn reset<E: Exec>(ctrl: &mut E) -> usb::Result<u8> {
     let r = ctrl.exec(&[
         Op::Write { addr: regs::RADIO, data: 0 },
         Op::Wait { us: RESET_LOW_US },
-        Op::Write { addr: regs::RADIO, data: RESETB },
+        Op::Write { addr: regs::RADIO, data: RUN },
         Op::Wait { us: RESET_RECOVERY_US },
         Op::Spi { device: SPI_AD9361, word: ad9361::spi_read(PRODUCT_ID) },
     ])?;
@@ -278,6 +286,8 @@ pub struct Device<E: Exec = usb::Ctrl> {
     /// What `regs::BANDS` was last set to: the band-select switches for
     /// the LOs the chip runs.
     bands: u32,
+    /// What `regs::RADIO` was last set to.
+    radio: u32,
 }
 
 impl<E: Exec> Device<E> {
@@ -295,12 +305,35 @@ impl<E: Exec> Device<E> {
             Err((e, spi)) => return Err((e.into(), spi.into_ctrl())),
         };
         // the switches for the LOs init tuned (UHD sets them at open)
-        let mut d = Device { ad, config: None, bands: 0 };
+        let mut d = Device { ad, config: None, bands: 0, radio: RUN };
         let bands = regs::bands::rx(d.ad.lo(Dir::Rx)) | regs::bands::tx(d.ad.lo(Dir::Tx));
         match d.set_bands(bands) {
             Ok(()) => Ok(d),
             Err(e) => Err((e, d.into_ctrl())),
         }
+    }
+
+    /// The data port's mode from the channels a direction carries: two
+    /// channels alternate on one DATA_CLK (2R2T), one needs every period
+    /// (1R1T). The AD9361's own data port needs no write: 0x010 = 0xC8
+    /// serves both (UHD writes the same for 1R1T and 2R2T on this CMOS
+    /// part); the frame it toggles is what marks channel 0. Only while no
+    /// stream runs (PROTOCOL.md 6, radio bit 1).
+    fn set_data_port(&mut self, chains: config::Chains) -> Result<(), Error> {
+        // all chains off is the mute step of a plan, not a port mode: keep it
+        if chains.rx == 0 && chains.tx == 0 {
+            return Ok(());
+        }
+        let two = chains.rx.count_ones() > 1 || chains.tx.count_ones() > 1;
+        let radio = RESETB | if two { TWO_R2T } else { 0 };
+        if radio == self.radio {
+            return Ok(());
+        }
+        let spi = self.ad.bus();
+        spi.flush()?;
+        check_all(&spi.ctrl().exec(&[Op::Write { addr: regs::RADIO, data: radio }])?)?;
+        self.radio = radio;
+        Ok(())
     }
 
     /// Write the band-select switches (`regs::BANDS`), after the queue.
@@ -365,7 +398,10 @@ impl<E: Exec> Device<E> {
                 };
                 return self.set_bands(bands);
             }
-            Change::Chains(ch) => ad.set_channels(ch.rx, ch.tx),
+            Change::Chains(ch) => {
+                ad.set_channels(ch.rx, ch.tx)?;
+                return self.set_data_port(ch);
+            }
             // rx: gain index (dB); tx: 89.75 dB - attenuation, the driver's gain
             Change::Gain { direction, channel, db } => ad.set_gain(direction, channel, db).map(drop),
         }?)
@@ -596,7 +632,7 @@ mod tests {
         assert_eq!(f.packets[0], [
             Op::Write { addr: regs::RADIO, data: 0 },
             Op::Wait { us: RESET_LOW_US },
-            Op::Write { addr: regs::RADIO, data: RESETB },
+            Op::Write { addr: regs::RADIO, data: RUN },
             Op::Wait { us: RESET_RECOVERY_US },
             Op::Spi { device: 0, word: 0x00_3700 },
         ]);
@@ -612,7 +648,7 @@ mod tests {
         assert!(f.packets.len() > 1);
         // and from a configured device
         let d = Device::bring_up(Fpga::new(mock::settled)).unwrap();
-        assert_eq!(d.into_ctrl().radio, RESETB);
+        assert_eq!(d.into_ctrl().radio, RUN);
     }
 
     fn spi_writes(ops: &[Op], reg: u16) -> Vec<u8> {
@@ -651,10 +687,14 @@ mod tests {
         assert_eq!((spi_writes(&ops, 0x074).last(), spi_writes(&ops, 0x076).last()), (Some(&0), Some(&0)));
         // every chain on, FDD at the end
         assert_eq!((f.regs[0x002] & 0xC0, f.regs[0x003] & 0xC0, f.regs[0x014]), (0xC0, 0xC0, 0x21));
-        // nothing but SPI, WAIT, POLL and the band switches after the reset
-        // packet: the stream settings (format, spp) are no radio operation
+        // nothing but SPI, WAIT, POLL and the radio and band registers after
+        // the reset packet: the stream settings (format, spp) are no radio
+        // operation
         assert!(f.packets[1..].iter().flatten().all(|o| matches!(o,
-            Op::Spi { .. } | Op::Wait { .. } | Op::Poll { .. } | Op::Write { addr: regs::BANDS, .. })));
+            Op::Spi { .. } | Op::Wait { .. } | Op::Poll { .. }
+                | Op::Write { addr: regs::RADIO | regs::BANDS, .. })));
+        // two channels a direction: the data port alternates them
+        assert_eq!(f.radio, RUN);
     }
 
     #[test]
@@ -681,6 +721,30 @@ mod tests {
         assert_eq!(f.bands, RX_C | TX_A, "what the FPGA was told");
         let writes = f.ops().iter().filter(|o| matches!(o, Op::Write { addr: regs::BANDS, .. })).count();
         assert_eq!(writes, 1 + 2 + 2 + 1, "bring-up, then one per LO change");
+    }
+
+    #[test]
+    fn the_data_port_mode_follows_the_channel_count() {
+        let example = Config::parse(include_str!("../examples/config.toml")).unwrap();
+        let mut f = Fpga::new(mock::settled);
+        let mut d = Device::bring_up(&mut f).unwrap();
+        d.apply(&example).unwrap();
+        assert_eq!(d.radio, RUN, "2 + 2 channels: 2R2T, written with the reset");
+        // one channel a direction at 61.44 MS/s: every DATA_CLK is a sample
+        let mut one = example.clone();
+        one.rate_hz = 61.44e6;
+        for r in one.rx.iter_mut() { r.ch1 = None; }
+        for t in one.tx.iter_mut() { t.ch1 = None; }
+        d.apply(&one).unwrap();
+        assert_eq!(d.radio, RESETB, "1 + 1 channels: 1R1T");
+        // and back: 2R2T again, ids and version untouched
+        d.apply(&example).unwrap();
+        assert_eq!(d.radio, RUN);
+        drop(d);
+        assert_eq!(f.radio, RUN, "what the FPGA was told");
+        let writes: Vec<_> = f.ops().iter().filter_map(|o| match o {
+            Op::Write { addr: regs::RADIO, data } => Some(*data), _ => None }).collect();
+        assert_eq!(writes, [0, RUN, RESETB, RUN], "the reset (hold, release), 1R1T, 2R2T: unchanged settings are not rewritten");
     }
 
     #[test]

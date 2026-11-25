@@ -91,16 +91,10 @@ struct StreamArgs {
     /// 1 or 2
     #[arg(long, default_value_t = 2)]
     channels: u32,
-    /// a sample strobe every DIV + 1 cycles of the 61.54 MHz test clock
-    #[arg(long, default_value_t = 1)]
-    div: u32,
     /// host buffering per direction, ms of the 400 MB/s bus limit (1..100)
     #[arg(long, default_value_t = DEPTH_MS_DEFAULT)]
     depth_ms: f64,
 }
-
-/// The step-1 test sample clock: 1200 MHz / 19.5 (fpga/rtl/b210.v).
-const TEST_CLOCK: f64 = 1200e6 / 19.5;
 
 /// Seconds from reading the time to a burst's first tick: the tx thread has
 /// started and the first transfers are queued well before it.
@@ -109,10 +103,10 @@ const LEAD: f64 = 0.3;
 /// are checked too.
 const TAIL: f64 = 0.02;
 
-/// A stream's shape and its sample rate.
-fn shape(a: &StreamArgs) -> Result<(Shape, f64)> {
+/// A stream's shape.
+fn shape(a: &StreamArgs) -> Result<Shape> {
     let mask: u8 = match a.channels { 1 => 0b01, 2 => 0b11, _ => bail!("channels: 1 or 2") };
-    Ok((Shape { format: a.format, mask }, TEST_CLOCK / (a.div as f64 + 1.0)))
+    Ok(Shape { format: a.format, mask })
 }
 
 fn mbytes(s: Shape, rate: f64) -> f64 {
@@ -245,9 +239,10 @@ fn report_rx(c: &Check, seconds: f64) {
 // -- the tests ----------------------------------------------------------------------------------
 
 fn rx_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
-    let (s, rate) = shape(a)?;
+    let s = shape(a)?;
+    let before = regs::setup(&mut usb.ctrl, rx_source::PATTERN)?;
+    let rate = regs::sample_rate(&mut usb.ctrl)?;
     println!("rx-test {} x{}: {:.3} MS/s, {:.1} MB/s", a.format, a.channels, rate / 1e6, mbytes(s, rate));
-    let before = regs::setup(&mut usb.ctrl, rx_source::PATTERN, a.div)?;
     let pattern = |t: u64| std::array::from_fn(|k| rx_source::pattern(t, k));
     let begin = Instant::now();
     let mut check = Check::default();
@@ -276,9 +271,10 @@ fn burst_value(i: u64, k: usize) -> i16 {
 const BURST_COUNTERS: Counters = [0, 0, 0, 0, 1, 0, 0];
 
 fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
-    let (s, rate) = shape(a)?;
+    let s = shape(a)?;
+    let before = regs::setup(&mut usb.ctrl, rx_source::LOOPBACK)?;
+    let rate = regs::sample_rate(&mut usb.ctrl)?;
     println!("loop-test {} x{}: {:.3} MS/s, {:.1} MB/s each way", a.format, a.channels, rate / 1e6, mbytes(s, rate));
-    let before = regs::setup(&mut usb.ctrl, rx_source::LOOPBACK, a.div)?;
     let at = regs::now(&mut usb.ctrl)? + (LEAD * rate) as u64;
     let n = (a.seconds * rate) as u64;
     let end = at + n;
@@ -377,20 +373,22 @@ const WRITE_QUEUE: usize = 4096;
 fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     use b210::{iq, quality};
     use std::io::Write;
-    let (s, rate) = shape(a)?;
+    let s = shape(a)?;
     let nv = 2 * s.count();
     let paths: Vec<_> = (0..s.count()).map(|ch| iq::channel_path(&c.out, ch)).collect();
-    if c.source == "tone" && !(c.tone_hz.abs() < rate / 2.0 && c.tone_dbfs <= 0.0) {
-        bail!("--tone-hz within +-rate/2 ({:.0} Hz), --tone-dbfs <= 0", rate / 2.0);
-    }
     let src = match c.source.as_str() {
         "pattern" => rx_source::PATTERN,
         "tone" => rx_source::LOOPBACK,
-        x => bail!("--source pattern or tone, not {x}"),
+        "radio" => rx_source::RADIO,
+        x => bail!("--source pattern, tone or radio, not {x}"),
     };
+    let before = regs::setup(&mut usb.ctrl, src)?;
+    let rate = regs::sample_rate(&mut usb.ctrl)?;
+    if c.source == "tone" && !(c.tone_hz.abs() < rate / 2.0 && c.tone_dbfs <= 0.0) {
+        bail!("--tone-hz within +-rate/2 ({:.0} Hz), --tone-dbfs <= 0", rate / 2.0);
+    }
     println!("capture {} x{} from {}: {:.3} MS/s -> {}", a.format, a.channels, c.source, rate / 1e6,
              paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
-    let before = regs::setup(&mut usb.ctrl, src, a.div)?;
     let n = (a.seconds * rate) as u64;
     let tone = Tone::new(c.tone_hz, rate, c.tone_dbfs);
     if c.source == "tone" {
@@ -480,7 +478,10 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
         }
     }
     if !(counters_ok && check.clean()) { bail!("capture: the stream was not clean (see above)"); }
-    println!("every sample time checked against what the source must carry; analyse with: b210-plot {}",
-             paths[0].display());
+    println!("{}; analyse with: b210-plot {}", if check.check_values {
+        "every sample time checked against what the source must carry"
+    } else {
+        "every header and the timing checked; the samples are the radio's"
+    }, paths[0].display());
     Ok(())
 }

@@ -181,6 +181,8 @@ pub enum Error {
     Status { opcode: u8, addr: u16, status: Status },
     #[error("no result for command {0} within {1:?}")]
     Timeout(u16, Duration),
+    #[error("no sample clock: the AD9361 is not running (`b210-radio apply CONFIG`)")]
+    NoSampleClock,
     #[error(
         "USB buffering needs {need_bytes} bytes ({need_mb} MiB), more than {file} = {have_mb} MB; \
          raise the limit with `sudo modprobe usbcore usbfs_memory_mb={need_mb}` \

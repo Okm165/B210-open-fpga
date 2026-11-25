@@ -40,7 +40,6 @@ pub const TX_HWM: u16 = 0x08B;
 pub const RX_RING_WORDS: u32 = 1 << 17;
 pub const TX_RING_WORDS: u32 = 1 << 16;
 pub const RX_SOURCE: u16 = 0x0F0;
-pub const STROBE_DIV: u16 = 0x0F1;
 
 /// `id`: "B210".
 pub const ID_VALUE: u32 = 0x4232_3130;
@@ -110,7 +109,7 @@ pub mod rx_source {
 
 // -- typed reads ------------------------------------------------------------------
 
-use crate::usb::{Ctrl, Result};
+use crate::usb::{Ctrl, Error, Result};
 
 /// The event counters by code 1 .. 6 (index code - 1), then rx_cdc_lost.
 pub type Counters = [u32; 7];
@@ -127,13 +126,22 @@ pub fn counters(ctrl: &mut Ctrl) -> Result<Counters> {
     Ok(std::array::from_fn(|i| r[i]))
 }
 
+/// The sample rate the sample domain sees, from the bus side's count of
+/// data-clock edges (0x005, kS/s). A stopped sample clock is an error: the
+/// AD9361 must be running before any stream.
+pub fn sample_rate(ctrl: &mut Ctrl) -> Result<f64> {
+    let ksps = ctrl.read(SAMPLE_RATE)?;
+    if ksps == 0 {
+        return Err(Error::NoSampleClock);
+    }
+    Ok(ksps as f64 * 1e3)
+}
+
 /// Prepare a test stream: rx stopped, `source` (an `rx_source` value) on
-/// it, a sample strobe every `div` + 1 test-clock cycles; the counters
-/// before it.
-pub fn setup(ctrl: &mut Ctrl, source: u32, div: u32) -> Result<Counters> {
+/// it; the counters before it.
+pub fn setup(ctrl: &mut Ctrl, source: u32) -> Result<Counters> {
     ctrl.write(RX_CTRL, rx::STOP)?;
     ctrl.write(RX_SOURCE, source)?;
-    ctrl.write(STROBE_DIV, div)?;
     counters(ctrl)
 }
 
