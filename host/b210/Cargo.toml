@@ -11,5 +11,7 @@ clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 nusb = "0.2"
 serde = { version = "1", features = ["derive"] }
+# SHA-256 of the FX3 firmware against the pin in scripts/toolchain.sh (usb.rs sha256_hex)
+sha2 = "0.10"
 thiserror = "2"
 toml = "1"

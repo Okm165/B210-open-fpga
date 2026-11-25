@@ -239,11 +239,14 @@ pub enum Op {
     Spi { device: u8, word: u32 },
     /// Wait `us` microseconds.
     Wait { us: u32 },
-    /// Repeat the previous Read or Spi until `(result & mask) == value`, for
-    /// at most `ms` milliseconds.
+    /// Repeat the last Read or Spi the FPGA executed (in this packet or an
+    /// earlier one) until `(result[15:0] & mask) == value`, for at most `ms`
+    /// milliseconds (0: one try).
     Poll { mask: u16, value: u16, ms: u8 },
-    /// Hold the following operations until time `time` (32 bits are sent; the
-    /// FPGA resolves them with `resolve_time`).
+    /// Opcode 6 AT: reserved, not implemented by the FPGA (fpga/rtl/command.v
+    /// answers it as an unknown opcode, status 3, and skips the rest of the
+    /// packet). Meant to hold the following operations until `time` (32 bits
+    /// sent, resolved as `resolve_time` does).
     At { time: u64 },
 }
 
@@ -293,6 +296,7 @@ pub fn command(sequence: u16, ops: &[Op]) -> Result<Vec<u8>, Error> {
 pub enum Status {
     Ok,
     Timeout,
+    /// Status 2: reserved for AT, not implemented; the FPGA never sends it.
     Late,
     UnknownOp,
     Other(u8),
@@ -374,8 +378,9 @@ pub fn events(payload: &[u8]) -> Vec<Event> {
         .collect()
 }
 
-/// The time an At operation means: the t with t mod 2^32 = `bits` and
-/// t - now in [-2^31, 2^31). The FPGA computes the same.
+/// The time an At operation would mean: the t with t mod 2^32 = `bits` and
+/// t - now in [-2^31, 2^31). The FPGA implements no AT (PROTOCOL.md 4:
+/// reserved, not implemented).
 pub fn resolve_time(now: u64, bits: u32) -> u64 {
     now.wrapping_add(bits.wrapping_sub(now as u32) as i32 as i64 as u64)
 }

@@ -11,6 +11,9 @@
 //! calling thread; it then blocks on a channel until the reader delivers the
 //! result, so there is no polling anywhere on the result path.
 //!
+//! Before any of that, [`load_firmware`] brings the FX3 from its ROM
+//! bootloader to Ettus's stock firmware (section "FX3 boot" below).
+//!
 //! FPGA load, the sequence of the firmware's vendor requests
 //! (b200_main.c, b200_const.h):
 //!   0x55 FPGA_CONFIG, wait for state 1 (ready for an image)
@@ -24,6 +27,7 @@ use nusb::transfer::{Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Out, 
 use nusb::{Endpoint, MaybeFuture};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, Once};
@@ -58,9 +62,11 @@ const _: () = assert!(proto::CONTROL_BUFFER.is_multiple_of(MAX_PACKET));
 pub const BUS_BYTES_PER_SEC: f64 = 400e6;
 
 /// Host buffering per direction, in milliseconds of `BUS_BYTES_PER_SEC`.
-/// 8 ms is the knee docs/STATUS.md measured on this board: 2.1 ms of
-/// receive buffers lost samples in 7 of 15 runs, 8.5 ms in 1 of 15, and
-/// 34 ms did no better. 1 ms is below one scheduler slice and would hold
+/// 8 ms is the knee measured on this board streaming 2 RX x 30.72 MS/s
+/// (245 MB/s) through UHD with receive queues of 16 360-byte frames: 32
+/// frames (2.1 ms) lost samples in 7 of 15 runs, 128 (8.5 ms) in 1 of 15,
+/// and 512 (34 ms) did no better (v1 measurement, docs/STATUS.md at tag
+/// v1-ettus-uhd). 1 ms is below one scheduler slice and would hold
 /// fewer than 25 transfers; 100 ms caps the plan (80 MB for both
 /// directions) so the usbfs message stays actionable.
 pub const DEPTH_MS_DEFAULT: f64 = 8.0;
@@ -100,8 +106,9 @@ const EVENT_QUEUE: usize = 64;
 /// SCHED_FIFO priority of the reader thread. Linux real-time priorities run
 /// 1 .. 99; 50 is above every ordinary (SCHED_OTHER) thread while leaving the
 /// upper half for kernel threads that must preempt it. The reader is not
-/// pinned to a CPU: docs/STATUS.md measured that pinning a streaming thread
-/// to the interrupt's CPU makes loss worse.
+/// pinned to a CPU: pinning the streaming process to the USB interrupt's CPU
+/// made loss worse at 2 RX x 30.72 MS/s on this board (v1 measurement,
+/// docs/STATUS.md at tag v1-ettus-uhd).
 const RT_PRIORITY: i32 = 50;
 
 /// `usbfs_memory_mb` is counted in 2^20-byte MiB (drivers/usb/core/devio.c);
@@ -113,6 +120,18 @@ const MIB: u64 = 1 << 20;
 pub enum Error {
     #[error("no B210 ({VID:04x}:{PID:04x}) on USB")]
     NotFound,
+    #[error("the FX3 is in its ROM bootloader; `b210 load IMAGE` loads its firmware first")]
+    Bootloader,
+    #[error("no FX3 bootloader ({BOOT_VID:04x}:{BOOT_PID:04x}) on USB")]
+    NoBootloader,
+    #[error("firmware {}: {source}", path.display())]
+    FirmwareFile { path: std::path::PathBuf, source: std::io::Error },
+    #[error("firmware {}: SHA-256 {got}, expected {FIRMWARE_SHA256} (scripts/toolchain.sh uhd)", path.display())]
+    FirmwareHash { path: std::path::PathBuf, got: String },
+    #[error("firmware HEX: {0}")]
+    Hex(#[from] HexError),
+    #[error("the firmware did not enumerate as {VID:04x}:{PID:04x} within {0:?}")]
+    FirmwareTimeout(Duration),
     #[error("USB: {0}")]
     Usb(#[from] nusb::Error),
     #[error("USB transfer: {0}")]
@@ -226,6 +245,9 @@ impl Usb {
             .wait()?
             .find(|d| d.vendor_id() == VID && d.product_id() == PID)
             .ok_or(Error::NotFound)?;
+        if !firmware_running(&info) {
+            return Err(Error::Bootloader);
+        }
         let device = info.open().wait()?;
         check_usbfs(plan)?;
         let ep = |n: u8| device.detach_and_claim_interface(n).wait();
@@ -728,6 +750,294 @@ fn set_realtime_priority() {
 #[cfg(not(target_os = "linux"))]
 fn set_realtime_priority() {}
 
+// -- FX3 boot: the stock firmware from the ROM bootloader -----------------------------------
+//
+// After power-up the FX3 runs its ROM bootloader. With no boot record in
+// the board's EEPROM it enumerates with Cypress's IDs 04b4:00f3; with one it
+// enumerates as 2500:0020 and only its manufacturer string tells it apart
+// from the firmware (UHD, transport/libusb1_base.cpp `firmware_loaded`:
+// "Ettus Research LLC", "National Instruments Corp." or "Free Software
+// Folks" means the firmware runs). Both are treated as the bootloader.
+//
+// The download is the ROM's vendor request 0xA0 (UHD b200_iface.cpp
+// FX3_FIRMWARE_LOAD, its Intel HEX reader lib/utils/ihex.cpp): host to
+// device, wValue = address bits 15..0, wIndex = address bits 31..16, the data
+// written to RAM at that address. A request with no data is the jump: the
+// ROM starts the code at that address, which is the HEX file's start linear
+// address (record 05). The firmware then re-enumerates as 2500:0020.
+//
+// UHD sends one request per HEX record (at most 255 bytes). This loader
+// joins contiguous records and sends at most 4 KiB per request, the ROM's
+// control buffer, on 4-byte-aligned addresses: the same bytes at the same
+// addresses in fewer requests.
+
+/// The FX3 ROM bootloader's own IDs (Cypress).
+pub const BOOT_VID: u16 = 0x04b4;
+pub const BOOT_PID: u16 = 0x00f3;
+const VREQ_FX3_BOOT: u8 = 0xA0;
+/// Largest 0xA0 write: the ROM bootloader's 4 KiB control buffer.
+pub const BOOT_CHUNK: usize = 4096;
+/// The manufacturer strings of a running firmware (UHD `firmware_loaded`).
+const FIRMWARE_MANUFACTURERS: [&str; 3] = ["Ettus Research LLC", "National Instruments Corp.", "Free Software Folks"];
+
+/// Where `scripts/toolchain.sh uhd` puts Ettus's stock FX3 firmware.
+pub const FIRMWARE_DEFAULT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.tools/uhd315/images/usrp_b200_fw.hex");
+/// SHA-256 of that file, the value scripts/toolchain.sh asserts when it
+/// extracts it from Ettus's UHD 4.9.0.1 archive. The FX3 executes whatever
+/// it is given, so a file that is not this one is never downloaded.
+pub const FIRMWARE_SHA256: &str = "cc8e4bc968d91d1a67c63871ce5b2c1613c49676fe363bf2f6e336059899ae5c";
+
+/// One 0xA0 write moves at most 4 KiB; the bootloader runs at USB 2 high
+/// speed (64-byte control packets, 64 of them at 480 Mb/s, well under a
+/// millisecond). 1 s is 1000x that and only bounds a ROM that stopped
+/// answering.
+const BOOT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// From the jump to a usable 2500:0020. UHD allows 1 s for the firmware to
+/// settle (b200_iface.cpp `load_firmware`) and then 3 s to find the
+/// re-enumerated device (b200_impl.cpp REENUMERATION_TIMEOUT_MS): 4 s. 10 s
+/// is 2.5x UHD's budget, slack for udev applying the device's permissions.
+pub const FIRMWARE_BOOT_WAIT: Duration = Duration::from_secs(10);
+/// 1/10 of UHD's 1 s settle time: at most 100 sysfs enumerations in
+/// [`FIRMWARE_BOOT_WAIT`], and the device is used within 100 ms of being ready.
+const FIRMWARE_POLL: Duration = Duration::from_millis(100);
+
+/// What is on the bus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Board {
+    /// 2500:0020 with the stock firmware running.
+    Running,
+    /// The FX3 ROM bootloader, waiting for firmware.
+    Bootloader,
+    Absent,
+}
+
+fn firmware_running(d: &nusb::DeviceInfo) -> bool {
+    d.vendor_id() == VID
+        && d.product_id() == PID
+        && d.manufacturer_string().is_some_and(|m| FIRMWARE_MANUFACTURERS.contains(&m))
+}
+
+fn in_bootloader(d: &nusb::DeviceInfo) -> bool {
+    (d.vendor_id() == BOOT_VID && d.product_id() == BOOT_PID)
+        || (d.vendor_id() == VID && d.product_id() == PID && !firmware_running(d))
+}
+
+/// The board's state on USB; a running firmware wins over a bootloader.
+pub fn board() -> Result<Board> {
+    let mut found = Board::Absent;
+    for d in nusb::list_devices().wait()? {
+        if firmware_running(&d) {
+            return Ok(Board::Running);
+        }
+        if in_bootloader(&d) {
+            found = Board::Bootloader;
+        }
+    }
+    Ok(found)
+}
+
+/// A firmware image ready for the bootloader: the writes in order, then the
+/// jump to `entry`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FirmwareImage {
+    /// (address, bytes): each at most [`BOOT_CHUNK`] bytes, each address a
+    /// multiple of 4.
+    pub chunks: Vec<(u32, Vec<u8>)>,
+    pub entry: u32,
+}
+
+impl FirmwareImage {
+    pub fn bytes(&self) -> usize {
+        self.chunks.iter().map(|(_, d)| d.len()).sum()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum HexError {
+    #[error("line {line}: {what}")]
+    Line { line: usize, what: String },
+    #[error("no end-of-file record")]
+    NoEof,
+    #[error("no start linear address record (05): nowhere to jump")]
+    NoEntry,
+}
+
+/// Parse Intel HEX as the FX3 bootloader needs it. Records: 00 data, 01 end
+/// of file, 04 extended linear address (bits 31..16 for the data records
+/// that follow), 05 start linear address (the entry point). Every record's
+/// checksum is verified (all bytes, checksum included, sum to 0 mod 256);
+/// any other record type, malformed line, empty data record (a zero-length
+/// 0xA0 would be a jump), text after the end-of-file record or data
+/// beyond 4 GiB is an error. Contiguous data is joined and split into
+/// [`BOOT_CHUNK`]-byte writes; each run of contiguous data must start on a
+/// 4-byte boundary, so every write does.
+pub fn parse_hex(text: &str) -> std::result::Result<FirmwareImage, HexError> {
+    let mut upper: u32 = 0;
+    let mut runs: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut entry = None;
+    let mut eof = false;
+    for (i, raw) in text.lines().enumerate() {
+        let line = i + 1;
+        let err = |what: String| HexError::Line { line, what };
+        let record = raw.trim();
+        if record.is_empty() {
+            continue;
+        }
+        if eof {
+            return Err(err("text after the end-of-file record".into()));
+        }
+        let hex = record.strip_prefix(':').ok_or_else(|| err("does not start with ':'".into()))?;
+        if !hex.is_ascii() || hex.len() % 2 != 0 || hex.len() < 10 {
+            return Err(err("not a record (odd length, too short or not ASCII)".into()));
+        }
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|k| u8::from_str_radix(&hex[k..k + 2], 16))
+            .collect::<std::result::Result<Vec<u8>, _>>()
+            .map_err(|_| err("not hexadecimal".into()))?;
+        let count = bytes[0] as usize;
+        if bytes.len() != count + 5 {
+            return Err(err(format!("length field says {count} data bytes, the record holds {}", bytes.len() - 5)));
+        }
+        if bytes.iter().fold(0u8, |s, &b| s.wrapping_add(b)) != 0 {
+            return Err(err("checksum mismatch".into()));
+        }
+        let addr = u16::from_be_bytes([bytes[1], bytes[2]]);
+        let data = &bytes[4..4 + count];
+        match bytes[3] {
+            0x00 => {
+                if count == 0 {
+                    return Err(err("empty data record".into()));
+                }
+                let at = upper | addr as u32;
+                if at as u64 + count as u64 > 1 << 32 {
+                    return Err(err(format!("data at {at:#010x} runs past 4 GiB")));
+                }
+                match runs.last_mut() {
+                    Some((start, run)) if *start as u64 + run.len() as u64 == at as u64 => run.extend_from_slice(data),
+                    _ => {
+                        if !at.is_multiple_of(4) {
+                            return Err(err(format!("data at {at:#010x} is not 4-byte aligned")));
+                        }
+                        runs.push((at, data.to_vec()));
+                    }
+                }
+            }
+            0x01 => {
+                if addr != 0 || count != 0 {
+                    return Err(err("end-of-file record with address or data".into()));
+                }
+                eof = true;
+            }
+            0x04 => {
+                if addr != 0 || count != 2 {
+                    return Err(err("extended linear address record must have address 0 and 2 bytes".into()));
+                }
+                upper = (u16::from_be_bytes([data[0], data[1]]) as u32) << 16;
+            }
+            0x05 => {
+                if addr != 0 || count != 4 {
+                    return Err(err("start linear address record must have address 0 and 4 bytes".into()));
+                }
+                if entry.is_some() {
+                    return Err(err("second start linear address record".into()));
+                }
+                entry = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]));
+            }
+            kind => return Err(err(format!("unsupported record type {kind:02x}"))),
+        }
+    }
+    if !eof {
+        return Err(HexError::NoEof);
+    }
+    let entry = entry.ok_or(HexError::NoEntry)?;
+    let chunks = runs
+        .iter()
+        .flat_map(|(start, run)| {
+            run.chunks(BOOT_CHUNK)
+                .enumerate()
+                .map(move |(k, c)| (start + (k * BOOT_CHUNK) as u32, c.to_vec()))
+        })
+        .collect();
+    Ok(FirmwareImage { chunks, entry })
+}
+
+/// Lowercase hex SHA-256. The `sha2` crate is a dependency for this alone:
+/// nothing else in the dependency tree computes SHA-256, the pin in
+/// toolchain.sh is a SHA-256 (so a weaker or different hash cannot check
+/// it), and a hand-written SHA-256 would be unreviewed crypto code.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Read the firmware file, check it is the pinned one and parse it.
+pub fn read_firmware(hex: &Path) -> Result<FirmwareImage> {
+    let path = hex.to_path_buf();
+    let bytes = std::fs::read(hex).map_err(|source| Error::FirmwareFile { path: path.clone(), source })?;
+    let got = sha256_hex(&bytes);
+    if got != FIRMWARE_SHA256 {
+        return Err(Error::FirmwareHash { path, got });
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| HexError::Line { line: 0, what: "not text".into() })?;
+    Ok(parse_hex(text)?)
+}
+
+fn boot_write(device: &nusb::Device, addr: u32, data: &[u8]) -> Result<()> {
+    let c = ControlOut {
+        control_type: ControlType::Vendor,
+        recipient: Recipient::Device,
+        request: VREQ_FX3_BOOT,
+        value: addr as u16,
+        index: (addr >> 16) as u16,
+        data,
+    };
+    Ok(device.control_out(c, BOOT_WRITE_TIMEOUT).wait()?)
+}
+
+/// Write `image` into the bootloader's RAM and jump to it. Returns once the
+/// jump is sent; the firmware is not up yet (see [`wait_firmware`]).
+pub fn download_firmware(image: &FirmwareImage) -> Result<()> {
+    let info = nusb::list_devices().wait()?.find(in_bootloader).ok_or(Error::NoBootloader)?;
+    let device = info.open().wait()?;
+    for (addr, data) in &image.chunks {
+        boot_write(&device, *addr, data)?;
+    }
+    // The ROM leaves the bus as it jumps, so the status stage may fail;
+    // UHD ignores this request's result too. Success shows as the firmware
+    // enumerating.
+    let _ = boot_write(&device, image.entry, &[]);
+    Ok(())
+}
+
+/// Poll every [`FIRMWARE_POLL`] until 2500:0020 with the firmware is listed
+/// and can be opened (udev may apply its permissions a little after the
+/// device appears), for at most `limit`.
+pub fn wait_firmware(limit: Duration) -> Result<()> {
+    let start = Instant::now();
+    loop {
+        if let Some(info) = nusb::list_devices().wait()?.find(firmware_running)
+            && info.open().wait().is_ok()
+        {
+            return Ok(());
+        }
+        if start.elapsed() >= limit {
+            return Err(Error::FirmwareTimeout(limit));
+        }
+        thread::sleep(FIRMWARE_POLL);
+    }
+}
+
+/// Bring the FX3 from its ROM bootloader to the stock firmware: verify and
+/// parse `hex`, download it, start it and wait up to
+/// [`FIRMWARE_BOOT_WAIT`] for 2500:0020.
+pub fn load_firmware(hex: &Path) -> Result<()> {
+    let image = read_firmware(hex)?;
+    download_firmware(&image)?;
+    wait_firmware(FIRMWARE_BOOT_WAIT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,5 +1268,156 @@ mod tests {
         }
         // The transfer size stays a whole number of max packets.
         assert_eq!(proto::DATA_BUFFER % MAX_PACKET, 0);
+    }
+
+    // -- Intel HEX ------------------------------------------------------------------------
+
+    /// One record with its checksum (two's complement of the byte sum).
+    fn rec(kind: u8, addr: u16, data: &[u8]) -> String {
+        let mut bytes = vec![data.len() as u8, (addr >> 8) as u8, addr as u8, kind];
+        bytes.extend_from_slice(data);
+        let sum = bytes.iter().fold(0u8, |s, &b| s.wrapping_add(b));
+        bytes.push(sum.wrapping_neg());
+        format!(":{}", bytes.iter().map(|b| format!("{b:02X}")).collect::<String>())
+    }
+
+    const EOF: &str = ":00000001FF";
+    /// The stock firmware's own start record: entry 0x40019DEC.
+    const START: &str = ":0400000540019DEC2D";
+
+    fn line_err(line: usize, what: &str) -> HexError {
+        HexError::Line { line, what: what.into() }
+    }
+
+    #[test]
+    fn hex_record_helper_matches_known_records() {
+        assert_eq!(rec(0x01, 0, &[]), EOF);
+        assert_eq!(rec(0x05, 0, &[0x40, 0x01, 0x9D, 0xEC]), START);
+        assert_eq!(rec(0x00, 0x0010, &[1, 2, 3, 4]), ":0400100001020304E2");
+    }
+
+    #[test]
+    fn hex_valid_file() {
+        // Two contiguous records join into one write; CRLF and blank lines pass.
+        let text = format!(":0400100001020304E2\r\n:0400140005060708CE\r\n\r\n{START}\r\n{EOF}\r\n");
+        assert_eq!(
+            parse_hex(&text),
+            Ok(FirmwareImage { chunks: vec![(0x10, vec![1, 2, 3, 4, 5, 6, 7, 8])], entry: 0x4001_9DEC })
+        );
+    }
+
+    #[test]
+    fn hex_bad_checksum() {
+        let text = format!(":0400100001020304E2\n:0400140005060708CF\n{START}\n{EOF}\n");
+        assert_eq!(parse_hex(&text), Err(line_err(2, "checksum mismatch")));
+    }
+
+    #[test]
+    fn hex_unknown_record_types() {
+        // 02 extended segment address and 03 start segment address are x86
+        // real-mode records; the FX3 file has neither.
+        for kind in [0x02, 0x03, 0x06, 0xFF] {
+            let data: &[u8] = if kind == 0x03 { &[0, 0, 0, 0] } else { &[0, 0] };
+            let text = format!("{}\n{START}\n{EOF}\n", rec(kind, 0, data));
+            assert_eq!(parse_hex(&text), Err(line_err(1, &format!("unsupported record type {kind:02x}"))));
+        }
+    }
+
+    #[test]
+    fn hex_extended_addresses() {
+        // Contiguous across a 64 KiB boundary set by two 04 records: one write.
+        // A later run elsewhere: a second write.
+        let a: Vec<u8> = (0..16).collect();
+        let b: Vec<u8> = (16..32).collect();
+        let c: Vec<u8> = vec![0xAA; 8];
+        let text = [
+            rec(0x04, 0, &[0x40, 0x00]),
+            rec(0x00, 0xFFF0, &a),
+            rec(0x04, 0, &[0x40, 0x01]),
+            rec(0x00, 0x0000, &b),
+            rec(0x04, 0, &[0x10, 0x00]),
+            rec(0x00, 0x0100, &c),
+            START.into(),
+            EOF.into(),
+        ]
+        .join("\n");
+        let ab: Vec<u8> = (0..32).collect();
+        assert_eq!(
+            parse_hex(&text),
+            Ok(FirmwareImage { chunks: vec![(0x4000_FFF0, ab), (0x1000_0100, c)], entry: 0x4001_9DEC })
+        );
+    }
+
+    #[test]
+    fn hex_data_split_across_chunks() {
+        // 300 records of 16 bytes = 4800 contiguous bytes at 0x40000000:
+        // 4096 bytes at 0x40000000, then 704 at 0x40001000.
+        let all: Vec<u8> = (0..4800u32).map(|i| (i * 7 + i / 256) as u8).collect();
+        let mut lines = vec![rec(0x04, 0, &[0x40, 0x00])];
+        for (k, piece) in all.chunks(16).enumerate() {
+            lines.push(rec(0x00, (k * 16) as u16, piece));
+        }
+        lines.push(START.into());
+        lines.push(EOF.into());
+        let image = parse_hex(&lines.join("\n")).unwrap();
+        assert_eq!(
+            image,
+            FirmwareImage {
+                chunks: vec![(0x4000_0000, all[..4096].to_vec()), (0x4000_1000, all[4096..].to_vec())],
+                entry: 0x4001_9DEC,
+            }
+        );
+        assert_eq!(image.bytes(), 4800);
+    }
+
+    #[test]
+    fn hex_rejects_malformed_files() {
+        let d = rec(0x00, 0x0010, &[1, 2, 3, 4]);
+        let cases: Vec<(String, HexError)> = vec![
+            (format!("{d}\n{START}\n"), HexError::NoEof),
+            (format!("{d}\n{EOF}\n"), HexError::NoEntry),
+            (format!("{d}\n{START}\n{EOF}\n{d}\n"), line_err(4, "text after the end-of-file record")),
+            (format!("0400100001020304E2\n{START}\n{EOF}\n"), line_err(1, "does not start with ':'")),
+            (format!(":0400100001020304E\n{START}\n{EOF}\n"), line_err(1, "not a record (odd length, too short or not ASCII)")),
+            (format!(":04001000010203G4E2\n{START}\n{EOF}\n"), line_err(1, "not hexadecimal")),
+            (format!(":05001000010203041D\n{START}\n{EOF}\n"), line_err(1, "length field says 5 data bytes, the record holds 4")),
+            (format!("{}\n{START}\n{EOF}\n", rec(0x00, 0x0010, &[])), line_err(1, "empty data record")),
+            (format!("{}\n{START}\n{EOF}\n", rec(0x00, 0x0012, &[1, 2])), line_err(1, "data at 0x00000012 is not 4-byte aligned")),
+            (
+                format!("{}\n{}\n{START}\n{EOF}\n", rec(0x04, 0, &[0xFF, 0xFF]), rec(0x00, 0xFFFC, &[0; 8])),
+                line_err(2, "data at 0xfffffffc runs past 4 GiB"),
+            ),
+            (format!("{d}\n{START}\n{START}\n{EOF}\n"), line_err(3, "second start linear address record")),
+            (format!("{}\n{START}\n{EOF}\n", rec(0x04, 0, &[0x40])), line_err(1, "extended linear address record must have address 0 and 2 bytes")),
+            (format!("{d}\n{START}\n{}\n", rec(0x01, 1, &[])), line_err(3, "end-of-file record with address or data")),
+        ];
+        for (text, want) in cases {
+            assert_eq!(parse_hex(&text), Err(want), "{text}");
+        }
+    }
+
+    /// The real firmware, where `scripts/toolchain.sh uhd` has put it: the
+    /// pinned hash matches and the image parses into valid writes.
+    #[test]
+    fn stock_firmware_parses() {
+        let path = Path::new(FIRMWARE_DEFAULT);
+        if !path.exists() {
+            eprintln!("skipped: {FIRMWARE_DEFAULT} not present");
+            return;
+        }
+        let image = read_firmware(path).unwrap();
+        assert_eq!(image.entry, 0x4001_9DEC);
+        assert!(image.chunks.iter().all(|(a, d)| a.is_multiple_of(4) && !d.is_empty() && d.len() <= BOOT_CHUNK));
+    }
+
+    #[test]
+    fn firmware_hash_is_checked() {
+        let dir = std::env::temp_dir().join(format!("b210-fw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("fw.hex");
+        std::fs::write(&file, format!("{START}\n{EOF}\n")).unwrap();
+        let r = read_firmware(&file);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(r, Err(Error::FirmwareHash { .. })), "{r:?}");
     }
 }

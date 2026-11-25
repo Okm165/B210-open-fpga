@@ -207,8 +207,10 @@ pub enum Test {
 
 /// Data port delays, (clock delay << 4) | data delay, in the chip's delay
 /// steps (0.24 ns on this board): data 15 steps late, clock 0, both
-/// directions; UHD's value, with 2.6 ns (rx) and 3.4 ns (tx) of eye margin
-/// measured on this board (docs/STATUS.md).
+/// directions; UHD's value. At 61.44 MHz the nearest data transition lay
+/// 11 steps (2.6 ns, rx eye) and 14 steps (3.4 ns, tx eye) from it on this
+/// board, by the chip's digital loopback run over all 31 x 31 clock / data
+/// delays (v1 measurement, docs/STATUS.md at tag v1-ettus-uhd).
 const RX_DELAYS: u8 = 0x0F;
 const TX_DELAYS: u8 = 0x0F;
 /// Receive port by LO: C below 2.2 GHz, B below 4 GHz, A up to 6 GHz.
@@ -526,7 +528,8 @@ impl<B: Bus> Ad9361<B> {
     /// UHD initialize(), from the reset on.
     fn initialize(&mut self) -> Result<()> {
         // soft reset (0x000 bit 0), and the product id (0x037 bits 7:3; bits
-        // 2:0 are the revision: this board reads 0x0A, docs/STATUS.md)
+        // 2:0 are the revision: this board read 0x0A over the FPGA's SPI
+        // master, v1 measurement, docs/STATUS.md at tag v1-ettus-uhd)
         self.writes(&[(0x000, 0x01), (0x000, 0x00)])?;
         self.wait_ms(20)?;
         let id = self.bus.read([0x037])?[0] & 0xF8;

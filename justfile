@@ -16,7 +16,11 @@ setup:
 
 # Give this account USB access to the board (once, as root)
 udev:
-    echo 'SUBSYSTEMS=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE:="0666"' \
+    # 2500:0020 the board running its FX3 firmware; 04b4:00f3 the FX3's ROM
+    # bootloader after power-up, which `b210 load` downloads the firmware to
+    printf '%s\n' \
+      'SUBSYSTEMS=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE:="0666"' \
+      'SUBSYSTEMS=="usb", ATTRS{idVendor}=="04b4", ATTRS{idProduct}=="00f3", MODE:="0666"' \
       | sudo tee /etc/udev/rules.d/10-b210.rules > /dev/null
     sudo udevadm control --reload-rules && sudo udevadm trigger
 
@@ -35,6 +39,6 @@ test-host:
 # Both test suites
 check: test-fpga test-host
 
-# Load an image into the board's FPGA
+# Load an image into the board's FPGA (after a power-up, the FX3 firmware first)
 load img="build/fpga/usrp_v2.bin":
     host/target/release/b210 load {{ img }}

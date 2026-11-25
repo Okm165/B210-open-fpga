@@ -7,6 +7,8 @@
 //   b210-plot cap_ch0.raw --view spectrum --lo -1e6 --hi 1e6   # zoom: the FFT
 //                                                  # grows so the band has bins
 //   b210-plot cap_ch1.raw --view time,iq --t0 0.5  # waveform at 0.5 s
+//   b210-plot cap_ch0.raw --config zoom.toml       # settings kept in a file,
+//                                                  # keys = flag names; flags win
 //
 // The file is one channel of interleaved i16 I, Q (12-bit codes) as written
 // by `b210 capture`; its sidecar `<stem>.toml` gives the rate (--rate
@@ -28,12 +30,14 @@
 
 use anyhow::{bail, Context, Result};
 use b210::{dsp, iq, quality};
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum};
+use serde::Deserialize;
 use std::path::PathBuf;
 
 const FS: f64 = iq::FULL_SCALE;
 
-#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum View { All, Report, Spectrum, Waterfall, Time, Hist, Iq }
 
 #[derive(Parser)]
@@ -41,78 +45,143 @@ enum View { All, Report, Spectrum, Waterfall, Time, Hist, Iq }
 struct Cli {
     /// one channel, interleaved i16 I, Q (`b210 capture` writes <prefix>_chN.raw)
     file: PathBuf,
-    /// sample rate, Hz (default: from the capture's .toml sidecar)
+    /// a TOML file of settings, keyed exactly like the flags below
+    /// (`fft = 65536`, `lo = -2e6`, `view = ["report", "spectrum"]`); a flag
+    /// given on the command line overrides the file's value for that key
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[command(flatten)]
+    settings: Settings,
+}
+
+/// Every setting, as a flag and as a key of the --config file: one struct,
+/// one name each, so the two can never drift apart. Every field is optional
+/// here; `Plot::from` applies the defaults after the file and the flags are
+/// merged.
+#[derive(Args, Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    /// sample rate, Hz [default: from the capture's .toml sidecar]
     #[arg(long)]
     rate: Option<f64>,
-    /// views to show, comma separated
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "all")]
-    view: Vec<View>,
-    /// FFT points per segment, a power of two (default: 4096, or what a
-    /// --lo/--hi zoom needs for 4 bins per plotted dot)
+    /// views to show, comma separated [default: all]
+    #[arg(long, value_enum, value_delimiter = ',')]
+    view: Option<Vec<View>>,
+    /// FFT points per segment, a power of two [default: 4096, or what a
+    /// --lo/--hi zoom needs for 4 bins per plotted dot]
     #[arg(long)]
     fft: Option<usize>,
-    /// lowest frequency shown, Hz (may be negative; default -rate/2)
+    /// lowest frequency shown, Hz, may be negative [default: -rate/2]
     #[arg(long, allow_hyphen_values = true)]
     lo: Option<f64>,
-    /// highest frequency shown, Hz (default +rate/2)
+    /// highest frequency shown, Hz [default: +rate/2]
     #[arg(long, allow_hyphen_values = true)]
     hi: Option<f64>,
-    /// top of the dB axis, dBFS
-    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
-    top_db: f64,
-    /// dB from the top of the axis to its bottom
-    #[arg(long, default_value_t = 110.0)]
-    range_db: f64,
-    /// start of the analysed interval, s
-    #[arg(long, default_value_t = 0.0)]
-    t0: f64,
-    /// end of the analysed interval, s (default: end of file)
+    /// top of the dB axis, dBFS [default: 0]
+    #[arg(long, allow_hyphen_values = true)]
+    top_db: Option<f64>,
+    /// dB from the top of the axis to its bottom [default: 110]
+    #[arg(long)]
+    range_db: Option<f64>,
+    /// start of the analysed interval, s [default: 0]
+    #[arg(long)]
+    t0: Option<f64>,
+    /// end of the analysed interval, s [default: end of file]
     #[arg(long)]
     t1: Option<f64>,
-    /// window of the time view, s, from --t0
-    #[arg(long, default_value_t = 100e-6)]
+    /// window of the time view, s, from --t0 [default: 100e-6]
+    #[arg(long)]
+    span: Option<f64>,
+    /// plot width in character cells [default: 100]
+    #[arg(long)]
+    width: Option<usize>,
+    /// plot height in character cells [default: 14]
+    #[arg(long)]
+    height: Option<usize>,
+}
+
+impl Settings {
+    /// Each field from `self` where given, else from `base`.
+    fn over(self, base: Settings) -> Settings {
+        Settings {
+            rate: self.rate.or(base.rate), view: self.view.or(base.view), fft: self.fft.or(base.fft),
+            lo: self.lo.or(base.lo), hi: self.hi.or(base.hi), top_db: self.top_db.or(base.top_db),
+            range_db: self.range_db.or(base.range_db), t0: self.t0.or(base.t0), t1: self.t1.or(base.t1),
+            span: self.span.or(base.span), width: self.width.or(base.width), height: self.height.or(base.height),
+        }
+    }
+}
+
+/// The settings with every default applied and every value checked.
+struct Plot {
+    views: Vec<View>,
+    rate: f64,
+    fft: Option<usize>,
+    lo: Option<f64>,
+    hi: Option<f64>,
+    top_db: f64,
+    range_db: f64,
+    t0: f64,
+    t1: Option<f64>,
     span: f64,
-    /// plot width in character cells
-    #[arg(long, default_value_t = 100)]
     width: usize,
-    /// plot height in character cells
-    #[arg(long, default_value_t = 14)]
     height: usize,
 }
 
-fn main() -> Result<()> {
-    let a = Cli::parse();
-    let s = iq::read(&a.file).with_context(|| a.file.display().to_string())?;
-    let meta = iq::read_meta(&a.file).with_context(|| iq::meta_path(&a.file).display().to_string())?;
-    let rate = match (a.rate, &meta) {
-        (Some(r), _) => r,
-        (None, Some(m)) => m.rate_hz,
-        (None, None) => bail!("{}: no sidecar {} - give --rate", a.file.display(), iq::meta_path(&a.file).display()),
-    };
-    if !(rate.is_finite() && rate > 0.0) || a.width < 20 || a.height < 4 || a.range_db <= 0.0 {
-        bail!("--rate > 0, --width >= 20, --height >= 4, --range-db > 0");
+impl Plot {
+    fn from(s: Settings, sidecar_rate: Option<f64>) -> Result<Plot> {
+        let Some(rate) = s.rate.or(sidecar_rate) else { bail!("no sample rate: no .toml sidecar - give --rate or `rate`") };
+        let mut views = s.view.unwrap_or(vec![View::All]);
+        if views.contains(&View::All) {
+            views = vec![View::Report, View::Spectrum, View::Waterfall, View::Time, View::Hist, View::Iq];
+        }
+        let p = Plot {
+            views, rate, fft: s.fft, lo: s.lo, hi: s.hi,
+            top_db: s.top_db.unwrap_or(0.0), range_db: s.range_db.unwrap_or(110.0),
+            t0: s.t0.unwrap_or(0.0), t1: s.t1, span: s.span.unwrap_or(100e-6),
+            width: s.width.unwrap_or(100), height: s.height.unwrap_or(14),
+        };
+        // written positively, so a NaN anywhere fails the check
+        let ok = p.rate.is_finite() && p.rate > 0.0 && p.width >= 20 && p.height >= 4 && p.range_db > 0.0
+            && p.t0 >= 0.0 && p.span > 0.0;
+        if !ok {
+            bail!("rate > 0, width >= 20, height >= 4, range_db > 0, t0 >= 0, span > 0");
+        }
+        Ok(p)
     }
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let file_settings = match &cli.config {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| path.display().to_string())?;
+            toml::from_str(&text).with_context(|| path.display().to_string())?
+        }
+        None => Settings::default(),
+    };
+    let s = iq::read(&cli.file).with_context(|| cli.file.display().to_string())?;
+    let meta = iq::read_meta(&cli.file).with_context(|| iq::meta_path(&cli.file).display().to_string())?;
+    let a = Plot::from(cli.settings.over(file_settings), meta.as_ref().map(|m| m.rate_hz))?;
+    let rate = a.rate;
     let frames = s.len() / 2;
     let i0 = (a.t0 * rate) as usize;
     let i1 = a.t1.map_or(frames, |t| (t * rate) as usize).min(frames);
     if i1 < i0 + 64 {
-        bail!("--t0/--t1 select {} sample times of {frames}: need at least 64", i1.saturating_sub(i0));
+        bail!("t0/t1 select {} sample times of {frames}: need at least 64", i1.saturating_sub(i0));
     }
     let x = &s[2 * i0..2 * i1];
     let (lo, hi) = (a.lo.unwrap_or(-rate / 2.0).max(-rate / 2.0), a.hi.unwrap_or(rate / 2.0).min(rate / 2.0));
     if hi <= lo {
-        bail!("--lo {lo} must be below --hi {hi}, both within +-rate/2");
+        bail!("lo {lo} must be below hi {hi}, both within +-rate/2");
     }
     let n = fft_size(a.fft, lo, hi, rate, a.width, i1 - i0)?;
     println!("{}: {} sample times = {:.6} s at {:.6} MS/s{}; analysing {:.6} .. {:.6} s",
-             a.file.display(), frames, frames as f64 / rate, rate / 1e6,
+             cli.file.display(), frames, frames as f64 / rate, rate / 1e6,
              meta.as_ref().map_or(String::new(), |m| format!(", channel {}, source {}", m.channel, m.source)),
              i0 as f64 / rate, i1 as f64 / rate);
-    let views: Vec<View> = if a.view.contains(&View::All) {
-        vec![View::Report, View::Spectrum, View::Waterfall, View::Time, View::Hist, View::Iq]
-    } else { a.view.clone() };
     let g = Geometry { width: a.width, height: a.height, lo, hi, top: a.top_db, bottom: a.top_db - a.range_db };
-    for v in views {
+    for v in &a.views {
         println!();
         match v {
             View::Report => report(x, rate, n)?,
@@ -121,7 +190,7 @@ fn main() -> Result<()> {
             View::Time => time(&x[..2 * ((a.span * rate) as usize).clamp(16, i1 - i0)], rate, &g),
             View::Hist => hist(x, &g),
             View::Iq => constellation(x, &g),
-            View::All => unreachable!(),
+            View::All => unreachable!("expanded in Plot::from"),
         }
     }
     Ok(())
@@ -133,7 +202,7 @@ fn main() -> Result<()> {
 fn fft_size(given: Option<usize>, lo: f64, hi: f64, rate: f64, width: usize, frames: usize) -> Result<usize> {
     let fit = 1usize << (usize::BITS - 1 - frames.leading_zeros());
     let n = match given {
-        Some(n) if !n.is_power_of_two() || n < 16 => bail!("--fft {n}: a power of two >= 16"),
+        Some(n) if !n.is_power_of_two() || n < 16 => bail!("fft {n}: a power of two >= 16"),
         Some(n) => n,
         None if hi - lo < rate * 0.999 => ((rate / ((hi - lo) / (8 * width) as f64)) as usize).next_power_of_two().clamp(4096, 1 << 20),
         None => 4096,
@@ -353,6 +422,26 @@ impl Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_file_uses_the_flag_names_and_flags_override_it() {
+        let file: Settings = toml::from_str("view = [\"report\", \"spectrum\"]\nfft = 65536\nlo = -2e6\nhi = 2e6\nwidth = 80\n").unwrap();
+        let cli = Cli::parse_from(["b210-plot", "x.raw", "--fft", "8192", "--height", "20"]);
+        let s = cli.settings.over(file);
+        assert_eq!(s.fft, Some(8192), "the flag wins");
+        assert_eq!((s.lo, s.hi, s.width, s.height), (Some(-2e6), Some(2e6), Some(80), Some(20)));
+        let p = Plot::from(s, Some(30.72e6)).unwrap();
+        assert_eq!(p.views, vec![View::Report, View::Spectrum]);
+        assert_eq!((p.top_db, p.range_db, p.t0), (0.0, 110.0, 0.0), "defaults fill the rest");
+        // every flag is a key: a file naming each one parses
+        let all = "rate = 1e6\nview = [\"all\"]\nfft = 4096\nlo = 0\nhi = 1\ntop_db = 0\nrange_db = 90\n\
+                   t0 = 0\nt1 = 1\nspan = 1e-4\nwidth = 50\nheight = 10\n";
+        assert!(toml::from_str::<Settings>(all).is_ok());
+        // negative controls: an unknown key, and a rate from nowhere
+        assert!(toml::from_str::<Settings>("ftt = 4096\n").is_err());
+        assert!(Plot::from(Settings::default(), None).is_err());
+        assert!(Plot::from(Settings { width: Some(5), ..Default::default() }, Some(1e6)).is_err());
+    }
 
     #[test]
     fn braille_dots_map_as_documented() {

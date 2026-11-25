@@ -1,6 +1,7 @@
 //! b210 - board access and the step-1 measurements.
 //!
-//!   b210 load IMAGE.bin            load the FPGA, start the bus
+//!   b210 load IMAGE.bin            load the FPGA, start the bus (from power-up:
+//!                                  the FX3 firmware first, --firmware FILE.hex)
 //!   b210 state | read ADDR | write ADDR VALUE
 //!   b210 monitor                   live health: status, rate, counters, rings
 //!   b210 rx-test [options]         stream the FPGA's pattern f(t)
@@ -16,7 +17,7 @@
 use anyhow::{bail, Context, Result};
 use b210::proto::{self, flag, Format, Header, Kind, Op};
 use b210::regs::{self, rx, rx_source};
-use b210::usb::{zero_copy, Ctrl, Usb, DEPTH_MS_DEFAULT};
+use b210::usb::{self, zero_copy, Board, Ctrl, Usb, DEPTH_MS_DEFAULT};
 use clap::{Args, Parser, Subcommand};
 use nusb::transfer::{Bulk, In, Out};
 use nusb::Endpoint;
@@ -30,8 +31,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Load an FPGA image and start the bus
-    Load { image: std::path::PathBuf },
+    /// Load an FPGA image and start the bus; from the FX3 bootloader (after
+    /// power-up), load Ettus's stock FX3 firmware first
+    Load {
+        image: std::path::PathBuf,
+        /// stock FX3 firmware (Intel HEX), checked against the SHA-256 that
+        /// scripts/toolchain.sh pins
+        #[arg(long, default_value = usb::FIRMWARE_DEFAULT)]
+        firmware: std::path::PathBuf,
+    },
     /// The FX3 firmware's state (1 ready for an image, 2 configuring, 4 running)
     State,
     /// Read a register (hex 0x.. or decimal address)
@@ -131,6 +139,11 @@ fn number(s: &str) -> Result<u32> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // `load` starts from whatever the FX3 runs, possibly its bootloader, so
+    // it opens the board itself once the firmware is up.
+    if let Cmd::Load { image, firmware } = &cli.cmd {
+        return load(image, firmware);
+    }
     // Buffering is planned before the endpoints open; commands that do not
     // stream still use the default so the usbfs check has one plan.
     let depth_ms = match &cli.cmd {
@@ -139,18 +152,7 @@ fn main() -> Result<()> {
     };
     let mut usb = Usb::open(depth_ms)?;
     match cli.cmd {
-        Cmd::Load { image } => {
-            let bytes = std::fs::read(&image).with_context(|| format!("{}", image.display()))?;
-            let start = Instant::now();
-            usb.ctrl.load_fpga(&bytes)?;
-            let id = usb.ctrl.read(regs::ID)?;
-            println!("loaded {} ({} bytes) in {:.1} s; id {id:08x}, version {:08x}, build {:08x}",
-                     image.display(), bytes.len(), start.elapsed().as_secs_f64(),
-                     usb.ctrl.read(regs::VERSION)?, usb.ctrl.read(regs::BUILD)?);
-            if id != regs::ID_VALUE {
-                bail!("id {id:08x}, expected {:08x}", regs::ID_VALUE);
-            }
-        }
+        Cmd::Load { .. } => unreachable!("handled above"),
         Cmd::State => println!("{}", usb.ctrl.fx3_state()?),
         Cmd::Read { addr } => println!("{:08x}", usb.ctrl.read(number(&addr)? as u16)?),
         Cmd::Write { addr, value } => usb.ctrl.write(number(&addr)? as u16, number(&value)?)?,
@@ -158,6 +160,44 @@ fn main() -> Result<()> {
         Cmd::LoopTest(a) => loop_test(&mut usb, &a)?,
         Cmd::Monitor { interval_ms } => monitor(&mut usb, interval_ms)?,
         Cmd::Capture { stream, capture: c } => capture(&mut usb, &stream, &c)?,
+    }
+    Ok(())
+}
+
+/// `b210 load`: from the FX3 bootloader or a running firmware to a running
+/// FPGA image, each step printed with its duration.
+fn load(image: &std::path::Path, firmware: &std::path::Path) -> Result<()> {
+    // Read the image first: a wrong path fails before the board is touched.
+    let bytes = std::fs::read(image).with_context(|| format!("{}", image.display()))?;
+    match usb::board()? {
+        Board::Running => println!("FX3 firmware: already running ({:04x}:{:04x})", usb::VID, usb::PID),
+        Board::Bootloader => {
+            let t = Instant::now();
+            let fw = usb::read_firmware(firmware)?;
+            println!("FX3 firmware: {} verified (SHA-256 {}), {} bytes in {} writes, entry {:#010x} ({:.3} s)",
+                     firmware.display(), usb::FIRMWARE_SHA256, fw.bytes(), fw.chunks.len(), fw.entry,
+                     t.elapsed().as_secs_f64());
+            let t = Instant::now();
+            usb::download_firmware(&fw)?;
+            println!("FX3 firmware: written to the bootloader and started ({:.2} s)", t.elapsed().as_secs_f64());
+            let t = Instant::now();
+            usb::wait_firmware(usb::FIRMWARE_BOOT_WAIT)?;
+            println!("FX3 firmware: running as {:04x}:{:04x} ({:.2} s)", usb::VID, usb::PID, t.elapsed().as_secs_f64());
+        }
+        Board::Absent => bail!(
+            "no B210 on USB: neither the firmware ({:04x}:{:04x}) nor the FX3 bootloader ({:04x}:{:04x})",
+            usb::VID, usb::PID, usb::BOOT_VID, usb::BOOT_PID
+        ),
+    }
+    let mut usb = Usb::open(DEPTH_MS_DEFAULT)?;
+    let start = Instant::now();
+    usb.ctrl.load_fpga(&bytes)?;
+    let id = usb.ctrl.read(regs::ID)?;
+    println!("loaded {} ({} bytes) in {:.1} s; id {id:08x}, version {:08x}, build {:08x}",
+             image.display(), bytes.len(), start.elapsed().as_secs_f64(),
+             usb.ctrl.read(regs::VERSION)?, usb.ctrl.read(regs::BUILD)?);
+    if id != regs::ID_VALUE {
+        bail!("id {id:08x}, expected {:08x}", regs::ID_VALUE);
     }
     Ok(())
 }

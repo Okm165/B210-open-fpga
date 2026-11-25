@@ -104,7 +104,7 @@ impl Bus for Mock {
 ///
 /// | register | reads |
 /// | --- | --- |
-/// | 0x037 product id | 0x0A: product 0x08, revision 2, as this board reads (docs/STATUS.md) |
+/// | 0x037 product id | 0x0A: product 0x08, revision 2, as this board read over the FPGA's SPI master (v1 measurement, docs/STATUS.md at tag v1-ettus-uhd) |
 /// | 0x017 ENSM state | from the last 0x014 write: bit 5 (force TX on) FDD 0x0A; else bit 0 or 2 (to / force ALERT) ALERT 0x05; else 0x00 |
 /// | 0x016 calibrations | 0x00: all finished |
 /// | 0x05E BBPLL | 0x80: locked |
