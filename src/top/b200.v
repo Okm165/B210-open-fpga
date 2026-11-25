@@ -171,9 +171,6 @@ module b200 (
     ///////////////////////////////////////////////////////////////////////
     // drive output clocks
     ///////////////////////////////////////////////////////////////////////
-    ///////////////////////////////////////////////////////////////////////
-    // drive output clocks
-    ///////////////////////////////////////////////////////////////////////
     ODDR #(
         .DDR_CLK_EDGE("OPPOSITE_EDGE"),    // "OPPOSITE_EDGE" or "SAME_EDGE" 
         .INIT(1'b0),                      // Initial value of Q: 1'b0 or 1'b1
@@ -206,22 +203,9 @@ module b200 (
     // radio_rst fans out to ~17k synchronous reset inputs.  A BUFG was tried
     // here and cannot be routed: nextpnr fails with
     //   Failed to route arc ... radio_rst_g, from BUFGCTRL.O to SLICE.B5FFMUX_OUT
-    // i.e. the global network reaches clock pins, not flip-flop reset muxes
-    // (F27 in the audit).  Reducing this fanout needs reset replication in
-    // RTL, not a global buffer.
+    // i.e. the global network reaches clock pins, not flip-flop reset muxes.
+    // Reducing this fanout needs reset replication in RTL, not a global buffer.
 
-
-    ///////////////////////////////////////////////////////////////////////
-    // PPS Switch 1.GPS_PPS 2.EXT_PPS
-    ///////////////////////////////////////////////////////////////////////
-   wire pps_ext_int;   
-   pps_switch u_pps_switch (
-        .clk      (gpif_clk),
-        .rst_n    (!gpif_rst),
-        .gps_pps  (PPS_IN_INT),
-        .ext_pps  (PPS_IN_EXT),
-        .pps_out  (pps_ext_int)
-    );
 
    ///////////////////////////////////////////////////////////////////////
    // I/O
@@ -348,7 +332,9 @@ module b200 (
       .fe0_gpio_out(radio0_gpio), .fe1_gpio_out(radio1_gpio),
       .fp_gpio_in(fp_gpio_in), .fp_gpio_out(fp_gpio_out), .fp_gpio_ddr(fp_gpio_ddr),
    
-      .pps_int(pps_ext_int), .pps_ext(pps_ext_int),
+      // The GPSDO's and the external PPS, each on its own input: UHD's
+      // time-source register chooses between them in b200_core.
+      .pps_int(PPS_IN_INT), .pps_ext(PPS_IN_EXT),
       // GPS UART is not populated on the B210.  The receive pin has an
       // external pull-up, so drive the core's input to the idle level
       // instead of leaving it open: an open input is x in simulation and

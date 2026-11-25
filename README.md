@@ -89,6 +89,5 @@ loses samples.
 ## Licence
 
 The RTL under `src/rtl` and `src/top` derives from Ettus Research's USRP FPGA
-sources (LGPL-3.0-or-later), except `src/rtl/control/pps_switch.v` and
-`src/rtl/control/edge_detect.v`, which come from the board vendor's project.
-Everything else in this repository is GPL-3.0; see `LICENSE`.
+sources (LGPL-3.0-or-later). Everything else in this repository is GPL-3.0;
+see `LICENSE`.

@@ -175,6 +175,12 @@ bits matches a plain-logic multiplier cycle for cycle.
   transient (the pattern generator is enabled around the stream start), not
   the FPGA; the sample checks therefore skip 64 samples, not 4096, and check
   the rest of the capture.
+- The delay calibration cannot end up away from the delay taps: the
+  place-and-route engine puts one `IDELAYCTRL` in every I/O bank that holds
+  a delay element and ANDs their ready outputs (`pack_idelayctrl` in the
+  engine's `pack.cc`), which is what `IODELAY_GROUP` asks of the vendor tool.
+  The calibration is continuous (UG471), so the 78 ps tap does not drift
+  with temperature; the operating point itself is fixed.
 - UHD skips loading when the image hash matches the one the FX3 remembers.
   `fx3_raw_load.py` reboots the FX3 and stores no hash, so the next UHD
   session loads the image itself.
@@ -186,14 +192,6 @@ bits matches a plain-logic multiplier cycle for cycle.
 
 ## Known limitations
 
-- The FPGA cannot tell the two PPS sources apart.  `src/top/b200.v:351` feeds
-  both `pps_int` and `pps_ext` of `b200_core` from one net, the autoselecting
-  output of the board vendor's `pps_switch`, so UHD's time-source register
-  selects nothing.  UHD's default (internal) and `set_time` without a PPS
-  edge are unaffected, and every measurement here sets time synchronously;
-  GPSDO versus external PPS selection is untested and does not work.  The
-  fix is to wire `pps_int`/`pps_ext` to their own pins and let the mux in
-  `b200_core` choose.
 - A sample-rate or channel-count change while a stream is running is
   untested.  UHD allows it and reprograms the AD9361, which stops and
   restarts the data clock; the design has no reset for that event.  It is

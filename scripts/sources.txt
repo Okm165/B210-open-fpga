@@ -79,5 +79,3 @@ src/top/b200_clk_gen.v
 src/top/b200_core.v
 src/top/b200_io.v
 src/top/b200.v
-src/top/edge_detect.v
-src/top/pps_switch.v
