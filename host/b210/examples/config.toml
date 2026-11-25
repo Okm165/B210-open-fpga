@@ -14,8 +14,12 @@ bandwidth_hz = 20e6     # one analog filter setting for both rx channels, Hz
                         # (800e3 .. 56e6, at most rate_hz)
 spp          = 1024     # sample times per packet (latency 1024 / rate =
                         # 33 us); default: a full 16 KiB packet
-ch0 = { gain_db = 40 }  # gain 0 .. 76 dB in 1 dB steps
-ch1 = { gain_db = 35 }
+# 0 .. 76 dB in 1 dB steps. The chip's own output floor is about
+# -134 dBFS/Hz (-60 dBFS over 30.72 MHz), so below ~45 dB gain a room
+# temperature antenna stays under it; measured: a 100 MHz station rose
+# 1:1 with the setting, while at 2.45 GHz nothing changed below 45 dB.
+ch0 = { gain_db = 60 }
+ch1 = { gain_db = 55 }
 
 [tx]                    # present = transmitting; absent = both tx channels off
 lo_hz        = 2.45e9   # one synthesizer for both tx channels, Hz

@@ -678,10 +678,11 @@ mod tests {
         assert!(d.ad.bus().polls.iter().all(|p| p.ok));
         drop(d);
         let ops = f.ops();
-        // rx gain index 40 / 20; tx attenuation 4 x (89.75 - 60) = 119,
-        // 4 x (89.75 - 55.5) = 137
-        assert_eq!(spi_writes(&ops, 0x109).last(), Some(&40));
-        assert_eq!(spi_writes(&ops, 0x10C).last(), Some(&20));
+        // rx gain index 60, then the one-value change to 20; tx attenuation
+        // 4 x (89.75 - 60) = 119, 4 x (89.75 - 55.5) = 137
+        assert_eq!(spi_writes(&ops, 0x109).last(), Some(&60));
+        let rx2 = spi_writes(&ops, 0x10C);
+        assert_eq!(&rx2[rx2.len() - 2..], [55, 20], "the example, then the one change");
         assert_eq!(spi_writes(&ops, 0x073).last(), Some(&119));
         assert_eq!(spi_writes(&ops, 0x075).last(), Some(&137));
         assert_eq!((spi_writes(&ops, 0x074).last(), spi_writes(&ops, 0x076).last()), (Some(&0), Some(&0)));

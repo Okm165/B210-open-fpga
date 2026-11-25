@@ -144,6 +144,12 @@ examples/config.toml     every configuration key
    the two ambient carriers repeat at their absolute frequencies and moved
    when the LO moved 100 kHz, so they are external; with no coherent input
    the I/Q balance figure is the signal's, not the receiver's (quality.rs).
+   With an antenna: a station at 100.0 MHz (found at -0.5 MHz from a
+   100.5 MHz LO, still at 100.0 from a 100.6 MHz LO: external by the LO-shift
+   test) rose 65 dB for 70 dB of rx gain, so the gain control is 1:1; the
+   chip's own output floor is about -134 dBFS/Hz, which is why at 2.45 GHz
+   nothing moves below ~45 dB gain and the example config now asks 60/55 dB.
+   No clipping (peak -13.1 dBFS), DC -106 dBFS, image rejection 55-62 dB.
    BIST/PRBS/eye scan are still v1 measurements, not repeated on this image.
 3. Device API, configuration applied through config.rs, CLI rx / tx /
    record; a board check in just.

@@ -630,8 +630,8 @@ mod tests {
         assert_eq!((c.rate_hz, c.reference, c.format), (30.72e6, Reference::Internal, Format::Sc12));
         let r = c.rx.as_ref().unwrap();
         assert_eq!((r.lo_hz, r.bandwidth_hz, r.spp), (2.45e9, 20e6, Some(1024)));
-        assert_eq!(r.ch0, Some(RxChannel { gain_db: 40.0 }));
-        assert_eq!(r.ch1, Some(RxChannel { gain_db: 35.0 }));
+        assert_eq!(r.ch0, Some(RxChannel { gain_db: 60.0 }));
+        assert_eq!(r.ch1, Some(RxChannel { gain_db: 55.0 }));
         let t = c.tx.as_ref().unwrap();
         assert_eq!((t.lo_hz, t.bandwidth_hz), (2.45e9, 20e6));
         assert_eq!((t.ch0, t.ch1), (Some(TxChannel { gain_db: 60.0 }), Some(TxChannel { gain_db: 55.5 })));
@@ -863,7 +863,7 @@ mod tests {
             C::Bandwidth { direction: DRx, hz: 20e6 }, C::Bandwidth { direction: DTx, hz: 20e6 },
             C::Lo { direction: DRx, hz: 2.45e9 }, C::Lo { direction: DTx, hz: 2.45e9 },
             C::Chains(all),
-            C::Gain { direction: DRx, channel: 0, db: 40.0 }, C::Gain { direction: DRx, channel: 1, db: 35.0 },
+            C::Gain { direction: DRx, channel: 0, db: 60.0 }, C::Gain { direction: DRx, channel: 1, db: 55.0 },
             C::Gain { direction: DTx, channel: 0, db: 60.0 }, C::Gain { direction: DTx, channel: 1, db: 55.5 },
         ]);
     }
@@ -1403,7 +1403,7 @@ mod tests {
         let one = Config::changes(Some(&old), &g);
         assert_eq!(one, [C::Gain { direction: DRx, channel: 0, db: 41.0 }]);
         let mut p = one.clone();
-        p.push(C::Gain { direction: DRx, channel: 1, db: 35.0 });
+        p.push(C::Gain { direction: DRx, channel: 1, db: 55.0 });
         assert!(check_plan(Some(&old), &g, &p).unwrap_err().contains("already held"));
         // a mute without a reason
         let mut p = one.clone();
