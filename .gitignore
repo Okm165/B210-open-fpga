@@ -63,3 +63,6 @@ __pycache__/
 *.tmp
 *.part
 third_party/prjxray-db-openxc7/
+
+# Rust build output
+/host/target/
