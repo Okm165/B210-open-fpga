@@ -83,7 +83,6 @@ module rx_framer (
   // 4 header words) and the radio cannot wait, so n / (5 + words(n)) must
   // exceed the top rate in sample times per cycle: 0.6144 at 61.44 MS/s
   // (n >= 8, 1 channel sc16), 0.3072 at 2 x 30.72 (n >= 4); 16 leaves margin
-  wire [12:0] spp_c = spp < 16 ? 13'd16 : spp > full ? full : spp;
 
   // -- stream and packet state ----------------------------------------------------
   localparam IDLE = 0, ARMED = 1, START = 2, HEAD = 3, BODY = 4, DROP = 5, EOB_ONLY = 6;
@@ -102,27 +101,30 @@ module rx_framer (
   assign running = state != IDLE;
 
   // n and the packet's size for the next packet, from the stream's remainder,
-  // registered every cycle so that START does not wait for a compare and
-  // three adders. Valid at START: `left` changes only on the stream's start
-  // (ARMED lasts at least one cycle) and at START itself (the next START is
-  // at least two cycles later: HEAD takes 4, DROP at least 1 + the return).
-  //   n = min(left, spp) (spp if endless)
-  //   L = 16 + n * B bytes, B = tbits / 8 = 3 4 6 8, by shifts and one add
-  //       (3 n = 2 n + n, 6 n = 2 (3 n))
-  //   words = ceil(L / 4), + 1 if that is a multiple of 256 below 4096
-  wire [31:0] want_c = endless ? spp_c : (left < spp_c ? left : spp_c);
-  wire [15:0] n3     = {want_c[12:0], 1'b0} + want_c[12:0];
-  wire [15:0] pbytes = sc12 ? (two ? {n3[14:0], 1'b0} : n3) : (two ? {want_c[12:0], 3'b0} : {want_c[12:0], 2'b0});
-  wire [15:0] len_c  = 16 + pbytes;
-  wire [12:0] w_raw  = (len_c + 3) >> 2;
-  reg  [12:0] n_new = 0, w_all = 0;
+  // in a pipeline of registers (100 MHz: one compare or one adder per
+  // stage), each stage computed every cycle from the one before:
+  //   1  n = min(left, spp) (spp if endless); ends = n takes all of left
+  //   2  L = 16 + n * B bytes, B = tbits / 8 = 3 4 6 8, by shifts and one
+  //      add (3 n = 2 n + n, 6 n = 2 (3 n)); w = ceil(L / 4) = (n B + 19) / 4
+  //   3  words = w, + 1 if w is a multiple of 256 below 4096 (S(L))
+  // (spp is clamped one stage earlier.) `age` counts cycles since `left`
+  // last changed; START acts only at age >= 4, when all stages describe the
+  // current `left`. On the normal path HEAD alone takes 4 cycles, so this
+  // only delays the rare quick returns (stream start, a short DROP).
+  reg  [12:0] spp_c = 16;
+  always @(posedge clk) spp_c <= spp < 16 ? 13'd16 : spp > full ? full : spp;
+  reg  [12:0] n_new = 0, w_raw = 0, w_all = 0;
   reg  [15:0] len = 0;
   reg         ends = 0;           // this packet takes the rest of a counted stream
+  reg  [2:0]  age = 0;
+  wire [15:0] n3     = {n_new, 1'b0} + n_new;
+  wire [15:0] pbytes = sc12 ? (two ? {n3[14:0], 1'b0} : n3) : (two ? {n_new, 3'b0} : {n_new, 2'b0});
   always @(posedge clk) begin
-    n_new <= want_c[12:0];
-    len   <= len_c;
+    n_new <= endless || left >= spp_c ? spp_c : left[12:0];
+    ends  <= !endless && left <= spp_c;
+    len   <= 16 + pbytes;
+    w_raw <= (pbytes + 19) >> 2;
     w_all <= w_raw + (w_raw[7:0] == 0 && w_raw != FULL_WORDS);
-    ends  <= !endless && left == want_c;
   end
   wire        last_packet = ends || stopping;
 
@@ -145,20 +147,23 @@ module rx_framer (
       state <= IDLE; nb <= 0;
     end else begin
       if (stop && state != IDLE) stopping <= 1;
+      if (age != 4) age <= age + 1;               // a later `age <= 0` wins
       case (state)
         IDLE: if (start) begin
           first <= 1; overflow <= 0; stopping <= 0; seq <= 0;
-          endless <= count == 0; left <= count; state <= ARMED;
+          endless <= count == 0; left <= count; age <= 0; state <= ARMED;
         end
         ARMED: if (stopping) state <= IDLE;
           else if (s_valid && !(start_at && s_time < start_time)) state <= START;
         // a packet begins at the sample now at the head
         // (left == 0 here: the last packet was dropped, its EOB still owed)
-        START: if ((!endless && left == 0) || (stopping && !first)) begin
+        START: if (age != 4) ;                     // the size pipeline is catching up
+        else if ((!endless && left == 0) || (stopping && !first)) begin
           hw <= 0; state <= EOB_ONLY;
         end else if (s_valid) begin
           n <= n_new; t0 <= s_time; t_end <= s_time + n_new;
           if (!endless) left <= left - n_new;
+          age <= 0;
           if (w_room) begin
             words <= w_all; hw <= 0;
             h0 <= {VERSION, 2'd0, channels, format, T_RX, len};
