@@ -81,7 +81,7 @@ pub struct Mismatch {
 }
 
 /// What an rx stream showed, packet by packet.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Check {
     pub packets: u64,
     pub samples: u64,
@@ -89,6 +89,9 @@ pub struct Check {
     pub overflow_flags: u64,
     pub bad_values: u64,
     pub bad_headers: u64,
+    /// Whether `values` compares samples against `expect` at all: off for a
+    /// source with no closed form (the radio).
+    pub check_values: bool,
     /// The first data packet's time.
     pub first: Option<u64>,
     /// The time and sequence the next packet must carry.
@@ -110,6 +113,25 @@ pub struct Seen {
     pub samples: bool,
     /// The packet ends the stream: END_OF_BURST after data.
     pub end: bool,
+}
+
+impl Default for Check {
+    /// `check_values` on: a Check that does not compare samples must say so.
+    fn default() -> Self {
+        Check {
+            packets: 0,
+            samples: 0,
+            lost: 0,
+            overflow_flags: 0,
+            bad_values: 0,
+            bad_headers: 0,
+            first: None,
+            next: None,
+            mismatches: Vec::new(),
+            data_seen: false,
+            check_values: true,
+        }
+    }
 }
 
 impl Check {
@@ -146,6 +168,9 @@ impl Check {
     /// Every sample time of a packet against `expect(t)`, the four values I0
     /// Q0 I1 Q1 tick t must carry (the first `2 x count` of them compared).
     pub fn values(&mut self, h: &Header, v: &[i16], s: Shape, expect: &impl Fn(u64) -> [i16; 4]) {
+        if !self.check_values {
+            return;
+        }
         for (k, got) in v.chunks(2 * s.count()).enumerate() {
             let time = h.time + k as u64;
             let want = expect(time);
@@ -427,6 +452,11 @@ mod tests {
         let expect = |t: u64| [t as i16, 1, 2, 3];
         // 10 sample times, value 2 wrong in each
         let v: Vec<i16> = (0..10).flat_map(|k| [100 + k, 1, 9, 3]).collect();
+        // check_values off counts nothing
+        c.check_values = false;
+        c.values(&h, &v, S, &expect);
+        assert_eq!(c.bad_values, 0);
+        c.check_values = true;
         c.values(&h, &v, S, &expect);
         assert_eq!(c.bad_values, 10);
         assert_eq!(c.mismatches.len(), REPORTED);

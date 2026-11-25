@@ -70,7 +70,8 @@ struct CaptureArgs {
     /// file name prefix: PREFIX_ch0.raw, PREFIX_ch1.raw (+ .toml sidecars)
     #[arg(long, default_value = "capture.raw")]
     out: std::path::PathBuf,
-    /// pattern: the FPGA's f(t); tone: a host tone through tx and the loopback
+    /// pattern: the FPGA's f(t); tone: a host tone through tx and the loopback;
+    /// radio: the AD9361, samples kept, not checked against a closed form
     #[arg(long, default_value = "tone")]
     source: String,
     /// tone frequency, Hz (channel 0 at +f, channel 1 at -f)
@@ -399,7 +400,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     let tone = &tone;
     // The sample times kept: all of them for the pattern, the burst's for a
     // tone (set before the stream starts).
-    let (from, to) = if src == rx_source::PATTERN { (0, u64::MAX) } else {
+    let (from, to) = if src != rx_source::LOOPBACK { (0, u64::MAX) } else {
         let at = regs::now(&mut usb.ctrl)? + (LEAD * rate) as u64;
         (at, at + n)
     };
@@ -411,6 +412,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     };
     let begin = Instant::now();
     let mut check = Check::default();
+    check.check_values = src != rx_source::RADIO;
     let Usb { ctrl, tx, rx, depth } = &mut *usb;
     let depth = *depth;
     // Three threads: the rx loop only checks and queues packets, a writer
@@ -450,7 +452,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
             {
                 return Err(stream::Error::Sink("the file writer stopped"));
             }
-            Ok(if src == rx_source::PATTERN { begin.elapsed().as_secs_f64() >= a.seconds }
+            Ok(if src != rx_source::LOOPBACK { begin.elapsed().as_secs_f64() >= a.seconds }
                else { c.next.is_some_and(|(time, _)| time >= to + tail) })
         });
         drop(queue);

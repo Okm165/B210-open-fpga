@@ -42,7 +42,7 @@ b210 write <ADDR> <VALUE>  # write a register
 b210 monitor [--interval-ms 500]       # live status, event counters, USB events
 b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
 b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
-b210 capture [STREAM] [--out capture.raw] [--source pattern|tone]
+b210 capture [STREAM] [--out capture.raw] [--source pattern|tone|radio]
 b210-plot <FILE> [--rate HZ] [--view spectrum|time|both] [--fft N] [--lo HZ] [--hi HZ]
 ```
 
