@@ -72,7 +72,8 @@ def capture(image, a):
         tail = [str(a.loopback)]
     else:
         env['UHD_AD936X_BIST'] = BIST_PRBS if a.prbs else BIST_TONE
-    dev = (f"type=b200,serial={os.environ.get('SERIAL', '31B92DD')},fpga={image},"
+    serial = os.environ.get('SERIAL')          # only needed with several boards on the host
+    dev = (f"type=b200{',serial=' + serial if serial else ''},fpga={image},"
            f"master_clock_rate={a.mcr}")
     files = [f'{prefix}_ch{ch}.sc16' for ch in a.chans.split(',')]
     for f in files:

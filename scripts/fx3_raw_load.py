@@ -21,6 +21,7 @@
 Exit status 0 only if every requested step succeeded.
 """
 import argparse
+import os
 import random
 import struct
 import sys
@@ -233,7 +234,8 @@ def echo(dev, count, out_ep, in_ep, max_bytes, label):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('fpga')
-    ap.add_argument('--fw', default='/usr/share/uhd/images/usrp_b200_fw.hex')
+    ap.add_argument('--fw', default=os.path.join(os.environ.get('UHD_IMAGES_DIR', '/usr/share/uhd/images'),
+                                                 'usrp_b200_fw.hex'))
     ap.add_argument('--peek', type=int, default=0)
     ap.add_argument('--drain', type=int, default=None, help='default 8 MB, or none with --echo')
     ap.add_argument('--echo', type=int, default=0)

@@ -9,31 +9,54 @@ IDE, licence or prebuilt image is involved in what gets loaded on the board.
 
 ## Flow
 
-```text
-scripts/toolchain.sh   place-and-route engine and device database, from pinned
-                       upstream sources plus the fixes in container/patches
-scripts/build.sh       Verilog -> build/fpga/usrp_b200.bin (+ a build record)
-scripts/hw_gate.sh     acceptance of that image on the board
+```sh
+make tools        # container image b210-open-fpga: Yosys, Project X-Ray tools     14 min
+make toolchain    # .tools/: place-and-route engine, chip database, measuring UHD
+make build        # build/fpga/usrp_b200.bin and its build record                  1.5 h and up
+make gate         # acceptance of that image on the connected board                40 min
+make test         # simulation benches (needs the container image)                 15 min
 ```
 
 | Step | Tool | Where it runs |
 | --- | --- | --- |
-| synthesis | Yosys v0.69 | container `b210-open-fpga` (`make tools`) |
-| place and route | openXC7 nextpnr-himbaechel `be38ec6` + two patches | host, `.tools/` |
+| synthesis | Yosys v0.69 | container (`container/Dockerfile`) |
+| place and route | openXC7 nextpnr-himbaechel `be38ec6` + three patches | host, `.tools/` |
 | FASM -> frames -> bit -> bin | openXC7 Project X-Ray `6dabf70` | container |
 | device database | openXC7 prjxray-db `0c3504f` + patch | `third_party/prjxray-db-openxc7` |
 
-```sh
-make tools        # container image: yosys + Project X-Ray tools
-make toolchain    # .tools/: nextpnr, chipdb, and the measuring UHD
-make build        # build/fpga/usrp_b200.bin
-make gate         # hardware acceptance on the connected board
-make test         # simulation benches, constraint check, elaboration
-```
+Every source is pinned to a revision; the patches are in `container/patches`
+and each is explained at the head of `scripts/toolchain.sh` and in
+`docs/STATUS.md`. `scripts/build.sh` writes beside each image what it was
+built from and what timing place and route measured; `scripts/hw_gate.sh`
+accepts an image only with that record, built from committed sources, with
+every clock and every clock-domain crossing inside its constraint.
 
-Host requirements: podman, git, cmake, a C++20 compiler, boost, eigen3,
-python3 with pyusb/numpy/matplotlib, Icarus Verilog, and UHD (the stock host
-driver the image is validated against).
+### What the host needs
+
+- podman, git, cmake, ninja, a C++20 compiler, boost and eigen3 headers
+  (engine), libusb-1.0 headers and python3-mako (measuring UHD), about 6 GB
+  of disk for the two tool builds and network access to GitHub, PyPI and
+  Docker Hub while they run;
+- Icarus Verilog and python3 with numpy for `make test`;
+- for the board: UHD with its Python module and its image package (the FX3
+  firmware `usrp_b200_fw.hex` and the vendor image `usrp_b210_fpga.bin`, which
+  the gate uses as its reference device), python3 with pyusb, read/write
+  access to USB device `2500:0020` (UHD's udev rule), and for the streaming
+  measurements permission to run at real-time priority (`ulimit -r` of 50 or
+  more; without it the tools run and say so).
+
+### Settings
+
+| Variable | Used by | Meaning |
+| --- | --- | --- |
+| `SERIAL` | gate, eyescan, sample_check | board serial; only needed with several B2xx on the host |
+| `UHD_IMAGES_DIR` | gate and instruments | where the FX3 firmware and the vendor image are (default `/usr/share/uhd/images`) |
+| `WAIT_QUIET` | gate | seconds to wait for an idle host before the throughput step (default 0) |
+| `FPGA_IMAGE` | build, assemble, make | container image (default `b210-open-fpga:0.3.0`) |
+| `TEST_JOBS` | make test | benches run at a time (default 8) |
+| `DESIGN`, `NAME`, `PARAMS` | build | another top from `src/top`, its output name, parameter overrides |
+
+The heads of `scripts/build.sh` and `scripts/hw_gate.sh` list the rest.
 
 ## Layout
 
@@ -44,7 +67,7 @@ src/rtl/           radio, DSP, FIFO, GPIF and control RTL (Ettus, LGPL)
 src/constraints/   b210.xdc: pins, clocks, buffer sites, crossing bounds
 scripts/           the flow and the hardware instruments
 container/         the container image (Dockerfile) and the upstream patches
-tests/             simulation benches (make test)
+tests/             simulation benches and their runner (make test)
 build/             generated output, ignored by git
 ```
 
@@ -52,7 +75,7 @@ build/             generated output, ignored by git
 
 | Script | What it measures |
 | --- | --- |
-| `scripts/hw_gate.sh <bin>` | the full acceptance, in order: build identity, raw FX3 path, stock UHD init and streaming, interface eye, sample content, throughput. Where a number depends on the board or the host it is measured on the vendor image in the same run |
+| `scripts/hw_gate.sh <bin>` | the full acceptance, in order: build identity, raw FX3 path, stock UHD init and streaming, interface eye, sample content, DSP against RTL, bus margin, throughput. Where a number depends on the board or the host it is measured on the vendor image in the same run |
 | `scripts/fx3_raw_load.py <bin> --peek N` | FX3 reboot, FPGA load, raw control transactions and an 8 MB drain, without UHD |
 | `scripts/eyescan.sh <bin> [rate]` | the AD9361 interface eye: UHD's codec loopback over every clock/data delay, with the margin at UHD's fixed operating point |
 | `scripts/sample_check.py <bin> --prbs` | receive path, bit exact: every sample of the AD9361's pseudo-random test sequence is checked, on both channels and for their alignment |
@@ -61,10 +84,9 @@ build/             generated output, ignored by git
 | `scripts/bus_window.py <routed.fasm>` | the FX3 bus timing window: the forwarded clock moved through its range in the bitstream, a bit-exact bus loopback at each setting |
 | `scripts/fx3_raw_load.py <bin> --echo N` | both directions of the FX3 bus, bit exact, on the bus-only design `src/top/diag_echo.v` |
 | `scripts/rx_capture.py` | a capture through the stock UHD Python API with spectrum graphs (antenna signal) |
-| `scripts/fast_test.py` | a FASM-level patch assembled and measured without re-running place and route |
 
 UHD only tests the image named in `fpga=<path>` of its device arguments; a
-plain UHD call loads the vendor image from `/usr/share/uhd/images`.
+plain UHD call loads the vendor image from `UHD_IMAGES_DIR`.
 
 ## Where the measurements are
 
@@ -72,19 +94,13 @@ Everything below is written by the tools above and is not in git (`build/`):
 
 | Path | What it holds |
 | --- | --- |
-| `build/fpga/usrp_b200.txt` | the build record of the image beside it: every source file with a hash, the tool versions, the three clock frequencies place and route measured and every clock-domain crossing with its bound. `scripts/hw_gate.sh` refuses an image whose record does not match its bytes |
-| `build/fpga/logs/<name>-pnr.log` | the full place-and-route log: the critical path of every clock and crossing, and the routed result |
+| `build/fpga/usrp_b200.txt` | the build record of the image beside it: source commit, tool hashes, the three clock frequencies place and route measured and every clock-domain crossing with its bound |
+| `build/fpga/logs/b200-pnr.log` | the full place-and-route log: utilisation, the critical path of every clock and crossing |
 | `build/hw-gate-<UTC>/` | one acceptance run, one file per step: `00-identity`, `01-raw` (FX3 bus without UHD), `02-init` and `02-stock-rx-*` (stock UHD), `03-eye`, `04-samples-*` (tone, PRBS, loopback), `05-dsp-*` (board against RTL, sample by sample), `06-bus-margin`, `07-<mode>-{vendor,ours}-*` (throughput, each run of this image between two runs of the vendor image) |
-| `build/rx_look/{ours,vendor}/` | an antenna capture through the stock UHD Python API with its spectrum PNG and the numbers behind it (`scripts/rx_capture.py`) |
-| `build/tmp/` | scratch: patched bitstreams, intermediate logs, `build/tmp/benchfix/` mutant runs |
+| `build/sim/` | one log per simulation bench |
 
 The numbers those files contain, and what the vendor image does under the
 same conditions, are collected in `docs/STATUS.md`.
-
-Streaming measurements at 245 MB/s need the host: the tools ask for
-real-time priority (`chrt`) when the account may use it, and the gate
-reports "inconclusive" rather than a verdict when even the vendor image
-loses samples.
 
 ## Licence
 

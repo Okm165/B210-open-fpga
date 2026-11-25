@@ -20,7 +20,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMG=$(realpath "${1:?usage: eyescan.sh <image.bin> [rate_hz]}")
 RATE=${2:-}
-SERIAL=${SERIAL:-31B92DD}
 UHD=${UHD_EYESCAN:-$PWD/.tools/uhd315}
 PROBE=$UHD/bin/uhd_usrp_probe
 [[ -x $PROBE ]] || { echo "no $PROBE (run scripts/toolchain.sh uhd)" >&2; exit 2; }
@@ -33,7 +32,7 @@ mkdir -p build/eye
 # fails; the scan lines are the result here, so judge by them.
 env LD_LIBRARY_PATH="$UHD/lib" UHD_IMAGES_DIR="${UHD_IMAGES_DIR:-/usr/share/uhd/images}" \
   UHD_AD936X_EYESCAN=2d ${RATE:+UHD_AD936X_EYESCAN_RATE=$RATE} \
-  timeout 600 "$PROBE" --args="type=b200,serial=$SERIAL,fpga=$IMG" > "$OUT" 2>&1 || true
+  timeout 600 "$PROBE" --args="type=b200${SERIAL:+,serial=$SERIAL},fpga=$IMG" > "$OUT" 2>&1 || true
 [[ $(grep -c '^EYE' "$OUT") -ge 961 ]] \
   || { echo "FAIL: no complete scan, see $OUT" >&2; tail -5 "$OUT" >&2; exit 1; }
 echo "image: $IMG"

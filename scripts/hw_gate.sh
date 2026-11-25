@@ -87,13 +87,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMG=$(realpath "${1:?usage: hw_gate.sh <image.bin>}")
-SERIAL=${SERIAL:-31B92DD}
+# One B2xx on the host needs no serial; SERIAL=<serial> picks among several.
+DEV="type=b200${SERIAL:+,serial=$SERIAL}"
 EYE_MIN_STEPS=${EYE_MIN_STEPS:-8}
 PRBS_RUNS=${PRBS_RUNS:-8}
 BUS_MARGIN_STEPS=${BUS_MARGIN_STEPS:-20}
-VENDOR=/usr/share/uhd/images/usrp_b210_fpga.bin
+# Where UHD keeps the FX3 firmware and the vendor FPGA image (the reference).
+export UHD_IMAGES_DIR=${UHD_IMAGES_DIR:-/usr/share/uhd/images}
+VENDOR=$UHD_IMAGES_DIR/usrp_b210_fpga.bin
 BENCH=$PWD/.tools/uhd315/bin/benchmark_rate
-ARGS="type=b200,serial=${SERIAL},fpga=${IMG}"
+ARGS="$DEV,fpga=${IMG}"
 OUT="build/hw-gate-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 fail() { echo "GATE FAIL ($1): $2" >&2; exit 1; }
@@ -134,7 +137,7 @@ grep -q "Loading FPGA image: $IMG" "$OUT/02-init.txt" || fail init "UHD did not 
   || fail init "expected two radio cores"
 grep -E "Loading FPGA|loopback test passed|FPGA Version" "$OUT/02-init.txt" || true
 stock_rx() {   # stock_rx <image> <log> <channels> <rate>
-  $RT timeout 240 python3 scripts/rx_capture.py --args "type=b200,serial=${SERIAL},fpga=$1" \
+  $RT timeout 240 python3 scripts/rx_capture.py --args "$DEV,fpga=$1" \
     --chans "$3" --rate "$4" --secs 0.1 --out "$OUT/stock-rx" > "$2" 2>&1
 }
 for mode in "2 30.72e6" "1 61.44e6"; do
@@ -197,8 +200,8 @@ exact() {   # exact <name> <BIST|LOOPBACK> <host rate> <channels> <samples> <tx 
   mkdir -p "$OUT/dsp"
   for attempt in 1 2 3 fail; do      # a capture cut short by the host is taken again
     [[ $attempt != fail ]] || { echo "GATE FAIL (dsp): $name: no complete capture, see $prefix.log" >&2; return 1; }
-    env "UHD_AD936X_$source" LD_LIBRARY_PATH="$PWD/.tools/uhd315/lib" UHD_IMAGES_DIR=/usr/share/uhd/images \
-      $RT timeout 120 .tools/uhd315/bin/rx_dump "type=b200,serial=${SERIAL},fpga=${EXACT_IMG:-$IMG},master_clock_rate=30.72e6" \
+    env "UHD_AD936X_$source" LD_LIBRARY_PATH="$PWD/.tools/uhd315/lib" \
+      $RT timeout 120 .tools/uhd315/bin/rx_dump "$DEV,fpga=${EXACT_IMG:-$IMG},master_clock_rate=30.72e6" \
       "$rate" "$chans" "$count" "$prefix" 100e6 0 sc16 $tone > "$prefix.log" 2>&1 && break
   done
   python3 scripts/dsp_exact.py "$@" "$prefix" --chans "$chans" > "$log" 2>&1 || true
@@ -224,7 +227,7 @@ bus_check() {   # bus_check <image>: control, receive data and transmit data ove
   EXACT_IMG=$image exact "margin-$(basename "$image" .bin)" LOOPBACK=1 30.72e6 0 1048576 1e6 loop --interp 1 --dac round
 }
 export -f bus_check exact
-export OUT SERIAL RT IMG
+export OUT DEV RT IMG
 python3 scripts/bus_window.py "${FASM#$PWD/}" --around "$BUS_MARGIN_STEPS" --image "${IMG#$PWD/}" \
   --run "bash -c 'bus_check {bin}'" > "$OUT/06-bus-margin.txt" 2>&1 \
   || { tail -4 "$OUT/06-bus-margin.txt"; fail "bus margin" "see $OUT/06-bus-margin.txt and build/tmp/"; }
@@ -245,8 +248,8 @@ BUF16="num_recv_frames=512,recv_frame_size=16360,num_send_frames=256,send_frame_
 BUF12="num_recv_frames=512,recv_frame_size=12264,num_send_frames=256,send_frame_size=12264"
 run() {   # run <image> <log> <rx samples due> <tx samples due> <benchmark args...>: prints "ok" or what went wrong
   local image=$1 log=$2 rx_due=$3 tx_due=$4; shift 4
-  LD_LIBRARY_PATH=$PWD/.tools/uhd315/lib UHD_IMAGES_DIR=/usr/share/uhd/images \
-    $RT timeout 120 "$BENCH" --args "type=b200,serial=${SERIAL},fpga=${image},${BUF}" --duration 10 "$@" > "$log" 2>&1 \
+  LD_LIBRARY_PATH=$PWD/.tools/uhd315/lib \
+    $RT timeout 120 "$BENCH" --args "$DEV,fpga=${image},${BUF}" --duration 10 "$@" > "$log" 2>&1 \
     || { echo "did not complete"; return; }
   # Counters that mean data was lost, and counters that only mean the host
   # waited for a metadata event: benchmark_rate reports two transmit metadata
