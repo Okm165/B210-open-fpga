@@ -15,8 +15,6 @@ pub const HEADER: usize = 16;
 pub const PAYLOAD: usize = DATA_BUFFER - HEADER;
 /// Operations per command packet: (1024 - 16) / 8.
 pub const MAX_OPS: usize = (CONTROL_BUFFER - HEADER) / 8;
-/// Events per event packet: (1024 - 16) / 16.
-pub const MAX_EVENTS: usize = (CONTROL_BUFFER - HEADER) / 16;
 pub const VERSION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +316,7 @@ pub enum EventCode {
     Late,
     SeqError,
     BurstAck,
+    BadPacket,
     Other(u8),
 }
 
@@ -343,6 +342,7 @@ pub fn events(payload: &[u8]) -> Vec<Event> {
                 3 => EventCode::Late,
                 4 => EventCode::SeqError,
                 5 => EventCode::BurstAck,
+                6 => EventCode::BadPacket,
                 c => EventCode::Other(c),
             },
             channels: b[1],
@@ -375,7 +375,6 @@ mod tests {
         assert_eq!(Format::Sc12.times_per_packet(1), 5456);
         assert_eq!(Format::Sc12.times_per_packet(2), 2728);
         assert_eq!(MAX_OPS, 126);
-        assert_eq!(MAX_EVENTS, 63);
     }
 
     #[test]

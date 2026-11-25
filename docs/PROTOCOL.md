@@ -115,18 +115,21 @@ around the present, so commands up to 35 s ahead are unambiguous.
 
 ## 5. Events (EP8)
 
-An event packet (type 4) holds up to 63 events of 16 bytes:
+An event is the increase of one of the FPGA's counters. Every 100 us the
+FPGA compares its counters with what it last reported; if any rose, it
+sends one event packet (type 4, HAS_TIME, its own sequence) with one event
+per counter that rose, in code order (at most 6 events, 112 bytes):
 
 | Bytes | Field |
 | --- | --- |
-| 0 | code: 1 OVERFLOW, 2 UNDERFLOW, 3 LATE, 4 SEQ_ERROR, 5 BURST_ACK |
-| 1 | channels |
+| 0 | code: 1 OVERFLOW (rx sample times dropped), 2 UNDERFLOW (tx gaps in a burst), 3 LATE (tx bursts after their time), 4 SEQ_ERROR (tx sequence jumps), 5 BURST_ACK (tx bursts played to END_OF_BURST), 6 BAD_PACKET (tx packets malformed or cut short) |
+| 1 | channels (0: not channel specific) |
 | 2-3 | zero |
-| 4-7 | count (samples dropped, bursts, packets) |
-| 8-15 | time of the event, ticks |
+| 4-7 | count: the increase since the previous report |
+| 8-15 | time: the FPGA time when the packet was built (the header's time) |
 
-Events never hold back data: when the host does not read them, the FPGA
-adds further events of the same code to the last one's count.
+Events never hold back data and are never lost: while the host does not
+read them, the increases add up until a packet can go.
 
 ## 6. Registers (16-bit addresses, 32-bit values, all on the bus clock)
 
