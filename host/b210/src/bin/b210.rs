@@ -14,7 +14,7 @@
 use anyhow::{bail, Context, Result};
 use b210::proto::{self, flag, Format, Header, Kind, Op};
 use b210::regs::{self, rx, test};
-use b210::usb::{Ctrl, Usb};
+use b210::usb::{zero_copy, Ctrl, Usb, DEPTH_MS_DEFAULT};
 use clap::{Args, Parser, Subcommand};
 use nusb::transfer::{Bulk, In, Out};
 use nusb::Endpoint;
@@ -40,6 +40,35 @@ enum Cmd {
     RxTest(StreamArgs),
     /// One timed tx burst through the FPGA loopback, back on rx at its tick
     LoopTest(StreamArgs),
+    /// Live health: status, event counters, USB events, once per interval
+    Monitor {
+        /// ms between readings
+        #[arg(long, default_value_t = 500)]
+        interval_ms: u64,
+    },
+    /// Stream the rx source to a raw file (interleaved i16, I0 Q0 [I1 Q1])
+    Capture {
+        #[arg(long, default_value_t = 1.0)]
+        seconds: f64,
+        /// sc16 or sc12
+        #[arg(long, default_value = "sc12")]
+        format: String,
+        /// 1 or 2
+        #[arg(long, default_value_t = 2)]
+        channels: u32,
+        /// a sample strobe every DIV + 1 cycles of the 61.54 MHz test clock
+        #[arg(long, default_value_t = 1)]
+        div: u32,
+        /// host buffering per direction, ms of the 400 MB/s bus limit (1..100)
+        #[arg(long, default_value_t = DEPTH_MS_DEFAULT)]
+        depth_ms: f64,
+        /// output file
+        #[arg(long, default_value = "capture.raw")]
+        out: std::path::PathBuf,
+        /// the source: pattern f(t) or the tx loopback
+        #[arg(long, default_value = "pattern")]
+        source: String,
+    },
 }
 
 #[derive(Args)]
@@ -55,9 +84,9 @@ struct StreamArgs {
     /// a sample strobe every DIV + 1 cycles of the 61.54 MHz test clock
     #[arg(long, default_value_t = 1)]
     div: u32,
-    /// transfers in flight per direction
-    #[arg(long, default_value_t = 64)]
-    depth: usize,
+    /// host buffering per direction, ms of the 400 MB/s bus limit (1..100)
+    #[arg(long, default_value_t = DEPTH_MS_DEFAULT)]
+    depth_ms: f64,
 }
 
 /// The step-1 test sample clock: 1200 MHz / 19.5 (fpga/rtl/b210.v).
@@ -100,7 +129,13 @@ fn number(s: &str) -> Result<u32> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut usb = Usb::open()?;
+    // Buffering is planned before the endpoints open; commands that do not
+    // stream still use the default so the usbfs check has one plan.
+    let depth_ms = match &cli.cmd {
+        Cmd::RxTest(a) | Cmd::LoopTest(a) => a.depth_ms,
+        _ => DEPTH_MS_DEFAULT,
+    };
+    let mut usb = Usb::open(depth_ms)?;
     match cli.cmd {
         Cmd::Load { image } => {
             let bytes = std::fs::read(&image).with_context(|| format!("{}", image.display()))?;
@@ -119,6 +154,11 @@ fn main() -> Result<()> {
         Cmd::Write { addr, value } => usb.ctrl.write(number(&addr)? as u16, number(&value)?)?,
         Cmd::RxTest(a) => rx_test(&mut usb, &a)?,
         Cmd::LoopTest(a) => loop_test(&mut usb, &a)?,
+        Cmd::Monitor { interval_ms } => monitor(&mut usb, interval_ms)?,
+        Cmd::Capture { seconds, format, channels, div, depth_ms, out, source } => {
+            let a = StreamArgs { seconds, format, channels, div, depth_ms };
+            capture(&mut usb, &a, &source, &out)?
+        }
     }
     Ok(())
 }
@@ -147,6 +187,24 @@ fn check_counters(before: &[u32; 7], after: &[u32; 7], want: [u32; 7]) -> bool {
         }
     }
     ok
+}
+
+/// Every counter's increase, pass or fail. No ring-fill register exists in
+/// docs/PROTOCOL.md section 6, so there is none to report.
+fn report_counters(before: &[u32; 7], after: &[u32; 7]) {
+    let d = |i: usize| after[i].wrapping_sub(before[i]);
+    println!("counters: {} +{} {} +{} {} +{} {} +{} {} +{} {} +{} rx_lost +{}",
+             CODES[0], d(0), CODES[1], d(1), CODES[2], d(2),
+             CODES[3], d(3), CODES[4], d(4), CODES[5], d(5), d(6));
+}
+
+/// Events the EP8 reader queued, for information only: every count is also
+/// in the registers printed above and accumulating there is lossless.
+fn report_events(ctrl: &Ctrl) {
+    let n = ctrl.drain_events().len();
+    if n > 0 {
+        println!("usb events: {n} records (informational; the registers above are authoritative)");
+    }
 }
 
 /// The time now (time_lo latches time_hi: both read in one command).
@@ -190,7 +248,7 @@ impl Tally {
 fn rx_run(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: usize,
           expect: impl Fn(u64) -> [i16; 4], mut stop: impl FnMut(&Tally, f64) -> bool) -> Result<(Tally, f64)> {
     for _ in 0..depth {
-        let buf = rx.allocate(proto::DATA_BUFFER);
+        let buf = zero_copy(rx.allocate(proto::DATA_BUFFER));
         rx.submit(buf);
     }
     ctrl.write(regs::RX_SPP, s.per_packet() as u32)?;
@@ -205,6 +263,8 @@ fn rx_run(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: usize,
             ctrl.write(regs::RX_CTRL, rx::STOP)?;
             stopping = true;
         }
+        // 2 s without a 16 KiB packet is a stalled stream, not a slow host:
+        // at the slowest test rate one packet is a few milliseconds.
         let c = rx.wait_next_complete(Duration::from_secs(2)).context("no rx packet for 2 s")?;
         let n = c.actual_len;
         let buf = c.into_result()?;
@@ -214,6 +274,8 @@ fn rx_run(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: usize,
     let seconds = start.elapsed().as_secs_f64();
     rx.cancel_all();
     while rx.pending() > 0 {
+        // Cancelled transfers return at once; 1 s bounds a kernel that does
+        // not, and the loop exits after at most `depth` of them.
         rx.wait_next_complete(Duration::from_secs(1));
     }
     Ok((t, seconds))
@@ -290,11 +352,15 @@ fn rx_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     println!("rx-test {} x{}: {:.3} MS/s, {:.1} MB/s", a.format, a.channels, s.rate / 1e6, s.mbytes());
     let before = setup(&mut usb.ctrl, test::PATTERN, a.div)?;
     let pattern = |t: u64| std::array::from_fn(|k| test::pattern(t, k));
-    let (tally, seconds) = rx_run(&mut usb.rx, &mut usb.ctrl, s, a.depth, pattern,
+    let depth = usb.depth;
+    let (tally, seconds) = rx_run(&mut usb.rx, &mut usb.ctrl, s, depth, pattern,
                                   |_, elapsed| elapsed >= a.seconds)?;
     tally.report(seconds);
-    let ok = check_counters(&before, &counters(&mut usb.ctrl)?, [0; 7]) & tally.clean();
-    if !ok {
+    let after = counters(&mut usb.ctrl)?;
+    let counters_ok = check_counters(&before, &after, [0; 7]);
+    report_counters(&before, &after);
+    report_events(&usb.ctrl);
+    if !(counters_ok & tally.clean()) {
         bail!("rx-test FAILED");
     }
     println!("rx-test PASSED: every sample time checked, none lost");
@@ -333,7 +399,7 @@ fn tx_burst(tx: &mut Endpoint<Bulk, Out>, s: Shape, at: u64, n: u64, depth: usiz
                          sequence: p as u16, flags, time: at + i0 };
         let size = proto::tx_packet(h, &values[..m as usize * nv], &mut scratch);
         let mut buf = if tx.pending() < depth {
-            tx.allocate(proto::DATA_BUFFER)
+            zero_copy(tx.allocate(proto::DATA_BUFFER))
         } else {
             tx.wait_next_complete(wait).context("tx transfer did not complete")?.into_result()?
         };
@@ -359,11 +425,15 @@ fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     let expect = move |t: u64| -> [i16; 4] {
         if t >= at && t < end { std::array::from_fn(|k| burst_value(t - at, k)) } else { [0; 4] }
     };
-    let Usb { ctrl, tx, rx } = usb;
+    let depth = usb.depth;
+    let Usb { ctrl, tx, rx, .. } = usb;
     let (rx_result, tx_result) = std::thread::scope(|scope| {
+        // The burst starts after `lead`; 5 s on top of it is over 1000
+        // 16 KiB packets at the bus rate, so a transfer that has not
+        // completed by then is stuck, not merely queued.
         let wait = Duration::from_secs_f64(lead + 5.0);
-        let sender = scope.spawn(move || tx_burst(tx, s, at, n, a.depth, wait));
-        let r = rx_run(rx, ctrl, s, a.depth, expect,
+        let sender = scope.spawn(move || tx_burst(tx, s, at, n, depth, wait));
+        let r = rx_run(rx, ctrl, s, depth, expect,
                        |t, _| t.next.is_some_and(|(time, _)| time >= end + tail));
         (r, sender.join().expect("tx thread"))
     });
@@ -377,10 +447,173 @@ fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     }
     let mut want = [0; 7];
     want[4] = 1;                                          // one BURST_ACK
-    let ok = check_counters(&before, &counters(ctrl)?, want) & tally.clean() & covered;
-    if !ok {
+    let after = counters(ctrl)?;
+    let counters_ok = check_counters(&before, &after, want);
+    report_counters(&before, &after);
+    report_events(ctrl);
+    if !(counters_ok & tally.clean() & covered) {
         bail!("loop-test FAILED");
     }
     println!("loop-test PASSED: all {n} tx samples back on rx at exactly their ticks, zeros around them");
+    Ok(())
+}
+
+// -- live health ---------------------------------------------------------------------------------
+
+/// One reading of the FPGA's state, as one command packet.
+fn health(ctrl: &mut Ctrl) -> Result<([u32; 7], u32, u64, u32)> {
+    let ops: Vec<Op> = [Op::Read { addr: regs::STATUS }, Op::Read { addr: regs::RX_CTRL }]
+        .into_iter().chain((0..6).map(|k| Op::Read { addr: regs::EVENTS + k }))
+        .chain([Op::Read { addr: regs::RX_LOST }, Op::Read { addr: regs::TIME_LO },
+                Op::Read { addr: regs::TIME_HI }]).collect();
+    let r = ctrl.exec(&ops)?;
+    let status = r[0].data;
+    let counters = std::array::from_fn(|i| r[2 + i].data);
+    let time = r[8].data as u64 | (r[9].data as u64) << 32;
+    Ok((counters, status, time, r[1].data))
+}
+
+/// Watch the board until interrupted: status bits, the event counters' rise
+/// per interval (500 ms default: every event code that rises is trouble
+/// except BURST_ACK), the sample clock's tick, and the USB event packets.
+fn monitor(usb: &mut Usb, interval_ms: u64) -> Result<()> {
+    // 500 ms: fast enough to see a burst or a fault, slow enough that the
+    // register reads (10 in one command packet, ~1 us each on the bus)
+    // never load the command FIFO.
+    let interval = Duration::from_millis(interval_ms.max(50));
+    println!("status: bit0 clocks locked, bit1 sample clock running; rx_ctrl bit0 a stream runs");
+    let (c, _, t, _) = health(&mut usb.ctrl)?;
+    println!("{:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}  status  tick",
+             "OVERFLOW", "UNDERFLOW", "LATE", "SEQ_ERR", "BURST_ACK", "BAD_PKT", "rx_lost", "cmd_drop");
+    let mut last = (c, t);
+    loop {
+        std::thread::sleep(interval);
+        let (c, status, t, rx_ctrl) = health(&mut usb.ctrl)?;
+        let d = |a: u32, b: u32| a.wrapping_sub(b);
+        let per = |i: usize, pc: &[u32; 7], c: &[u32; 7]| if i < 6 { d(c[i], pc[i]) } else { d(c[6], pc[6]) };
+        println!("{:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}  {:04b}  {}{}",
+                 per(0, &last.0, &c), per(1, &last.0, &c), per(2, &last.0, &c), per(3, &last.0, &c),
+                 per(4, &last.0, &c), per(5, &last.0, &c), per(6, &last.0, &c), 0,
+                 status & 3, t, if rx_ctrl & 1 != 0 { " rx-running" } else { "" });
+        for e in usb.ctrl.drain_events() {
+            println!("  event {:?} count +{} at tick {}", e.code, e.count, e.time);
+        }
+        last = (c, t);
+    }
+}
+
+// -- capture -------------------------------------------------------------------------------------
+
+/// Stream the rx source to `out` as interleaved i16 (I0 Q0 [I1 Q1]), print
+/// signal statistics, and stop after `seconds`. The step-1 sources are the
+/// FPGA's pattern and the tx loopback; the radio needs the step-2 image.
+fn capture(usb: &mut Usb, a: &StreamArgs, source: &str, out: &std::path::Path) -> Result<()> {
+    let src = match source { "pattern" => test::PATTERN, "loopback" => test::LOOPBACK,
+                             _ => bail!("source: pattern or loopback") };
+    let s = Shape::new(a)?;
+    let nv = 2 * s.nch;
+    println!("capture {} x{} from {:?}: {:.3} MS/s -> {}", a.format, a.channels, source, s.rate / 1e6, out.display());
+    let before = setup(&mut usb.ctrl, src, a.div)?;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(out)?);
+    let depth = usb.depth;
+    ctrl_stream(&mut usb.rx, &mut usb.ctrl, s, depth, |vals| {
+        use std::io::Write;
+        let mut raw = Vec::with_capacity(2 * vals.len());
+        for v in vals { raw.extend_from_slice(&v.to_le_bytes()); }
+        file.write_all(&raw)
+    }, |_, elapsed| elapsed >= a.seconds)?;
+    drop(file);
+    let after = counters(&mut usb.ctrl)?;
+    // capture sends no burst, so no counter may rise in either source
+    let counters_ok = check_counters(&before, &after, [0; 7]);
+    // signal statistics over the whole file: level, clipping, quiet
+    // signal statistics from the file: level, clipping, quiet
+    let bytes = std::fs::read(out)?;
+    let mut lo = [i16::MAX; 4];
+    let mut hi = [i16::MIN; 4];
+    let mut sums = [0f64; 4];
+    let mut n4 = [0u64; 4];
+    for (i, c) in bytes.as_chunks::<2>().0.iter().enumerate() {
+        let v = i16::from_le_bytes(*c);
+        let k = i % nv;
+        if k < 4 {
+            lo[k] = lo[k].min(v); hi[k] = hi[k].max(v);
+            sums[k] += (v as f64).powi(2); n4[k] += 1;
+        }
+    }
+    let samples = bytes.len() / 2 / nv;
+    println!("{} sample times in {:.2} s = {:.3} MS/s", samples, a.seconds, samples as f64 / a.seconds / 1e6);
+    for k in 0..4 {
+        if n4[k] == 0 { continue; }
+        if k / 2 < s.nch {
+            let rms = (sums[k] / n4[k] as f64).sqrt();
+            println!("  {}{}: min {} max {} rms {:.1} (full scale +-2048)",
+                     if k % 2 == 0 { "I" } else { "Q" }, k / 2, lo[k], hi[k], rms);
+        }
+    }
+    if !counters_ok { bail!("capture: a counter rose that should not"); }
+    Ok(())
+}
+
+/// The rx stream loop, handing the unpacked values of every packet to
+/// `sink`. Shared by the checking tests and the raw capture.
+fn ctrl_stream(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: usize,
+               mut sink: impl FnMut(&[i16]) -> std::io::Result<()>,
+               mut stop: impl FnMut(&Tally, f64) -> bool) -> Result<()> {
+    let nv = 2 * s.nch;
+    ctrl.write(regs::RX_SPP, s.per_packet() as u32)?;
+    ctrl.write(regs::RX_COUNT, 0)?;
+    ctrl.write(regs::RX_CTRL, rx::START | rx::config(s.code, s.mask as u32))?;
+    let mut t = Tally::default();
+    let mut values = vec![0i16; 4 * 8192];
+    for _ in 0..depth {
+        rx.submit(zero_copy(rx.allocate(proto::DATA_BUFFER)));
+    }
+    let mut pending = Vec::new();        // bytes of a packet split over transfers
+    let start = Instant::now();
+    let mut stopping = false;
+    while !t.ended {
+        if !stopping && stop(&t, start.elapsed().as_secs_f64()) {
+            ctrl.write(regs::RX_CTRL, rx::STOP)?;
+            stopping = true;
+        }
+        let c = rx.wait_next_complete(Duration::from_secs(2)).context("no rx packet for 2 s")?;
+        let n = c.actual_len;
+        let buf = c.into_result()?;
+        if std::env::var("B210_DEBUG").is_ok() { eprintln!("{:.3}s transfer {n} bytes, pending {}, at {}", start.elapsed().as_secs_f64(), rx.pending(), Header::decode(&buf[..n]).map(|h| h.time).unwrap_or(0)); }
+        // Packets may split across transfers and several may share one, so
+        // accumulate bytes and walk whole packets: the wire size of a packet
+        // follows from its 16-bit length (PROTOCOL.md 1).
+        let mut bytes = std::mem::take(&mut pending);
+        bytes.extend_from_slice(&buf[..n]);
+        let mut at = 0;
+        while bytes.len() - at >= proto::HEADER {
+            let length = u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap()) as usize;
+            let size = proto::transfer_size(length, proto::DATA_BUFFER);
+            if bytes.len() - at < size { break }
+            let p = &bytes[at..at + size];
+            let h = match Header::decode(p) {
+                Ok(h) if h.kind == Kind::Rx && h.length as usize == length => h,
+                _ => { t.bad_headers += 1; at += size.max(1); continue }
+            };
+            let payload = h.length as usize - proto::HEADER;
+            let bpt = s.format.bytes_per_time(s.nch);
+            if payload.is_multiple_of(bpt) {
+                let n = payload / bpt;
+                let body = &p[proto::HEADER..proto::HEADER + payload];
+                if s.format == Format::Sc16 { proto::unpack_sc16(body, &mut values[..n * nv]); }
+                else { proto::unpack_sc12(body, &mut values[..n * nv]); }
+                sink(&values[..n * nv])?;
+                t.packets += 1; t.samples += n as u64;
+            } else { t.bad_headers += 1 }
+            t.ended |= h.flags & flag::END_OF_BURST != 0;
+            at += size;
+        }
+        pending = bytes.split_off(at);
+        rx.submit(buf);
+    }
+    rx.cancel_all();
+    while rx.pending() > 0 { rx.wait_next_complete(Duration::from_secs(1)); }
+    if t.bad_headers > 0 { bail!("capture: {} bad headers", t.bad_headers) }
     Ok(())
 }
