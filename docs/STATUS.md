@@ -62,7 +62,11 @@ clean vendor runs) was met once of the two times needed, so its verdict is
 is cycle-for-cycle the vendor's, the FIFOs are as deep, and the loss tracks
 the host's load on both images.  What remains is host-side and needs root:
 all USB completions are handled on one CPU, which any other job can
-delay.
+delay.  Placing the streaming process without root does not help: on the
+vendor image under the same load, unpinned runs lost samples in 3 of 8,
+runs pinned to the two CPUs the USB interrupt may use in 2 of 8, and runs
+pinned to the one CPU that takes it in 8 of 8 (the interrupt and the
+reader then compete for one core).
 
 ### Board indicators
 
