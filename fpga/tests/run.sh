@@ -59,6 +59,12 @@ tx_player PASS SEED=2
 tx_player PASS SEED=3 N=1500
 tx_player FAIL SEED=1 FAULT=1
 tx_player FAIL SEED=1 FAULT=2
+sample_core PASS SEED=1 STB=1
+sample_core PASS SEED=2 STB=2
+sample_core PASS SEED=3 STB=1 BURSTS=300
+sample_core PASS SEED=4 STB=2 BURSTS=300
+sample_core FAIL SEED=1 FAULT=1
+sample_core FAIL SEED=1 FAULT=2
 packet_fifo FAIL SEED=1 FAULT=2 WCLK=8138 RCLK=5000
 '
 
@@ -69,6 +75,7 @@ sources() {
     ctrl) echo fpga/tests/tb_ctrl.v fpga/rtl/ctrl.v fpga/rtl/packet_fifo.v ;;
     rx_framer) echo fpga/tests/tb_rx_framer.v fpga/rtl/rx_framer.v fpga/rtl/packet_fifo.v ;;
     tx_player) echo fpga/tests/tb_tx_player.v fpga/rtl/tx_player.v fpga/rtl/packet_fifo.v ;;
+    sample_core) echo fpga/tests/tb_sample_core.v fpga/rtl/sample_core.v fpga/rtl/cdc_fifo.v fpga/rtl/gray_sync.v ;;
   esac
   echo fpga/tests/prims.v
 }
