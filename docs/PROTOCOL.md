@@ -133,27 +133,35 @@ read them, the increases add up until a packet can go.
 
 ## 6. Registers (16-bit addresses, 32-bit values, all on the bus clock)
 
+The map as built (fpga/rtl/regs.v); an address not listed reads 0 and
+ignores writes. Registers for the AD9361, antenna switches and GPIO come
+with the radio step.
+
 | Address | Name | Access | Content |
 | --- | --- | --- | --- |
 | 0x000 | id | r | 0x42323130 ("B210") |
-| 0x001 | version | r | protocol version [31:16], FPGA build number [15:0] |
+| 0x001 | version | r | protocol version [31:16], build number [15:0] |
 | 0x002 | build | r | first 32 bits of the source commit |
-| 0x003 | scratch | rw | free, for bus self-tests |
-| 0x004 | status | r | clocks locked [0], input delays ready [1], AD9361 clock running [2], reference locked [3], AD9361 CTRL_OUT [15:8] |
-| 0x005 | radio | rw | AD9361 reset [0], 2R2T [1], reference select [2], front-end swap [3], band selects [10:4] |
-| 0x010 | time_lo / 0x011 time_hi | r | time now (reading time_lo latches time_hi) |
-| 0x012 | time_set_lo / 0x013 time_set_hi | rw | time to set |
-| 0x014 | time_ctrl | w | 1 set now, 2 set at the next PPS; PPS select [9:8] |
-| 0x015 | pps_lo / 0x016 pps_hi | r | time at the last PPS |
-| 0x020 | rx_ctrl | rw | start [0], stop [1], at time [3], format [7:4], channels [11:8] |
+| 0x003 | scratch | rw | free, for bus tests |
+| 0x004 | status | r | clocks locked [0], sample clock running [1] |
+| 0x010 | time_lo | r | time now [31:0]; reading it latches time_hi |
+| 0x011 | time_hi | r | time [63:32] as of the last time_lo read |
+| 0x012 / 0x013 | time_set_lo / hi | rw | the time to set |
+| 0x014 | time_ctrl | w / r | write 1: set the time at the next sample; read [0]: a set is pending |
+| 0x020 | rx_ctrl | rw | write: start [0], stop [1] (strobes), at time [3], format [7:4], channels [9:8]; read: the same, [0] = a stream runs |
 | 0x021 | rx_count | rw | sample times in the stream, 0 = until stopped |
-| 0x022 | rx_at_lo / 0x023 rx_at_hi | rw | start time (with at time) |
-| 0x024 | rx_spp | rw | sample times per packet (16 .. full); the driver sets it from rate and latency |
-| 0x030 | tx_ctrl | rw | enable [0], format [7:4], channels [11:8] |
-| 0x040 | atr_idle / 0x041 atr_rx / 0x042 atr_tx / 0x043 atr_fdx | rw | antenna switch and LED pins per front end, per state |
-| 0x048 | gpio_dir / 0x049 gpio_out / 0x04A gpio_in | rw / r | front-panel pins |
-| 0x080 .. | counters | r | rx packets, rx dropped samples, rx ring high-water mark; tx packets, underflows, late bursts, sequence errors, tx ring low-water mark |
-| 0x0F0 | test | rw | 0 off, 1 counter pattern in place of the AD9361, 2 tx -> rx loopback in the FPGA |
+| 0x022 / 0x023 | rx_at_lo / hi | rw | start time (with at time) |
+| 0x024 | rx_spp | rw | sample times per packet (clamped to 16 .. full) |
+| 0x080 + k - 1 | events | r | counter of event code k (section 5), k = 1 .. 6 |
+| 0x086 | rx_lost | r | sample times lost crossing to the bus clock (nonzero = a design error) |
+| 0x087 | cmd_dropped | r | command packets dropped as malformed |
+| 0x0F0 | test | rw | rx source: 0 radio, 1 pattern, 2 tx loopback |
+| 0x0F1 | test_div | rw | step 1 only: a sample strobe every test_div + 1 cycles of the 61.44 MHz test clock |
 
-Writing a register a stream depends on (format, channels) while it runs
-is undefined; the driver stops streams first.
+The pattern (test = 1) for the sample time t is I0 = t, Q0 = ~t, I1 = 7 t,
+Q1 = 13 t + 5, each modulo 2^12, as 12-bit codes. In loopback (test = 2) rx
+carries the tx sample played at the same tick, 0 outside bursts.
+
+tx packets describe themselves (format, channels in the header): there is
+no tx configuration register. A stream's configuration must not change
+while it runs.

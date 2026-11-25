@@ -71,6 +71,9 @@ events PASS SEED=3 SLOW=1
 events PASS SEED=4 SLOW=1 INTERVAL=10000 CYCLES=1000000
 events FAIL SEED=1 FAULT=1
 events FAIL SEED=1 FAULT=2
+regs PASS SEED=1
+regs PASS SEED=2 N=60000
+regs FAIL SEED=1 FAULT=1
 packet_fifo FAIL SEED=1 FAULT=2 WCLK=8138 RCLK=5000
 '
 
@@ -83,6 +86,7 @@ sources() {
     tx_player) echo fpga/tests/tb_tx_player.v fpga/rtl/tx_player.v fpga/rtl/packet_fifo.v ;;
     sample_core) echo fpga/tests/tb_sample_core.v fpga/rtl/sample_core.v fpga/rtl/cdc_fifo.v fpga/rtl/gray_sync.v ;;
     events) echo fpga/tests/tb_events.v fpga/rtl/events.v fpga/rtl/packet_mux.v fpga/rtl/packet_fifo.v ;;
+    regs) echo fpga/tests/tb_regs.v fpga/rtl/regs.v ;;
   esac
   echo fpga/tests/prims.v
 }
