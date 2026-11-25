@@ -57,8 +57,7 @@ pub mod flag {
     pub const START_OF_BURST: u16 = 1 << 1;
     pub const END_OF_BURST: u16 = 1 << 2;
     pub const OVERFLOW: u16 = 1 << 3;
-    pub const OVERRANGE: u16 = 1 << 4;
-    pub const ALL: u16 = (1 << 5) - 1;
+    pub const ALL: u16 = (1 << 4) - 1;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

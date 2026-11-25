@@ -8,6 +8,10 @@
 // packet before it starts one. These are the two promises fx3_master
 // relies on (out_room, in_avail), and the radio side relies on them too.
 //
+// Depth: a stream of full packets needs more than 2 MAX words: a finished
+// packet waits whole until the reader takes it, while the writer reserves
+// MAX words (+ 1, see w_room) for the next.
+//
 // Write side (wclk):
 //   w_room   at least MAX words free, counting the word on w_data in this
 //            cycle as written. Check it in the cycle before the first word

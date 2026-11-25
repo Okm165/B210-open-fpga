@@ -20,7 +20,7 @@ no Ettus RTL, no Python.
 | Host | one Rust workspace; no Python |
 | Configuration | one declarative TOML, applied whole, only differences written |
 | AD9361 driver | UHD's GPL-3 sequence (the one that runs this board in v1), rewritten minimal in Rust; proven write for write against v1's SPI log on the board, then BIST tone, PRBS, loopback |
-| Sample clock | the AD9361 data clock alone (61.44 MHz in both modes) with a sample strobe in 2-channel mode, as ADI's Pluto and Ettus' 7-series e310_io; the rx/tx rings are the only crossing to the bus clock; the bus side counts data-clock edges to see it alive |
+| Sample clock | the AD9361 data clock alone (61.44 MHz in both modes) with a sample strobe in 2-channel mode, as ADI's Pluto and Ettus' 7-series e310_io; each sample time crosses to the bus clock in a 16-entry FIFO with its 64-bit time (a 32-bit ring port at 61.44 MHz could not also carry packet headers at sc16 top rate); framing, rings and stream control run at 100 MHz; the bus side counts data-clock edges to see it alive |
 | USB crate | nusb (pure Rust usbfs, many transfers in flight, zero-copy buffers) |
 
 ## FPGA: what it does
@@ -51,11 +51,12 @@ no Ettus RTL, no Python.
 | Word | Content |
 | --- | --- |
 | 0 | length (bytes), type (rx, tx, command, result, event), format, channel mask |
-| 1 | sequence, flags: HAS_TIME, START_OF_BURST, END_OF_BURST, OVERFLOW, OVERRANGE |
+| 1 | sequence, flags: HAS_TIME, START_OF_BURST, END_OF_BURST, OVERFLOW |
 | 2-3 | time of the first sample, in sample ticks |
 
-Data packets are exactly 16 384 bytes (one FX3 buffer) except at the end
-of a burst or after the latency timer, when a short packet ends with
+Data packets are exactly 16 384 bytes (one FX3 buffer) unless the driver
+asks for fewer samples per packet (latency at low rates) or at the end of
+a burst, when a short packet ends with
 PKTEND, padded off multiples of 1024 bytes. sc12: four complex samples in
 three 32-bit words (bit order fixed in the protocol file).
 

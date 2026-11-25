@@ -5,7 +5,8 @@
 # result it must give. An expected FAIL is a negative control: an injected
 # fault, or an FX3 latency one cycle beyond the design's margin, that the
 # bench has to catch. An unexpected PASS is as wrong as an unexpected FAIL.
-# Cases run in parallel; exit status 1 if any result differs.
+# Cases run in parallel, each for at most LIMIT seconds (default 1500; a case
+# that runs out reports ERROR); exit status 1 if any result differs.
 set -eu
 cd "$(dirname "$0")/../.."
 mkdir -p build/sim
@@ -46,6 +47,13 @@ ctrl PASS SEED=2
 ctrl PASS SEED=3 N=600
 ctrl FAIL SEED=1 FAULT=1
 ctrl FAIL SEED=1 FAULT=2
+rx_framer PASS SEED=1
+rx_framer PASS SEED=2
+rx_framer PASS SEED=3 STREAMS=80
+rx_framer PASS SEED=4 SLOW=1
+rx_framer PASS SEED=5 SLOW=1
+rx_framer FAIL SEED=1 FAULT=1
+rx_framer FAIL SEED=1 FAULT=2
 packet_fifo FAIL SEED=1 FAULT=2 WCLK=8138 RCLK=5000
 '
 
@@ -54,6 +62,7 @@ sources() {
     fx3_master) echo fpga/tests/tb_fx3_master.v fpga/tests/fx3_model.v fpga/rtl/fx3_master.v fpga/rtl/fx3_pads.v ;;
     packet_fifo) echo fpga/tests/tb_packet_fifo.v fpga/rtl/packet_fifo.v ;;
     ctrl) echo fpga/tests/tb_ctrl.v fpga/rtl/ctrl.v fpga/rtl/packet_fifo.v ;;
+    rx_framer) echo fpga/tests/tb_rx_framer.v fpga/rtl/rx_framer.v fpga/rtl/packet_fifo.v ;;
   esac
   echo fpga/tests/prims.v
 }
@@ -65,8 +74,8 @@ one() {   # bench expect params...
   # shellcheck disable=SC2046,SC2086
   iverilog -g2005 -Wall -Wno-timescale -o "build/sim/$tag" -s "tb_$bench" $params $(sources "$bench") \
     > "build/sim/$tag.log" 2>&1 &&
-  vvp -n "build/sim/$tag" >> "build/sim/$tag.log" 2>&1 || true
-  got=$(sed -n 's/^RESULT: //p' "build/sim/$tag.log")
+  timeout "${LIMIT:-1500}" vvp -n "build/sim/$tag" >> "build/sim/$tag.log" 2>&1 || true
+  got=$(sed -n "s/^RESULT: \([A-Z]*\).*/\1/p" "build/sim/$tag.log")
   [ -n "$got" ] || got=ERROR
   verdict=ok; [ "$got" = "$expect" ] || verdict=WRONG
   printf '%-5s %-6s %-4s %s %s  (%s)\n' "$verdict" "$bench" "$expect" "$*" \

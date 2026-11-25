@@ -45,8 +45,7 @@ Constraints of the firmware's DMA channels (2 buffers per channel: data
 | 1 | 17 | `START_OF_BURST` |
 | 1 | 18 | `END_OF_BURST` |
 | 1 | 19 | `OVERFLOW`: rx samples were dropped before this packet |
-| 1 | 20 | `OVERRANGE`: a sample in this packet is at -2048 or +2047 |
-| 1 | 31:21 | zero |
+| 1 | 31:20 | zero |
 | 2 | 31:0 | `time` bits 31:0 |
 | 3 | 31:0 | `time` bits 63:32 |
 
@@ -76,9 +75,12 @@ bytes), so the payload is a whole number of sample times in every case:
 | sc12 | 1 | 3 | 5456 |
 | sc12 | 2 | 6 | 2728 |
 
-A shorter data packet only ends a burst (END_OF_BURST) or carries samples
-held longer than the latency limit (rx register `latency`); it still holds
-whole sample times.
+An rx packet holds n sample times: n = `rx_spp` (clamped to 16 .. the full
+count above), fewer only in a stream's last packet. A stream ended by
+`stop` closes with a 16-byte packet (header only, END_OF_BURST) whose time
+is the tick after the stream's last sample. When the FPGA's rx buffer has
+no room for a packet, its n samples are dropped and the next packet
+carries OVERFLOW; the gap in time is the number lost.
 
 Bus load: rate x bytes per sample time, both directions summed, must stay
 below 400 MB/s (32 bits x 100 MHz). Full duplex 2 x 2 x 30.72 MS/s needs
@@ -140,10 +142,10 @@ adds further events of the same code to the last one's count.
 | 0x012 | time_set_lo / 0x013 time_set_hi | rw | time to set |
 | 0x014 | time_ctrl | w | 1 set now, 2 set at the next PPS; PPS select [9:8] |
 | 0x015 | pps_lo / 0x016 pps_hi | r | time at the last PPS |
-| 0x020 | rx_ctrl | rw | start [0], stop [1], continuous [2], at time [3], format [7:4], channels [11:8] |
-| 0x021 | rx_count | rw | samples per channel for a finite stream |
-| 0x022 | rx_at_lo / 0x023 rx_at_hi | rw | start or stop time |
-| 0x024 | rx_latency | rw | longest hold of a sample before a short packet, microseconds |
+| 0x020 | rx_ctrl | rw | start [0], stop [1], at time [3], format [7:4], channels [11:8] |
+| 0x021 | rx_count | rw | sample times in the stream, 0 = until stopped |
+| 0x022 | rx_at_lo / 0x023 rx_at_hi | rw | start time (with at time) |
+| 0x024 | rx_spp | rw | sample times per packet (16 .. full); the driver sets it from rate and latency |
 | 0x030 | tx_ctrl | rw | enable [0], format [7:4], channels [11:8] |
 | 0x040 | atr_idle / 0x041 atr_rx / 0x042 atr_tx / 0x043 atr_fdx | rw | antenna switch and LED pins per front end, per state |
 | 0x048 | gpio_dir / 0x049 gpio_out / 0x04A gpio_in | rw / r | front-panel pins |
