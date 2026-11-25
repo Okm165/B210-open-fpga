@@ -46,7 +46,6 @@
 //!             bin width, dBFS/Hz.
 
 use crate::dsp::{self, Spectrum};
-use crate::iq::FULL_SCALE;
 
 #[derive(Clone, Debug)]
 pub struct Level {
@@ -135,12 +134,11 @@ pub fn level(s: &[i16]) -> Level {
         peak = peak.max(m);
     }
     pow /= n;
-    let fs = FULL_SCALE;
     Level {
         dc_i, dc_q,
-        dc_dbfs: dsp::dbfs(dc_i * dc_i + dc_q * dc_q, fs),
-        rms_dbfs: dsp::dbfs(pow, fs),
-        peak_dbfs: dsp::dbfs(peak, fs),
+        dc_dbfs: dsp::dbfs(dc_i * dc_i + dc_q * dc_q),
+        rms_dbfs: dsp::dbfs(pow),
+        peak_dbfs: dsp::dbfs(peak),
         crest_db: if pow > 0.0 { 10.0 * (peak / pow).log10() } else { 0.0 },
         clipped: clip as f64 / (2.0 * n),
     }
@@ -173,23 +171,22 @@ pub fn analyze(s: &[i16], rate: f64, fft: usize) -> Option<Report> {
     let mut sorted = sp.power.clone();
     sorted.sort_by(f64::total_cmp);
     let median = sorted[n / 2].max(1e-30);
-    let fs = FULL_SCALE;
     let k = sp.segments as f64;
     let floor_bin = median / (1.0 - 1.0 / (9.0 * k)).powi(3);
     let dc = n / 2;
     let near = |a: usize, b: usize| { let d = a.abs_diff(b); d.min(n - d) <= LOBE };
     let peak = (0..n).filter(|&k| !near(k, dc)).max_by(|a, b| sp.power[*a].total_cmp(&sp.power[*b]))?;
     let has_tone = sp.power[peak] > median * 10f64.powf(TONE_DB / 10.0);
-    let (tone, spurs) = if has_tone { tone(&sp, peak, fs) } else { (None, spurs_of(&sp, None, fs)) };
+    let (tone, spurs) = if has_tone { tone(&sp, peak) } else { (None, spurs_of(&sp, None)) };
     Some(Report {
         frames: s.len() / 2, rate, level, balance, tone, spurs,
-        floor_dbfs_bin: dsp::dbfs(floor_bin, fs),
-        floor_dbfs_hz: dsp::dbfs(floor_bin / sp.df(), fs),
+        floor_dbfs_bin: dsp::dbfs(floor_bin),
+        floor_dbfs_hz: dsp::dbfs(floor_bin / sp.df()),
         fft: n,
     })
 }
 
-fn tone(sp: &Spectrum, k0: usize, fs: f64) -> (Option<Tone>, Vec<Spur>) {
+fn tone(sp: &Spectrum, k0: usize) -> (Option<Tone>, Vec<Spur>) {
     let n = sp.n();
     // frequency: power-weighted centroid of the main lobe
     let (mut wsum, mut fsum) = (0.0, 0.0);
@@ -219,7 +216,7 @@ fn tone(sp: &Spectrum, k0: usize, fs: f64) -> (Option<Tone>, Vec<Spur>) {
     let (mut noise, mut m) = (0.0, 0usize);
     for (p, masked) in sp.power.iter().zip(&nmask) { if !masked { noise += p; m += 1; } }
     let noise_band = (noise * n as f64 / m.max(1) as f64).max(1e-30);
-    let dbfs = dsp::dbfs(p_tone, fs);
+    let dbfs = dsp::dbfs(p_tone);
     let sinad = 10.0 * (p_tone / sinad_noise).log10();
     let t = Tone {
         freq: f, dbfs,
@@ -230,12 +227,12 @@ fn tone(sp: &Spectrum, k0: usize, fs: f64) -> (Option<Tone>, Vec<Spur>) {
         enob: (sinad - 1.76 - dbfs) / 6.02,
         image_dbc: 10.0 * (p_image / p_tone).log10(),
     };
-    let spurs = spurs_of(sp, Some((k0, f, p_tone)), fs);
+    let spurs = spurs_of(sp, Some((k0, f, p_tone)));
     (Some(t), spurs)
 }
 
 /// The strongest local maxima outside DC and the tone, classified.
-fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, fs: f64) -> Vec<Spur> {
+fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>) -> Vec<Spur> {
     let n = sp.n();
     let near = |a: usize, b: usize, r: usize| { let d = a.abs_diff(b); d.min(n - d) <= r };
     let p = &sp.power;
@@ -253,7 +250,7 @@ fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, fs: f64) -> Vec<Spur
                     else { SpurKind::Other };
                 (10.0 * (p[k] / p[k0]).log10(), kind)
             }
-            None => (dsp::dbfs(p[k], fs), SpurKind::Other),
+            None => (dsp::dbfs(p[k]), SpurKind::Other),
         };
         Spur { freq: sp.freq(k), db, kind }
     }).collect()
@@ -448,7 +445,7 @@ mod tests {
         let s = signal(1 << 17, 0.0, 0.0, 1.0, 0.0, (0.0, 0.0), 100.0);
         let r = analyze(&s, 1e6, 2048).unwrap();
         assert!(r.tone.is_none());
-        let want = dsp::dbfs(2e4 / 1e6, 2048.0);
+        let want = dsp::dbfs(2e4 / 1e6);
         assert!((r.floor_dbfs_hz - want).abs() < 0.5, "floor {} want {want}", r.floor_dbfs_hz);
         assert!((r.level.crest_db - 12.0).abs() < 3.0, "gaussian crest {}", r.level.crest_db);
     }

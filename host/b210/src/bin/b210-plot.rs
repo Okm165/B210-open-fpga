@@ -257,7 +257,7 @@ fn columns(sp: &dsp::Spectrum, lo: f64, hi: f64, cols: usize) -> Vec<f64> {
         let f1 = lo + (hi - lo) * (c + 1) as f64 / cols as f64;
         let (k0, k1) = (sp.bin(f0).min(sp.n() - 1), sp.bin(f1).min(sp.n() - 1));
         let p = (k0..=k1.max(k0)).map(|k| sp.power[k]).fold(0.0, f64::max);
-        dsp::dbfs(p, FS)
+        dsp::dbfs(p)
     }).collect()
 }
 
@@ -476,7 +476,7 @@ mod tests {
         p[700] = 1e6;
         let sp = dsp::Spectrum { power: p, rate: 1024.0, segments: 1 };
         let col = columns(&sp, -512.0, 512.0, 16);
-        assert_eq!(col.iter().filter(|d| **d > dsp::dbfs(1e5, FS)).count(), 1);
+        assert_eq!(col.iter().filter(|d| **d > dsp::dbfs(1e5)).count(), 1);
     }
 
     #[test]

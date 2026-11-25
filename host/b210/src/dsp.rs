@@ -169,10 +169,11 @@ pub fn welch(samples: &[i16], n: usize, rate: f64, max_segments: usize) -> Optio
     Some(Spectrum { power: acc, rate, segments })
 }
 
-/// Codes^2 -> dB relative to a full-scale complex tone, floored so an
-/// empty bin is a finite number.
-pub fn dbfs(power: f64, full_scale: f64) -> f64 {
-    (10.0 * (power / (full_scale * full_scale)).log10()).max(-200.0)
+/// Codes^2 -> dB relative to a full-scale complex tone (|x| = 2048,
+/// `iq::FULL_SCALE`), floored so an empty bin is a finite number.
+pub fn dbfs(power: f64) -> f64 {
+    let fs = crate::iq::FULL_SCALE;
+    (10.0 * (power / (fs * fs)).log10()).max(-200.0)
 }
 
 #[cfg(test)]
@@ -292,6 +293,6 @@ mod tests {
     fn too_short_or_all_zero_is_handled() {
         assert!(welch(&[0; 20], 256, 1e6, 4).is_none());
         let s = welch(&[0; 4096], 256, 1e6, 4).unwrap();
-        assert!(s.power.iter().all(|p| *p == 0.0) && dbfs(0.0, 2048.0) == -200.0);
+        assert!(s.power.iter().all(|p| *p == 0.0) && dbfs(0.0) == -200.0);
     }
 }
