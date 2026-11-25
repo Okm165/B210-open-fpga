@@ -65,7 +65,10 @@ module fx3_model #(
   parameter DATA = 4096, CTRL = 256,    // buffer sizes in 32-bit words: 16 KiB, 1 KiB
   parameter W_RD = 5, W_WR = 6,         // watermarks the firmware sets
   parameter ADDR_LAT = 2, RD_LAT = 2, WR_LAT = 3, WM_LAT = 1,
-  parameter SWITCH = 100                // cycles: 1 us at 100 MHz
+  parameter SWITCH = 100,               // cycles: 1 us at 100 MHz
+  // clock to output, ns (AN65974 Table 3: tCO <= 7 for data, tCFLG <= 8 for
+  // flags); 0 when the FPGA side runs on the same clock in simulation
+  parameter real TCO_DATA = 0.0, TCO_FLAG = 0.0
 ) (
   input  wire        clk,
   inout  wire [31:0] d,
@@ -136,7 +139,7 @@ module fx3_model #(
     fpga_drove = fpga_drives;
     tail <= !sloe;
     // D: the word read at the previous edge, else X
-    dq <= word_due ? word : 32'bx;
+    dq <= #(TCO_DATA) word_due ? word : 32'bx;
     word_due = 0;
 
     for (t = 0; t < 4; t = t + 1) if (sw[t] > 0) sw[t] = sw[t] - 1;
@@ -182,8 +185,8 @@ module fx3_model #(
       wmark_hist[t] = {wmark_hist[t][6:0], wmark_now(t)};
     end
     sel = a_hist[ADDR_LAT - 1];
-    flaga <= ready_hist[sel][is_in(sel) ? WR_LAT : RD_LAT];
-    flagb <= wmark_hist[sel][WM_LAT];
+    flaga <= #(TCO_FLAG) ready_hist[sel][is_in(sel) ? WR_LAT : RD_LAT];
+    flagb <= #(TCO_FLAG) wmark_hist[sel][WM_LAT];
   end
 
   // -- host side (between edges) ---------------------------------------------
