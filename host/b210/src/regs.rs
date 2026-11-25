@@ -18,6 +18,9 @@ pub const RX_COUNT: u16 = 0x021;
 pub const RX_AT_LO: u16 = 0x022;
 pub const RX_AT_HI: u16 = 0x023;
 pub const RX_SPP: u16 = 0x024;
+/// Radio control: bit 0 drives the AD9361 RESETB pin, 0 = held in reset
+/// (the value after the FPGA loads), 1 = released.
+pub const RADIO: u16 = 0x030;
 /// Event counter of code k (PROTOCOL.md 5) at EVENTS + k - 1.
 pub const EVENTS: u16 = 0x080;
 /// Sample times lost crossing from the sample clock to the bus clock (a
