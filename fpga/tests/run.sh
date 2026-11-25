@@ -41,6 +41,11 @@ packet_fifo PASS SEED=5 GAPS=0 WCLK=8138 RCLK=5000
 packet_fifo PASS SEED=6 AW=12 MAX=4096 N=40
 packet_fifo PASS SEED=7 AW=8 MAX=256 N=200
 packet_fifo FAIL SEED=1 FAULT=1
+ctrl PASS SEED=1
+ctrl PASS SEED=2
+ctrl PASS SEED=3 N=600
+ctrl FAIL SEED=1 FAULT=1
+ctrl FAIL SEED=1 FAULT=2
 packet_fifo FAIL SEED=1 FAULT=2 WCLK=8138 RCLK=5000
 '
 
@@ -48,6 +53,7 @@ sources() {
   case $1 in
     fx3_master) echo fpga/tests/tb_fx3_master.v fpga/tests/fx3_model.v fpga/rtl/fx3_master.v fpga/rtl/fx3_pads.v ;;
     packet_fifo) echo fpga/tests/tb_packet_fifo.v fpga/rtl/packet_fifo.v ;;
+    ctrl) echo fpga/tests/tb_ctrl.v fpga/rtl/ctrl.v fpga/rtl/packet_fifo.v ;;
   esac
   echo fpga/tests/prims.v
 }
