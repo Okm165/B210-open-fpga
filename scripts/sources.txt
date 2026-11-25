@@ -5,7 +5,6 @@ src/rtl/control/bin2gray.v
 src/rtl/control/binary_encoder.v
 src/rtl/control/gpio_atr_io.v
 src/rtl/control/gpio_atr.v
-src/rtl/control/gray2bin.v
 src/rtl/control/ram_2port.v
 src/rtl/control/reset_sync.v
 src/rtl/control/setting_reg.v
