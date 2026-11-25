@@ -3,7 +3,7 @@
 What is measured to be true today, on board 31B92DD, for image `29a571d9`
 (25 Nov 2026, source `c137792`: the full 2 RX + 2 TX design with the LED
 module). Evidence: `build/fpga/usrp_b200.txt` (build record) and
-`build/hw-gate-20261125T100342Z/` (acceptance run). How the DSP figures are
+`build/hw-gate-20261125T104529Z/` (acceptance run, GATE PASS). How the DSP figures are
 obtained: `docs/DSP.md`.
 
 ## Chip: clocks, timing, space
@@ -49,12 +49,12 @@ x 30.72 MS/s (12-bit; with 16 bits that point is 491 MB/s, above the FX3's
 400 MB/s bus) on a quiet host. The FPGA is not the limit: what is lost is
 lost on the host side, at the same rate on the vendor image.
 
-Gate run `hw-gate-20261125T100342Z` (this image): every step up to
-throughput passed, the bus margin included (the bus works with its clock
-2.08 ns earlier and later). Throughput ended INCONCLUSIVE, which is not a
-pass: the host's CPU pressure stayed at 6 to 19 % (1 % counts as quiet), so
-none of the five 2 RX x 30.72 MS/s runs counted, although all five lost
-nothing.
+Gate run `hw-gate-20261125T104529Z` (this image): **GATE PASS**, every
+step, throughput included. Twelve throughput runs at 2 RX x 30.72,
+2 TX x 30.72, 1 RX x 61.44 and 2R2T x 30.72 MS/s (12-bit) all lossless,
+host CPU pressure 0.4 to 2 % (an earlier run of the same image,
+`hw-gate-20261125T100342Z`, passed every other step but could not count
+throughput: pressure 6 to 19 %).
 
 Measured at 2 RX x 30.72 MS/s (245 MB/s):
 
