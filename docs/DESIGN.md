@@ -150,6 +150,14 @@ examples/config.toml     every configuration key
    chip's own output floor is about -134 dBFS/Hz, which is why at 2.45 GHz
    nothing moves below ~45 dB gain and the example config now asks 60/55 dB.
    No clipping (peak -13.1 dBFS), DC -106 dBFS, image rejection 55-62 dB.
+   At 2.45 GHz one 0.5 ms broadband burst (Wi-Fi-like) reached -0.8 dBFS
+   with no clipping and no overflow; it appeared on channel 0 only and not
+   in a 5 s capture, so it is an external emitter, not the data path.
+   Open, weak: a symmetric pair at +-1.31 MHz, about 5 dB above the median
+   bin (-80 dBFS total, 35 dB under the noise); it does not move with the
+   LO (2.450/2.455/2.460), stays with tx off, and moves to 1.294 MHz at
+   15.36 MS/s - internal, origin not yet identified, level far below any
+   signal of interest.
    BIST/PRBS/eye scan are still v1 measurements, not repeated on this image.
 3. Device API, configuration applied through config.rs, CLI rx / tx /
    record; a board check in just.
