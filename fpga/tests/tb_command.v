@@ -29,6 +29,20 @@
 // between them times 100 (cycles per microsecond) plus 50 half periods per
 // SPI frame; within one packet at most that plus 12 cycles per operation,
 // 200 per POLL of a register and the bound of each POLL over SPI.
+// Every result header: type 3, the command's length and sequence, no flags,
+// time 0 (words 2-3, PROTOCOL.md 4), whatever the command's format,
+// channels, flags and time (random: ignored).
+// After the random packets, directed ones:
+//  * a register POLL that never matches, for arg = 1, 2, 3 ms, between two
+//    writes: status 1, and the gap between the writes at least
+//    arg * 1000 * 100 cycles (the full time limit) and at most that plus
+//    POLL_SLACK for the POLL (its last try and exit) and 12 per operation;
+//  * reset in the middle of an AD9361 frame, with SCLK high: the AD9361
+//    model is detached from the pins for that frame (a frame cut by a reset
+//    is not a frame); after the reset every SPI pin is idle (CS high, SCLK
+//    and MOSI low, both devices), the model is attached again (an SCLK left
+//    high would show it a rising edge with CS high), and a following
+//    packet - an AD9361 write and a read back - must work.
 // H0, H1: the SPI master's half periods (bus cycles) for the AD9361 and the
 // ADF4001 (the design's are 50 and 5000).
 //
@@ -48,6 +62,8 @@
 module tb_command;
   parameter N = 300, SEED = 1, FAULT = 0, H0 = 4, H1 = 6;
   localparam MAXOPS = 126;
+  localparam NP = N + 8;                        // packets the expectation holds: N random, then directed
+  localparam POLL_SLACK = 20;                   // a timed-out register POLL: its last try and exit, cycles
   localparam integer CNT_CYC = 64 * H0;        // the model's counter: one step per 64 H0 cycles, longer than a frame
   localparam integer FRAME0 = 50 * H0, FRAME1 = 50 * H1;
 
@@ -110,7 +126,9 @@ module tb_command;
   always @(m_miso)   d_miso <= #(FAULT == 6 ? 10.0 * H0 : 0.0) m_miso;
   assign cat_miso = d_miso;
   pulldown (m_miso);                // SPI_DO released: the bench reads 0
-  ad9361_spi_model #(.CNT_NS(10.0 * CNT_CYC)) ad (.ce(cat_ce | cut), .sclk(cat_sclk), .mosi(m_mosi), .miso(m_miso));
+  reg  detach = 0;                  // the AD9361 model sees idle pins (the frame cut by a reset)
+  ad9361_spi_model #(.CNT_NS(10.0 * CNT_CYC)) ad (.ce(cat_ce | cut | detach), .sclk(cat_sclk && !detach),
+    .mosi(m_mosi && !detach), .miso(m_miso));
   adf4001_model pll (.le(pll_ce), .clk(pll_sclk), .data(p_mosi));
   integer both = 0;
   always @(cat_ce or pll_ce) if (!cat_ce && !pll_ce) both = both + 1;
@@ -137,7 +155,7 @@ module tb_command;
   end
 
   // -- reference model and generator ---------------------------------------------------
-  integer errors = 0, seed = SEED;
+  integer errors = 0, seed = SEED, hseed = SEED + 5000;   // hseed: the ignored header fields
   function integer rnd(input integer m); rnd = ($random(seed) & 32'h7fffffff) % m; endfunction
   reg [31:0] shadow [0:63];
   reg [7:0]  shadow9361 [0:1023];
@@ -155,13 +173,13 @@ module tb_command;
   integer    n_spi_wr = 0, n_spi_rd = 0, n_adf = 0, n_poll_exact = 0, n_poll_cnt = 0, n_poll_rep = 0, n_bad_dev = 0;
 
   // expected results, per answered packet p: header and n operations
-  integer    exp_n [0:N-1], exp_len [0:N-1], exp_seq [0:N-1];
-  reg [31:0] exp_a [0:N*MAXOPS-1], exp_b [0:N*MAXOPS-1];
-  reg [1:0]  exp_kind [0:N*MAXOPS-1];   // 0 exact, 1 data not checked, 2 POLL property
+  integer    exp_n [0:NP-1], exp_len [0:NP-1], exp_seq [0:NP-1];
+  reg [31:0] exp_a [0:NP*MAXOPS-1], exp_b [0:NP*MAXOPS-1];
+  reg [1:0]  exp_kind [0:NP*MAXOPS-1];   // 0 exact, 1 data not checked, 2 POLL property
   integer    answered = 0, malformed = 0;
   // per register write, in execution order: the least gap after the previous
   // write and, if both are in one packet, the most
-  integer    gap_min [0:N*MAXOPS-1], gap_max [0:N*MAXOPS-1];
+  integer    gap_min [0:NP*MAXOPS-1], gap_max [0:NP*MAXOPS-1];
   integer    writes_expected = 0, gap_lo = 0, gap_hi = -1;
 
   task check_gap(input integer now);
@@ -208,9 +226,12 @@ module tb_command;
       kind = rnd(12);          // 0 malformed, 1 cut short, 2 extra words, else normal
       n = rnd(8) == 0 ? MAXOPS : rnd(8) == 0 ? 0 : 1 + rnd(12);
       len = 16 + 8 * n;
-      pkt[0] = {4'd1, 8'd0, 4'd2, len[15:0]};
-      pkt[1] = {16'd0, p[15:0]};
-      pkt[2] = 0; pkt[3] = 0;
+      // format, channels, flags and time: random, ignored by command
+      pkt[0] = {4'd1, 2'd0, 6'd0, 4'd2, len[15:0]};
+      pkt[0][25:20] = $random(hseed);
+      pkt[1] = {12'd0, 4'd0, p[15:0]};
+      pkt[1][19:16] = $random(hseed);
+      pkt[2] = $random(hseed); pkt[3] = $random(hseed);
       for (k = 0; k < n; k = k + 1) patch[k] = 0;
       for (k = 0; k < n; k = k + 1) begin
         addr = rnd(64);
@@ -359,10 +380,11 @@ module tb_command;
     reg [31:0] e;
     begin
       base = p * MAXOPS;
-      if (words != 4 + 2 * exp_n[p] || rx[0] !== {4'd1, 8'd0, 4'd3, exp_len[p][15:0]} || rx[1] !== exp_seq[p]) begin
+      if (words != 4 + 2 * exp_n[p] || rx[0] !== {4'd1, 8'd0, 4'd3, exp_len[p][15:0]} || rx[1] !== exp_seq[p] ||
+          rx[2] !== 0 || rx[3] !== 0) begin
         errors = errors + 1;
-        $display("%0t result %0d: %0d words, header %h %h, expected %0d words, length %0d, sequence %0d",
-                 $time, p, words, rx[0], rx[1], 4 + 2 * exp_n[p], exp_len[p], exp_seq[p]);
+        $display("%0t result %0d: %0d words, header %h %h %h %h, expected %0d words, length %0d, sequence %0d, time 0",
+                 $time, p, words, rx[0], rx[1], rx[2], rx[3], 4 + 2 * exp_n[p], exp_len[p], exp_seq[p]);
       end else for (k = 0; k < exp_n[p]; k = k + 1) begin
         x = exp_kind[base + k];
         e = exp_b[base + k];
@@ -379,11 +401,110 @@ module tb_command;
     end
   endtask
 
+  // -- directed packets, after the random ones ------------------------------------------
+  task send_pkt;                      // pkt[0 .. pkt_words - 1] into the command FIFO
+    begin
+      @(posedge clk);
+      while (!cmd_room) @(posedge clk);
+      for (w = 0; w < pkt_words; w = w + 1) begin
+        w_valid <= 1; w_data <= pkt[w]; w_last <= w == pkt_words - 1;
+        @(posedge clk);
+      end
+      w_valid <= 0; w_last <= 0;
+    end
+  endtask
+  task head(input integer p, input integer n);
+    begin
+      pkt[0] = {4'd1, 8'd0, 4'd2, 16'd16 + 16'd8 * n[15:0]}; pkt[1] = p[15:0]; pkt[2] = 0; pkt[3] = 0;
+      pkt_words = 4 + 2 * n;
+      exp_n[answered] = n; exp_len[answered] = 16 + 8 * n; exp_seq[answered] = p;
+    end
+  endtask
+  // op k of the packet being built, and its expected result
+  task op(input integer k, input [31:0] a, input [31:0] b, input [31:0] ea, input [31:0] eb);
+    begin
+      pkt[4 + 2*k] = a; pkt[5 + 2*k] = b;
+      exp_a[answered * MAXOPS + k] = ea; exp_b[answered * MAXOPS + k] = eb; exp_kind[answered * MAXOPS + k] = 0;
+    end
+  endtask
+  // a register write in the packet being built: the gap bounds since the previous one
+  task wrote(input integer addr, input [31:0] v);
+    begin
+      shadow[addr] = v;
+      gap_min[writes_expected] = gap_lo; gap_max[writes_expected] = gap_hi;
+      writes_expected = writes_expected + 1; gap_lo = 0; gap_hi = 0;
+    end
+  endtask
+  integer arg, rises = 0, pseq = 0;
+  reg [31:0] v1, v2;
+  reg [7:0]  sv;
+  always @(posedge cat_sclk) if (!cat_ce) rises = rises + 1;
+  always @(negedge cat_ce) rises = 0;
+
   // -- run --------------------------------------------------------------------------------
   initial begin
     repeat (5) @(posedge clk);
     rst = 0;
     wait (sent == N);
+    while (got < answered && cyc < 50_000_000) @(posedge clk);
+    pseq = N;
+
+    // a register POLL that never matches, arg 1..3 ms, between two writes
+    for (arg = 1; arg <= 3; arg = arg + 1) begin
+      v1 = $random(seed); v2 = $random(seed);
+      head(pseq, 4);
+      gap_hi = -1;
+      op(0, {8'd1, 8'd0, 16'd62}, v1, {8'd1, 8'd0, 16'd62}, 0);            wrote(62, v1);
+      op(1, {8'd2, 8'd0, 16'd62}, 0, {8'd2, 8'd0, 16'd62}, v1);            gap_hi = gap_hi + 12;
+      op(2, {8'd5, arg[7:0], 16'd0}, {16'hFFFF, ~v1[15:0]}, {8'd5, 8'd1, 16'd0}, v1);
+      gap_hi = gap_hi + 12 + arg * 100000 + POLL_SLACK; gap_lo = gap_lo + arg * 100000;
+      gap_hi = gap_hi + 12;
+      op(3, {8'd1, 8'd0, 16'd63}, v2, {8'd1, 8'd0, 16'd63}, 0);            wrote(63, v2);
+      prev_spi = 0; prev_addr = 62;
+      answered = answered + 1; pseq = pseq + 1;
+      send_pkt;
+      while (got < answered && cyc < 50_000_000) @(posedge clk);
+    end
+
+    // reset in the middle of an AD9361 frame, SCLK high
+    detach = 1;
+    head(pseq, 1);                    // not answered: the reset cuts it
+    op(0, {8'd3, 8'd0, 16'd0}, {8'd0, 1'b1, 5'd0, 10'h155, 8'hA5}, 0, 0);
+    pseq = pseq + 1;
+    send_pkt;
+    while (!(rises == 5 && cat_sclk === 1'b1) && cyc < 50_000_000) @(posedge clk);
+    #1 rst = 1;
+    repeat (3) @(posedge clk);
+    #1 rst = 0;
+    @(posedge clk); #1;
+    if (cat_ce !== 1'b1 || cat_sclk !== 1'b0 || cat_mosi !== 1'b0 || pll_ce !== 1'b1 || pll_sclk !== 1'b0 || pll_mosi !== 1'b0) begin
+      errors = errors + 1;
+      $display("%0t SPI pins after a reset mid-frame: cat CS %b SCLK %b MOSI %b, pll LE %b CLK %b DATA %b; 1 0 0 expected",
+               $time, cat_ce, cat_sclk, cat_mosi, pll_ce, pll_sclk, pll_mosi);
+    end
+    repeat (2 * H0) @(posedge clk);
+    detach = 0;
+    // after a reset POLL repeats a READ of address 0 (PROTOCOL.md 4), not
+    // the frame the reset cut: a lone POLL (mask 0: one matching try)
+    // returns register 0 and touches no SPI pin
+    head(pseq, 1);
+    gap_hi = -1;
+    op(0, {8'd5, 8'd0, 16'd0}, 32'h0000_0000, {8'd5, 8'd0, 16'd0}, shadow[0]);
+    prev_spi = 0; prev_addr = 0;
+    answered = answered + 1; pseq = pseq + 1;
+    rises = 0;
+    send_pkt;
+    while (got < answered && cyc < 50_000_000) @(posedge clk);
+    if (rises != 0) begin errors = errors + 1; $display("%0t POLL after reset clocked the AD9361 SPI (%0d edges)", $time, rises); end
+    // the next command works: an AD9361 write, then the register read back
+    sv = $random(seed);
+    head(pseq, 2);
+    op(0, {8'd3, 8'd0, 16'd0}, {8'd0, 1'b1, 5'd0, 10'h2AA, sv}, {8'd3, 8'd0, 16'd0}, 0);
+    op(1, {8'd3, 8'd0, 16'd0}, {8'd0, 1'b0, 5'd0, 10'h2AA, 8'd0}, {8'd3, 8'd0, 16'd0}, sv);
+    shadow9361[10'h2AA] = sv; prev_spi = 1; prev_dev = 0; prev_word = {1'b0, 5'd0, 10'h2AA, 8'd0};
+    gap_lo = gap_lo + 2 * FRAME0;
+    answered = answered + 1; pseq = pseq + 1;
+    send_pkt;
     while (got < answered && cyc < 50_000_000) @(posedge clk);
     repeat (100) @(posedge clk);
     if (got != answered) begin errors = errors + 1; $display("%0d results of %0d", got, answered); end
@@ -408,7 +529,7 @@ module tb_command;
         n_bad_dev == 0) begin
       errors = errors + 1; $display("coverage: an SPI case never ran");
     end
-    $display("%0d packets: %0d answered, %0d dropped; %0d register writes", N, got, cmd_dropped, wr_count);
+    $display("%0d packets: %0d answered, %0d dropped; %0d register writes", pseq, got, cmd_dropped, wr_count);
     $display("SPI: AD9361 %0d writes, %0d reads, %0d frames; ADF4001 %0d words; POLL over SPI %0d exact, %0d counter, %0d repeats; %0d bad devices",
              n_spi_wr, n_spi_rd, ad.frames, pll.n, n_poll_exact, n_poll_cnt, n_poll_rep, n_bad_dev);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");

@@ -109,7 +109,10 @@ module command #(
   always @(posedge clk) begin
     r_take <= 0; w_valid <= 0; w_last <= 0; reg_we <= 0; reg_re <= 0; spi_start <= 0;
     if (rst) begin
-      state <= IDLE;
+      // POLL repeats a READ of address 0 after a reset (PROTOCOL.md 4): a
+      // POLL must never repeat an SPI frame a reset cut, which would send
+      // the cut write to the device whole
+      state <= IDLE; poll_spi <= 0; poll_addr <= 0;
     end else case (state)
       IDLE: if (r_avail && !r_take) begin hw <= 0; ended <= 0; state <= HEAD; end
       // read 4 header words; a packet shorter than that is dropped

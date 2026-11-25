@@ -29,10 +29,21 @@
 // 2*MAX that is one packet: w_room high before each of the MAX words, low
 // right after the MAX-th; the packet stays invisible until its last word);
 // w_room back in the cycle after one read; the rest drained back to back and
-// compared word by word; empty again with r_take high (ignored).
+// compared word by word; empty again with r_take high (ignored). Then a
+// writer that breaks its promise: DEPTH + 4 one-word packets back to back,
+// no reads, words offered past w_room. The memory takes DEPTH of them and
+// the rest are lost (packet_fifo's header: the word is lost, not an unread
+// one written over): w_used == DEPTH, and draining yields the first DEPTH
+// words unchanged - 4 lost words, so a slot overwritten past the 3 the read
+// path prefetches shows as wrong data, not only as a wrong count.
 // Then N random packets of 1..MAX words, words and packets separated by
 // gaps, and long random read stalls, so the FIFO fills and empties
 // throughout while packets arrive in pieces.
+//
+// Halfway through the random packets, in the middle of writing one, with
+// whole packets queued and unread, rst is held for 2 cycles: then
+// w_used == r_used == 0 and r_avail == 0, the reference queue is cleared, and
+// the traffic continues from a fresh packet and is checked as before.
 //
 // GAPS = 1 gives the writer gaps inside and between packets and the reader
 // random long stalls; GAPS = 0 runs both back to back.
@@ -83,6 +94,8 @@ module tb_packet_fifo;
   integer    held_max = 0;
   integer    phase = 0;               // 0 corners, 1 random packets, 2 done
   reg        busy = 0;                // the reader is inside a packet
+  reg        overrun = 0;             // the writer breaks its room promise on purpose
+  integer    resets = 0, reset_lost = 0;
   integer    mc1 = 0, mc2 = 0, mc3 = 0; // mc as it was 1, 2, 3 samples ago
   localparam LATENCY = 3;             // packet_fifo's header: commit, fetch, buffer
 
@@ -104,7 +117,7 @@ module tb_packet_fifo;
     end
     if (busy && !r_avail) err("the reader ran out of words inside a packet");
     // the transfers at this edge
-    if (w_valid && mn >= ROOM) err("a word was written with no room left for it");
+    if (w_valid && mn >= ROOM && !overrun) err("a word was written with no room left for it");
     if (w_valid && mn < DEPTH) begin
       mq[mw % QN] = {w_last, w_data}; mw = mw + 1; mn = mn + 1;
       if (w_last) mc = mw;
@@ -113,7 +126,7 @@ module tb_packet_fifo;
       if (mr == mc) begin err("a read was taken with no word of a complete packet"); end
       else begin mr = mr + 1; mn = mn - 1; end
     end
-    if (mn > held_max) held_max = mn;
+    if (mn > held_max && !overrun) held_max = mn;
     mc3 = mc2; mc2 = mc1; mc1 = mc;
   end
 
@@ -215,6 +228,26 @@ module tb_packet_fifo;
     end
     r_take = 0;
 
+    // overrun: DEPTH + 4 one-word packets, no reads; the memory keeps DEPTH
+    overrun = 1;
+    for (j = 0; j < DEPTH + 4; j = j + 1) begin
+      @(negedge clk);
+      w_valid = 1; w_last = 1; w_data = {16'hF200, j[15:0]};
+    end
+    @(negedge clk);
+    w_valid = 0; w_last = 0;
+    overrun = 0;
+    @(negedge clk);
+    if (w_used !== DEPTH || r_used !== DEPTH) begin err("used after an overrun"); $display("  %0d, %0d expected", w_used, DEPTH); end
+    if (mn != DEPTH) err("the reference queue after an overrun");
+    while (mn != 0) begin               // the DEPTH words kept, oldest first, compared by the checker
+      r_take = r_avail;
+      @(negedge clk);
+    end
+    r_take = 0;
+    repeat (LATENCY + 1) @(negedge clk);
+    if (w_used !== 0 || r_avail !== 0) err("not empty after draining an overrun");
+
     // -- random packets ---------------------------------------------------------
     phase = 1;
     for (sent = 0; sent < N; sent = sent + 1) begin
@@ -226,8 +259,23 @@ module tb_packet_fifo;
           w_valid = 0;
           repeat (1 + rnd(3)) @(negedge clk);
         end
-        w_valid = 1; w_last = w == len - 1; w_data = {pseq[15:0], w[15:0]};
-        @(negedge clk);
+        if (resets == 0 && sent >= N / 2 && w == len / 2 && mc > mr) begin
+          // reset mid-packet, whole packets queued: the FIFO and the
+          // reference queue empty, this packet is abandoned
+          rst = 1; w_valid = 0; w_last = 0; r_take = 0; phase = 3;
+          reset_lost = mn;
+          mr = mw; mc = mw; mn = 0; mc1 = mw; mc2 = mw; mc3 = mw; busy = 0; pause = 0;
+          repeat (2) @(negedge clk);
+          rst = 0;
+          if (w_used !== 0 || r_used !== 0 || r_avail !== 0) begin
+            err("not empty after a reset"); $display("  w_used %0d r_used %0d r_avail %b", w_used, r_used, r_avail);
+          end
+          phase = 1; resets = 1;
+          w = len;                      // the next packet starts fresh
+        end else begin
+          w_valid = 1; w_last = w == len - 1; w_data = {pseq[15:0], w[15:0]};
+          @(negedge clk);
+        end
       end
       w_valid = 0; w_last = 0;
       if (GAPS) repeat (rnd(8)) @(negedge clk);
@@ -240,7 +288,8 @@ module tb_packet_fifo;
 
     if (mn != 0) err("words left in the FIFO");
     if (mw != mr) err("words written and read differ");
-    $display("%0d packets, %0d words, most held %0d of %0d", sent, mw, held_max, MAX);
+    if (resets != 1) err("the mid-packet reset never happened");
+    $display("%0d packets, %0d words, most held %0d of %0d, reset with %0d words in", sent, mw, held_max, MAX, reset_lost);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");
     $finish;
   end

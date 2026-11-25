@@ -11,7 +11,19 @@
 // event's time = the header's, packets at least INTERVAL cycles apart.
 // At the end the counts reported per code add up to the counter exactly.
 // SLOW = 1: the reader stalls for long stretches (events must coalesce,
-// none lost). Both sources must get through: fairness.
+// none lost). Both sources must get through: fairness. Whenever both
+// sources hold a packet when the reader starts one, the packet must come
+// from the source not served last (packet_mux's header), so with both
+// always holding packets the two strictly alternate.
+// After the counts are checked, two directed stretches:
+//  * the choice is made at the take: last packet an event, the reader
+//    stopped while only an event packet waits, then a result packet arrives;
+//    the reader starts again and must get the result (a mux whose state
+//    moves without a take stays with the events);
+//  * reset in the middle of a result packet through the mux: then, with no
+//    results offered, an event packet must still come out, starting with its
+//    header (a mux still locked to the result source starves the events),
+//    and results resume when offered again.
 // FAULT 1: one event count corrupted in the FIFO (must be caught).
 // FAULT 2: the mux lets go of a packet in the middle (must be caught).
 `timescale 1ns/1ps
@@ -31,6 +43,11 @@ module tb_events;
   // -- counters ----------------------------------------------------------------------
   reg [31:0] cnt [0:5];
   reg        rising = 1;
+  reg        r_on = 1;                 // the result source starts new packets
+  reg        stop = 0;                 // the reader starts no new packet
+  reg        resync = 0;               // take the event sequence afresh (after a reset)
+  integer    last_type = -1;           // the last packet read: 0 result, 1 event, -1 none yet
+  reg        both = 0;                 // both sources held a packet when this one started
   integer i;
   initial for (i = 0; i < 6; i = i + 1) cnt[i] = 32'hFFFF_FF00 + i;   // wrap through 2^32
   always @(posedge clk) if (rising) for (i = 0; i < 6; i = i + 1)
@@ -57,7 +74,7 @@ module tb_events;
   always @(posedge clk) begin
     r_valid <= 0; r_last <= 0;
     if (!rst && rising) begin
-      if (rj == 0 && rlen == 0 && r_room) rlen = 4 + 2 * rnd(127);
+      if (rj == 0 && rlen == 0 && r_room && r_on) rlen = 4 + 2 * rnd(127);
       if (rlen != 0) begin
         r_valid <= 1; r_data <= rj == 0 ? {16'h3000, rseq[15:0]} : {rseq[15:0], rj[15:0]};
         r_last <= rj == rlen - 1;
@@ -74,9 +91,10 @@ module tb_events;
   initial for (i = 0; i < 6; i = i + 1) sum[i] = 0;
   always @(posedge clk) begin
     if (o_take) begin
+      if (pw == 0) both = ra && ea;
       pkt[pw] = o_data; pw = pw + 1;
       if (o_last) begin check(pw); pw = 0; busy = 0; end
-    end else if (!busy && o_avail) begin
+    end else if (!busy && o_avail && !stop) begin
       if (hold > 0) hold = hold - 1;
       else begin busy = 1; if (SLOW && rnd(10) == 0) hold = 5000 + rnd(50000); end
     end
@@ -88,6 +106,11 @@ module tb_events;
     reg [15:0] elen;
     reg [63:0] t;
     begin
+      if (both && last_type == (pkt[0][31:16] == 16'h3000 ? 0 : 1)) begin
+        errors = errors + 1;
+        $display("%0t two %0s packets in a row with the other source holding one", $time, last_type == 0 ? "result" : "event");
+      end
+      last_type = pkt[0][31:16] == 16'h3000 ? 0 : 1;
       if (pkt[0][31:16] == 16'h3000) begin            // a result packet
         if (pkt[0][15:0] != got_r[15:0]) begin errors = errors + 1; $display("%0t result %0d out of order (%h)", $time, got_r, pkt[0]); end
         for (j = 1; j < n; j = j + 1) if (pkt[j] !== {got_r[15:0], j[15:0]}) begin
@@ -99,6 +122,7 @@ module tb_events;
         m = (n - 4) / 4;
         t = {pkt[3], pkt[2]};
         elen = 16 + 16 * m;
+        if (resync) begin eseq = pkt[1][15:0]; resync = 0; end   // packets lost in the reset
         if (pkt[0] !== {4'd1, 8'd0, 4'd4, elen} || n != 4 + 4 * m || m < 1 || m > 6 ||
             pkt[1] !== {15'd0, 1'b1, eseq[15:0]}) begin
           errors = errors + 1; $display("%0t event packet %0d: %h %h, %0d words", $time, eseq, pkt[0], pkt[1], n);
@@ -131,7 +155,7 @@ module tb_events;
     @(posedge clk); #1 release mux.locked; release mux.last_served;
   end
 
-  integer r0, e0;
+  integer r0, e0, r1, e1, n;
   reg [31:0] rose;
   initial begin
     repeat (5) @(posedge clk);
@@ -150,6 +174,45 @@ module tb_events;
     end
     $display("%0d result packets, %0d event packets; increases %0d %0d %0d %0d %0d %0d", got_r, got_e,
              sum[0], sum[1], sum[2], sum[3], sum[4], sum[5]);
+
+    // -- the choice of source is made at the take --------------------------------------
+    rising = 1; r_on = 0;
+    n = 0; while ((ra || rlen != 0 || busy) && n < 100000) begin @(negedge clk); n = n + 1; end
+    e1 = got_e;
+    n = 0; while (got_e == e1 && n < 4 * INTERVAL + 100000) begin @(negedge clk); n = n + 1; end
+    while (busy) @(negedge clk);
+    stop = 1;                                         // the last packet was an event
+    n = 0; while (!ea && n < 4 * INTERVAL + 100000) begin @(negedge clk); n = n + 1; end
+    repeat (5) @(negedge clk);                        // only an event packet waits, no take
+    if (got_e == e1 || !ea || ra || last_type != 1) begin
+      errors = errors + 1; $display("%0t priority stretch not set up: events %0d, ea %b ra %b", $time, got_e - e1, ea, ra);
+    end
+    r_on = 1;
+    n = 0; while (!ra && n < 10000) begin @(negedge clk); n = n + 1; end
+    r1 = got_r; e1 = got_e;
+    stop = 0;
+    n = 0; while (got_r == r1 && got_e == e1 && n < 10000) begin @(negedge clk); n = n + 1; end
+    if (got_r != r1 + 1 || got_e != e1) begin
+      errors = errors + 1; $display("%0t after an event, with both waiting: %0d results, %0d events, a result expected", $time, got_r - r1, got_e - e1);
+    end
+
+    // -- reset in the middle of a result packet through the mux ------------------------
+    n = 0; while (!(busy && pw >= 2 && pkt[0][31:16] == 16'h3000 && !o_last) && n < 100000) begin @(negedge clk); n = n + 1; end
+    if (n == 100000) begin errors = errors + 1; $display("%0t no result packet to reset in", $time); end
+    rst = 1; stop = 1; busy = 0; pw = 0; o_take = 0; r_on = 0;
+    if (rlen != 0) begin rj = 0; rlen = 0; rseq = rseq + 1; end   // the source abandons its packet
+    repeat (3) @(negedge clk);
+    rst = 0; got_r = rseq; resync = 1; last_type = -1;
+    stop = 0;
+    r1 = got_r; e1 = got_e;
+    n = 0; while (got_r == r1 && got_e == e1 && n < 4 * INTERVAL + 100000) begin @(negedge clk); n = n + 1; end
+    if (got_e != e1 + 1 || got_r != r1) begin
+      errors = errors + 1; $display("%0t after a reset mid result packet, results off: %0d events, %0d results, an event expected", $time, got_e - e1, got_r - r1);
+    end
+    r_on = 1;
+    n = 0; while (got_r == r1 && n < 4 * INTERVAL + 100000) begin @(negedge clk); n = n + 1; end
+    if (got_r == r1) begin errors = errors + 1; $display("%0t no result after the reset", $time); end
+    $display("after the directed stretches: %0d result packets, %0d event packets", got_r, got_e);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");
     $finish;
   end

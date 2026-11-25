@@ -26,6 +26,17 @@
 //   1 the FPGA drives D in the cycle the FX3 is still turning off,
 //   2 one bit of one host -> FPGA word flipped,
 //   3 a short rx packet of 512 words (a multiple of 1024 bytes).
+// Read waits, cycle exact: within a read visit, from a strobe to the next
+// strobe after a pause, or to SLOE# released, must be exactly PEEK =
+// 3 + RD_LAT + MARGIN = 7 cycles (fx3_master's 2 and 2, its stated wait for
+// READY after a read), one more after a strobe that leads into the burst
+// state (the cycle in which WMARK low is seen). A longer wait costs bus time
+// without failing anything else.
+// Reset in a read: when thread 0 has a count, once all traffic is through
+// the host commits one more full buffer on thread 0 and rst is asserted for
+// 8 cycles in the middle of its burst, with SLOE# low on the pad: the
+// master must not drive D in the cycle after (the FX3 is still turning
+// off), which the model's bus check catches; then the sink is closed.
 // The model's latencies are parameters: run with larger ones to measure
 // the master's margin. Prints "RESULT: PASS" or "RESULT: FAIL".
 `timescale 1ns/1ps
@@ -113,6 +124,7 @@ module tb_fx3_master;
 
   integer occ [0:1], oseq [0:1], oj [0:1];
   reg     closed [0:1];
+  reg     shut = 0;                 // sink 0 closed for good (after the reset stretch)
   integer c;
   initial for (c = 0; c < 2; c = c + 1) begin occ[c] = 0; oseq[c] = 0; oj[c] = 0; closed[c] = 0; end
   always @(posedge clk) for (c = 0; c < 2; c = c + 1) begin
@@ -125,7 +137,7 @@ module tb_fx3_master;
           errors = errors + 1;
           $display("%0t thread %0d packet %0d word %0d: %h, expected %h", $time, t, oseq[c], oj[c], out_data, pat(t, oseq[c], oj[c]));
         end
-        if (out_last !== (oj[c] == len[t*N + oseq[c]] - 1)) begin
+        if (oseq[c] < count(t) && out_last !== (oj[c] == len[t*N + oseq[c]] - 1)) begin   // the reset stretch's buffer: no length
           errors = errors + 1;
           $display("%0t thread %0d packet %0d: last at word %0d, length %0d", $time, t, oseq[c], oj[c], len[t*N + oseq[c]]);
         end
@@ -136,7 +148,7 @@ module tb_fx3_master;
     end
     if (occ[c] > 0 && (MODE != 0 || rnd(3) != 0)) occ[c] = occ[c] - 1;   // the sink drains
     if (MODE == 0 && rnd(2000) == 0) closed[c] = !closed[c];             // the sink stops taking now and then
-    out_room[c] <= 2 * size(t) - occ[c] >= size(t) && !closed[c] && count(t) > 0;
+    out_room[c] <= 2 * size(t) - occ[c] >= size(t) && !closed[c] && count(t) > 0 && !(shut && c == 0);
   end
 
   // -- FPGA -> host: sources offer packets; the host checks each buffer --------
@@ -190,6 +202,26 @@ module tb_fx3_master;
     words = words + 1; last = cyc; if (first < 0) first = cyc;
   end
 
+  // -- read waits: strobe to strobe after a pause, or to SLOE# released -----------
+  localparam PEEK = 3 + 2 + 2;      // fx3_master: 3 + RD_LAT + MARGIN
+  integer since = 0, gap_exp = 0, peeks = 0;
+  reg     oe_d = 0;                 // oe decided in the previous cycle
+  always @(posedge clk) begin
+    if (!rst) begin
+      since = since + 1;
+      if ((rd && oe_d && since > 1) || (!oe && oe_d)) begin
+        peeks = peeks + 1;
+        if (since != gap_exp) begin
+          errors = errors + 1;
+          if (errors < 10) $display("%0t thread %0d: %0s %0d cycles after the strobe before, %0d expected",
+                                    $time, master.t, rd ? "strobe" : "SLOE# released", since, gap_exp);
+        end
+      end
+      if (rd) begin since = 0; gap_exp = PEEK + (master.state_n == 3); end
+    end
+    oe_d = oe;
+  end
+
   // -- coverage: the corners mode 0 must reach --------------------------------------
   reg [8*40-1:0] cov_name [0:NCOV-1];
   reg [1:0] prev_t = 0;
@@ -218,7 +250,7 @@ module tb_fx3_master;
   end
 
   // -- run ------------------------------------------------------------------------
-  integer limit;
+  integer limit, words0, first0, last0, j0;
   initial begin
     limit = 20000 + N * (MODE == 0 ? 60000 : 12000);
     repeat (10) @(posedge clk);
@@ -226,15 +258,30 @@ module tb_fx3_master;
     while (!(oseq[0] == count(0) && oseq[1] == count(2) && got[1] == count(1) && got[3] == count(3))
            && cyc < limit) @(posedge clk);
     repeat (50) @(posedge clk);
+    words0 = words; first0 = first; last0 = last;
+    // reset in the middle of a read burst, SLOE# low
+    if (count(0) > 0 && cyc < limit) begin
+      for (j0 = 0; j0 < DATA; j0 = j0 + 1) fx3.send[j0] = pat(0, count(0), j0);
+      sent[0] = count(0) + 1;
+      fx3.host_send(0, DATA);          // a buffer is free: all traffic is through
+      k = 0;
+      while (!(master.state == 3 && !sloe && oj[0] > 100) && k < 100000) begin @(posedge clk); k = k + 1; end
+      if (k == 100000) begin errors = errors + 1; $display("no read burst to reset in"); end
+      #1 rst = 1; shut = 1;
+      repeat (8) @(posedge clk);
+      #1 rst = 0;
+      repeat (50) @(posedge clk);
+      $display("reset in a read burst after %0d words", oj[0]);
+    end
     if (cyc >= limit) begin
       errors = errors + 1;
       $display("timeout: out %0d/%0d %0d/%0d, in %0d/%0d %0d/%0d", oseq[0], count(0), oseq[1], count(2),
                got[1], count(1), got[3], count(3));
     end
     if (MODE != 0) begin
-      $display("bus: %0d words in %0d cycles = %0d.%0d %%", words, last - first + 1,
-               100 * words / (last - first + 1), (1000 * words / (last - first + 1)) % 10);
-      if (100 * words < EFF_MIN * (last - first + 1)) begin
+      $display("bus: %0d words in %0d cycles = %0d.%0d %%", words0, last0 - first0 + 1,
+               100 * words0 / (last0 - first0 + 1), (1000 * words0 / (last0 - first0 + 1)) % 10);
+      if (100 * words0 < EFF_MIN * (last0 - first0 + 1)) begin
         errors = errors + 1; $display("bus efficiency below %0d %%", EFF_MIN);
       end
     end
@@ -244,6 +291,8 @@ module tb_fx3_master;
     if (MODE == 0) for (k = 0; k < NCOV; k = k + 1) if (cov[k] == 0) begin
       errors = errors + 1; $display("not exercised: %0s", cov_name[k]);
     end
+    if (count(0) + count(2) > 0 && peeks == 0) begin errors = errors + 1; $display("no read wait measured"); end
+    $display("%0d read waits measured", peeks);
     $display("model errors %0d, bench errors %0d", fx3.errors, errors);
     $display("RESULT: %0s", fx3.errors + errors == 0 ? "PASS" : "FAIL");
     $finish;

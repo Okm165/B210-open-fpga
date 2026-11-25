@@ -5,7 +5,9 @@
 // sample side driven as sample_domain drives it (dac changes at strobes).
 //
 // Phases: 1R1T, a change to 2R2T, 2R2T with RX_FRAME held low for a while
-// and back, a change to 1R1T. The model and the design change mode a
+// and back, 2R2T with RX_FRAME held high at the design's pin for a while
+// and back (the frame never starts again: the strobe must keep every other
+// period, then lock to the frame when it toggles), a change to 1R1T. The model and the design change mode a
 // random few periods apart, in a random order; checks pause while they
 // disagree and settle. In every checked stretch:
 //   rx  every strobe's adc is the model's next sample time, exactly
@@ -43,6 +45,7 @@ module tb_ad9361_io;
   reg ref200 = 0;
   always #2.5 ref200 = ~ref200;
   reg ref_rst = 1, run = 0, check = 0, quiet = 0, two_m = 0, two_d = 0;
+  reg high = 0;                        // RX_FRAME held high at the design's pin
   wire        data_clk, rx_frame, fb_clk, tx_frame, delay_ready, dclk, stb;
   wire [11:0] rx_d, tx_d;
   wire [47:0] adc;
@@ -53,7 +56,8 @@ module tb_ad9361_io;
     .two(two_m), .run(run), .check(check), .quiet(quiet), .data_clk(data_clk), .rx_frame(rx_frame), .rx_d(rx_d),
     .fb_clk(fb_clk), .tx_frame(tx_frame_m), .tx_d(tx_d));
   always @(tx_frame) tx_frame_m <= #(FAULT == 3 ? T : 0.0) tx_frame;
-  ad9361_io dut (.data_clk(data_clk), .rx_frame(rx_frame), .rx_d(rx_d), .fb_clk(fb_clk), .tx_frame(tx_frame),
+  wire rx_frame_d = high ? 1'b1 : rx_frame;
+  ad9361_io dut (.data_clk(data_clk), .rx_frame(rx_frame_d), .rx_d(rx_d), .fb_clk(fb_clk), .tx_frame(tx_frame),
     .tx_d(tx_d), .ref200(ref200), .ref_rst(ref_rst), .delay_ready(delay_ready), .dclk(dclk), .two_async(two_d),
     .stb(stb), .adc(adc), .dac(dac));
 
@@ -84,7 +88,7 @@ module tb_ad9361_io;
     if (two_m ? stb == stb_p : !stb) begin
       errors = errors + 1; if (errors < 10) $display("%0t stb %b after %b in %0s", $time, stb, stb_p, two_m ? "2R2T" : "1R1T");
     end
-    if (stb && !quiet) begin
+    if (stb && !quiet && !high) begin
       if (!rx_lock) begin
         for (i = m.k - 64; i <= m.k; i = i + 1) if (!rx_lock && i >= 0 && adc === rx_exp(i, two_m)) begin
           rx_lock = 1; rx_next = i; rx_lag = m.k - i;
@@ -164,6 +168,9 @@ module tb_ad9361_io;
     // RX_FRAME absent: the strobe keeps every other period; then it locks again
     quiet = 1; check = 1; periods(301 + rnd(2)); check = 0; quiet = 0; periods(8);
     stretch("2R2T after no frame");
+    // RX_FRAME held high: no frame starts; the strobe keeps every other period, then locks again
+    high = 1; check = 1; periods(301 + rnd(2)); check = 0; high = 0; periods(8);
+    stretch("2R2T after frame high");
     change(0);
     stretch("1R1T again");
     if (m.tx_errors != 0) begin errors = errors + 1; $display("tx frame or timing: %0d errors", m.tx_errors); end

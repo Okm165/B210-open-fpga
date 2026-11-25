@@ -10,6 +10,12 @@
 // out once, in order, unchanged (all W bits random, so any bit swapped,
 // stuck or taken from the wrong address is a mismatch); r_valid must never
 // show an entry not yet written; the FIFO must fill (w_full seen) and drain.
+// Halfway through, with the reader held so the FIFO is half full and both
+// pointers off zero, w_rst and r_rst are asserted together for 8 cycles of
+// the slower clock (both, long enough for each side's reset pointer to cross,
+// as the module requires): at the end of it r_valid == 0 and !w_full; the
+// entries queued are lost (the reference queue clears), and the first entry
+// read after reset is the first written after it.
 // FAULT 1: one bit of entry 500 flipped on its way in (must be caught).
 `timescale 1ns/1ps
 `default_nettype none
@@ -54,10 +60,14 @@ module tb_cdc_fifo;
   end
 
   // reader: an entry is taken at an edge with r_take && r_valid
-  integer rn = 0, pause = 0;
+  integer rn = 0, pause = 0, lost = 0;
+  reg hold = 0;                                 // reader held, to fill the FIFO before the reset
   always @(posedge rclk) if (!rst) begin
     if (r_take && r_valid) begin
-      if (rn >= wn) begin errors = errors + 1; $display("%0t entry %0d read before it was written", $time, rn); end
+      if (rn >= wn) begin
+        errors = errors + 1;
+        if (errors < 6) $display("%0t entry %0d read before it was written", $time, rn);
+      end
       else if (r_data !== e[rn]) begin
         errors = errors + 1;
         if (errors < 6) $display("%0t entry %0d: %h, expected %h", $time, rn, r_data, e[rn]);
@@ -67,12 +77,28 @@ module tb_cdc_fifo;
     // the reader is faster than the writer, but pauses now and then long
     // enough for the FIFO to fill
     if (pause > 0) pause = pause - 1; else if (rnd(300) == 0) pause = 20 + rnd(100);
-    r_take <= pause == 0 && rnd(3) != 0;
+    r_take <= pause == 0 && !hold && rnd(3) != 0;
   end
 
   initial begin
     repeat (5) @(posedge rclk);
     rst = 0;
+    // reset mid-traffic: half full, write and read pointers both off zero
+    while (wn < N / 2) @(posedge rclk);
+    hold = 1;
+    while (!(wn - rn >= (1 << AW) / 2 && wn % (1 << AW) != 0 && rn % (1 << AW) != 0 && !r_take))
+      @(posedge rclk);
+    #0.3 rst = 1;
+    lost = wn - rn; rn = wn;                    // what was queued is gone
+    repeat (8) @(posedge wclk);
+    @(posedge rclk); #0.3;
+    if (r_valid !== 1'b0 || w_full !== 1'b0) begin
+      errors = errors + 1;
+      $display("%0t after reset: r_valid %b w_full %b, 0 0 expected", $time, r_valid, w_full);
+    end
+    rst = 0; hold = 0;
+    $display("reset with %0d entries queued (write pointer %0d, read pointer %0d)",
+             lost, wn % (2 << AW), (rn - lost) % (2 << AW));
     while (rn < N) @(posedge rclk);
     repeat (20) @(posedge rclk);
     if (fulls == 0) begin errors = errors + 1; $display("never full: the full path is untested"); end
