@@ -75,7 +75,7 @@ image-clean:
 RUN := tests/run.sh
 TEST_JOBS ?= 8
 
-TESTS := t-elab t-constraints t-clk-gen t-fifo t-io t-leds t-gpif t-usb-rate t-e2e \
+TESTS := t-elab t-yosys-read t-constraints t-clk-gen t-fifo t-io t-leds t-gpif t-usb-rate t-e2e \
          t-dac-slice t-tx t-rx-saturate t-atr t-golden t-postsyn
 .PHONY: $(TESTS) tests-all
 
@@ -91,6 +91,14 @@ elab t-elab:
 	iverilog -g2005 -I src/rtl/control -s b200 -o $(SIM)/b200_elab.vvp \
 	  $$(grep '^src/' scripts/sources.txt) tests/sim/xilinx_prim_sim.v 2> $(SIM)/b200_elab.log
 	echo "PASS: full design elaborates ($$(grep -c '^src/' scripts/sources.txt) sources)"
+
+# Yosys reads every source and resolves the hierarchy: what Icarus accepts
+# and Yosys does not (initial values in a port list, say) fails here in
+# seconds instead of at the start of a build.
+t-yosys-read:
+	@$(IN_IMAGE) yosys -q -p "read_verilog -lib +/xilinx/cells_sim.v +/xilinx/cells_xtra.v; read_verilog -I src/rtl/control $$(grep '^src/' scripts/sources.txt | tr '\n' ' '); hierarchy -check -top b200" \
+	  > $(SIM)/yosys_read.log 2>&1 || { grep -i error $(SIM)/yosys_read.log | head -5; echo "FAIL: yosys does not read the design"; exit 1; }
+	echo "PASS: yosys reads every source and resolves the hierarchy of b200"
 
 # Every port has a pin and an I/O standard, no pin twice: the engine places an
 # unconstrained port silently.

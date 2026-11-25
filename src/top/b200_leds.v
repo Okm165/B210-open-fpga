@@ -39,11 +39,13 @@ module b200_leds #(
    // alarm, sample transmitted, sample received}.
    input  [5:0] atr,          // {front end 1, front end 0}
    input  [7:0] events,
-   output reg [1:0] trx_g = 0, trx_r = 0, rx2_g = 0, rx2_r = 0,
-   output reg   clk_g = 0, clk_r = 1,     // red until the bus clock says otherwise
-   output reg   usr_g = 0, usr_r = 0,
-   output reg   status = 0
+   output reg [1:0] trx_g, trx_r, rx2_g, rx2_r,
+   output reg   clk_g, clk_r,
+   output reg   usr_g, usr_r,
+   output reg   status
 );
+   // CLK red until the bus clock says otherwise
+   initial begin {trx_g, trx_r, rx2_g, rx2_r, clk_g, usr_g, usr_r, status} = 0; clk_r = 1'b1; end
    // ---- radio_clk: count samples, turn pulses into levels that can cross ----
    reg  [1:0] rx_dark = 0, tx_dark = 0, rx_alarm_t = 0, tx_alarm_t = 0;
    reg  [4:0] alive_n = 0;
