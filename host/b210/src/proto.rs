@@ -201,6 +201,28 @@ pub fn unpack_sc16(bytes: &[u8], out: &mut [i16]) {
     }
 }
 
+/// A data packet in `out`: the header `h` (its length and kind are set
+/// here: kind Tx) and the values of whole sample times (I0 Q0, or I0 Q0 I1
+/// Q1 per time), packed in `h.format`, zero-padded to the transfer size,
+/// which is returned.
+pub fn tx_packet(mut h: Header, values: &[i16], out: &mut [u8]) -> usize {
+    let per_time = 2 * h.channels.count_ones() as usize;
+    assert!(per_time > 0 && values.len().is_multiple_of(per_time));
+    let length = HEADER + values.len() / 2 * h.format.bytes_per_time(1);
+    assert!(length <= DATA_BUFFER && out.len() >= DATA_BUFFER);
+    h.length = length as u16;
+    h.kind = Kind::Tx;
+    out[..HEADER].copy_from_slice(&h.encode());
+    match h.format {
+        Format::Sc16 => pack_sc16(values, &mut out[HEADER..length]),
+        Format::Sc12 => pack_sc12(values, &mut out[HEADER..length]),
+        Format::None => assert!(values.is_empty()),
+    }
+    let size = transfer_size(length, DATA_BUFFER);
+    out[length..size].fill(0);
+    size
+}
+
 // -- commands, results, events --------------------------------------------------
 
 /// SPI device numbers of the SPI operation.
@@ -464,6 +486,26 @@ mod tests {
         }
         // 2^31 ahead is the same 32 bits as 2^31 behind: resolved as behind
         assert_eq!(resolve_time(now, (now + (1 << 31)) as u32), now - (1 << 31));
+    }
+
+    #[test]
+    fn tx_packet_full_and_short() {
+        let mut out = vec![0xAA; DATA_BUFFER];
+        for (format, ch, times) in [(Format::Sc12, 0b11u8, 2728), (Format::Sc16, 0b01, 4092), (Format::Sc16, 0b11, 128)] {
+            let nv = 2 * ch.count_ones() as usize * times;
+            let values: Vec<i16> = (0..nv).map(|i| ((i * 2654435761) >> 7) as i16 >> 4).collect();
+            let h = Header { length: 0, kind: Kind::Rx, format, channels: ch, sequence: 9,
+                             flags: flag::START_OF_BURST | flag::HAS_TIME, time: 77 };
+            let size = tx_packet(h, &values, &mut out);
+            let d = Header::decode(&out).unwrap();
+            assert_eq!((d.kind, d.format, d.channels, d.sequence, d.time), (Kind::Tx, format, ch, 9, 77));
+            assert_eq!(size, transfer_size(d.length as usize, DATA_BUFFER));
+            let mut back = vec![0; nv];
+            let body = &out[HEADER..d.length as usize];
+            match format { Format::Sc16 => unpack_sc16(body, &mut back), _ => unpack_sc12(body, &mut back) }
+            assert_eq!(back, values);
+            assert!(out[d.length as usize..size].iter().all(|&b| b == 0));
+        }
     }
 
     #[test]

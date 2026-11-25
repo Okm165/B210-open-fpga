@@ -2,14 +2,22 @@
 //!
 //!   b210 load IMAGE.bin            load the FPGA, start the bus
 //!   b210 read ADDR | write ADDR VALUE
-//!   b210 rx-test [options]         stream the FPGA's pattern; check every
-//!                                  sample and time; report rate and losses
+//!   b210 rx-test [options]         stream the FPGA's pattern f(t)
+//!   b210 loop-test [options]       one timed tx burst through the FPGA's
+//!                                  loopback, rx running the whole time
+//!
+//! Both tests check every sample time that arrives: its values against
+//! what that tick must carry, the times contiguous (a gap is counted as
+//! lost and must carry OVERFLOW), sequence +1 per packet; and compare the
+//! FPGA's event counters before and after.
 
 use anyhow::{bail, Context, Result};
-use b210::proto::{self, flag, Format, Header, Kind};
+use b210::proto::{self, flag, Format, Header, Kind, Op};
 use b210::regs::{self, rx, test};
-use b210::usb::Usb;
-use clap::{Parser, Subcommand};
+use b210::usb::{Ctrl, Usb};
+use clap::{Args, Parser, Subcommand};
+use nusb::transfer::{Bulk, In, Out};
+use nusb::Endpoint;
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
@@ -22,30 +30,63 @@ struct Cli {
 enum Cmd {
     /// Load an FPGA image and start the bus
     Load { image: std::path::PathBuf },
-    /// Read a register (hex or decimal address)
+    /// Read a register (hex 0x.. or decimal address)
     Read { addr: String },
     /// Write a register
     Write { addr: String, value: String },
     /// Stream the pattern f(t); every sample and timestamp checked
-    RxTest {
-        #[arg(long, default_value_t = 10.0)]
-        seconds: f64,
-        /// sc16 or sc12
-        #[arg(long, default_value = "sc16")]
-        format: String,
-        /// 1 or 2
-        #[arg(long, default_value_t = 1)]
-        channels: u32,
-        /// a sample strobe every DIV + 1 cycles of the 61.54 MHz test clock
-        #[arg(long, default_value_t = 0)]
-        div: u32,
-        /// sample times per packet (0: a full packet)
-        #[arg(long, default_value_t = 0)]
-        spp: u32,
-        /// transfers in flight
-        #[arg(long, default_value_t = 64)]
-        depth: usize,
-    },
+    RxTest(StreamArgs),
+    /// One timed tx burst through the FPGA loopback, back on rx at its tick
+    LoopTest(StreamArgs),
+}
+
+#[derive(Args)]
+struct StreamArgs {
+    #[arg(long, default_value_t = 10.0)]
+    seconds: f64,
+    /// sc16 or sc12
+    #[arg(long, default_value = "sc12")]
+    format: String,
+    /// 1 or 2
+    #[arg(long, default_value_t = 2)]
+    channels: u32,
+    /// a sample strobe every DIV + 1 cycles of the 61.54 MHz test clock
+    #[arg(long, default_value_t = 1)]
+    div: u32,
+    /// transfers in flight per direction
+    #[arg(long, default_value_t = 64)]
+    depth: usize,
+}
+
+/// The step-1 test sample clock: 1200 MHz / 19.5 (fpga/rtl/b210.v).
+const TEST_CLOCK: f64 = 1200e6 / 19.5;
+
+/// One stream's shape.
+#[derive(Clone, Copy)]
+struct Shape {
+    format: Format,
+    code: u32,
+    mask: u8,
+    nch: usize,
+    rate: f64,
+}
+
+impl Shape {
+    fn new(a: &StreamArgs) -> Result<Shape> {
+        let (format, code) = match a.format.as_str() {
+            "sc16" => (Format::Sc16, 1),
+            "sc12" => (Format::Sc12, 2),
+            _ => bail!("format: sc16 or sc12"),
+        };
+        let mask = match a.channels { 1 => 0b01, 2 => 0b11, _ => bail!("channels: 1 or 2") };
+        Ok(Shape { format, code, mask, nch: a.channels as usize, rate: TEST_CLOCK / (a.div as f64 + 1.0) })
+    }
+    fn per_packet(&self) -> usize {
+        self.format.times_per_packet(self.nch)
+    }
+    fn mbytes(&self) -> f64 {
+        self.rate * self.format.bytes_per_time(self.nch) as f64 / 1e6
+    }
 }
 
 fn number(s: &str) -> Result<u32> {
@@ -62,149 +103,272 @@ fn main() -> Result<()> {
         Cmd::Load { image } => {
             let bytes = std::fs::read(&image).with_context(|| format!("{}", image.display()))?;
             let start = Instant::now();
-            usb.load_fpga(&bytes)?;
-            let id = usb.read(regs::ID)?;
+            usb.ctrl.load_fpga(&bytes)?;
+            let id = usb.ctrl.read(regs::ID)?;
             println!("loaded {} ({} bytes) in {:.1} s; id {id:08x}, version {:08x}, build {:08x}",
                      image.display(), bytes.len(), start.elapsed().as_secs_f64(),
-                     usb.read(regs::VERSION)?, usb.read(regs::BUILD)?);
+                     usb.ctrl.read(regs::VERSION)?, usb.ctrl.read(regs::BUILD)?);
             if id != regs::ID_VALUE {
                 bail!("id {id:08x}, expected {:08x}", regs::ID_VALUE);
             }
         }
-        Cmd::Read { addr } => println!("{:08x}", usb.read(number(&addr)? as u16)?),
-        Cmd::Write { addr, value } => usb.write(number(&addr)? as u16, number(&value)?)?,
-        Cmd::RxTest { seconds, format, channels, div, spp, depth } => {
-            rx_test(&mut usb, seconds, &format, channels, div, spp, depth)?
-        }
+        Cmd::Read { addr } => println!("{:08x}", usb.ctrl.read(number(&addr)? as u16)?),
+        Cmd::Write { addr, value } => usb.ctrl.write(number(&addr)? as u16, number(&value)?)?,
+        Cmd::RxTest(a) => rx_test(&mut usb, &a)?,
+        Cmd::LoopTest(a) => loop_test(&mut usb, &a)?,
     }
     Ok(())
 }
+
+// -- the FPGA's counters --------------------------------------------------------------------
+
+/// Event counters by code 1 .. 6 (index code - 1), then rx_lost.
+fn counters(ctrl: &mut Ctrl) -> Result<[u32; 7]> {
+    let ops: Vec<Op> = (0..6).map(|k| Op::Read { addr: regs::EVENTS + k })
+        .chain([Op::Read { addr: regs::RX_LOST }]).collect();
+    let r = ctrl.exec(&ops)?;
+    Ok(std::array::from_fn(|i| r[i].data))
+}
+
+const CODES: [&str; 6] = ["OVERFLOW", "UNDERFLOW", "LATE", "SEQ_ERROR", "BURST_ACK", "BAD_PACKET"];
+
+/// Every counter rose by exactly what `want` says (BURST_ACK and the rest).
+fn check_counters(before: &[u32; 7], after: &[u32; 7], want: [u32; 7]) -> bool {
+    let mut ok = true;
+    for i in 0..7 {
+        let d = after[i].wrapping_sub(before[i]);
+        let name = if i < 6 { CODES[i] } else { "rx_lost" };
+        if d != want[i] {
+            println!("  FPGA {name}: +{d}, expected +{}", want[i]);
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// The time now (time_lo latches time_hi: both read in one command).
+fn now(ctrl: &mut Ctrl) -> Result<u64> {
+    let r = ctrl.exec(&[Op::Read { addr: regs::TIME_LO }, Op::Read { addr: regs::TIME_HI }])?;
+    Ok(r[0].data as u64 | (r[1].data as u64) << 32)
+}
+
+// -- rx: every packet checked ----------------------------------------------------------------
 
 /// What an rx stream showed.
 #[derive(Default)]
 struct Tally {
     packets: u64,
     samples: u64,
-    lost: u64,          // sample times missing between packets
+    lost: u64,
     overflow_flags: u64,
     bad_values: u64,
     bad_headers: u64,
+    first: Option<u64>,
+    /// time and sequence the next packet must carry
+    next: Option<(u64, u16)>,
     ended: bool,
 }
 
-fn rx_test(usb: &mut Usb, seconds: f64, format: &str, channels: u32, div: u32, spp: u32, depth: usize) -> Result<()> {
-    let (fmt, code) = match format {
-        "sc16" => (Format::Sc16, 1),
-        "sc12" => (Format::Sc12, 2),
-        _ => bail!("format: sc16 or sc12"),
-    };
-    let mask = match channels { 1 => 0b01, 2 => 0b11, _ => bail!("channels: 1 or 2") };
-    let nch = channels as usize;
-    let full = fmt.times_per_packet(nch) as u32;
-    let rate = 1200e6 / 19.5 / (div as f64 + 1.0);
-    println!("rx {format} x{channels}: {:.3} MS/s, {:.1} MB/s, {} sample times per packet",
-             rate / 1e6, rate * fmt.bytes_per_time(nch) as f64 / 1e6, if spp == 0 { full } else { spp });
-
-    usb.write(regs::RX_CTRL, rx::STOP)?;
-    let before: Vec<u32> = (0..6).map(|k| usb.read(regs::EVENTS + k)).collect::<Result<_, _>>()?;
-    usb.write(regs::TEST, test::PATTERN)?;
-    usb.write(regs::TEST_DIV, div)?;
-    usb.write(regs::RX_SPP, if spp == 0 { full } else { spp })?;
-    usb.write(regs::RX_COUNT, 0)?;
-    for _ in 0..depth {
-        let buf = usb.rx.allocate(proto::DATA_BUFFER);
-        usb.rx.submit(buf);
+impl Tally {
+    fn report(&self, seconds: f64) {
+        println!("rx: {} packets, {} sample times in {seconds:.2} s = {:.3} MS/s", self.packets, self.samples,
+                 self.samples as f64 / seconds / 1e6);
+        println!("rx: lost {} sample times ({} packets flagged OVERFLOW); bad values {}, bad headers {}",
+                 self.lost, self.overflow_flags, self.bad_values, self.bad_headers);
     }
-    usb.write(regs::RX_CTRL, rx::START | rx::config(code, mask))?;
-
-    let mut tally = Tally::default();
-    let mut next: Option<(u64, u16)> = None;    // expected time and sequence
-    let mut values = vec![0i16; 2 * 2 * 8192];
-    let start = Instant::now();
-    let mut stopping = false;
-    while !tally.ended {
-        if !stopping && start.elapsed().as_secs_f64() >= seconds {
-            usb.write(regs::RX_CTRL, rx::STOP)?;
-            stopping = true;
-        }
-        let c = usb.rx.wait_next_complete(Duration::from_secs(2))
-            .context("no rx packet for 2 s")?;
-        let n = c.actual_len;
-        let buf = c.into_result()?;
-        check_packet(&buf[..n], fmt, nch, mask as u8, &mut next, &mut values, &mut tally);
-        usb.rx.submit(buf);
+    fn clean(&self) -> bool {
+        self.lost == 0 && self.bad_values == 0 && self.bad_headers == 0 && self.overflow_flags == 0
     }
-    let elapsed = start.elapsed().as_secs_f64();
-    usb.rx.cancel_all();
-    while usb.rx.pending() > 0 {
-        usb.rx.wait_next_complete(Duration::from_secs(1));
-    }
-    let after: Vec<u32> = (0..6).map(|k| usb.read(regs::EVENTS + k)).collect::<Result<_, _>>()?;
-    let rx_lost = usb.read(regs::RX_LOST)?;
-    println!("{} packets, {} sample times in {:.2} s = {:.3} MS/s", tally.packets, tally.samples, elapsed,
-             tally.samples as f64 / elapsed / 1e6);
-    println!("lost {} sample times ({} packets flagged OVERFLOW); bad values {}, bad headers {}",
-             tally.lost, tally.overflow_flags, tally.bad_values, tally.bad_headers);
-    println!("FPGA: overflow +{}, rx_lost {}", after[0].wrapping_sub(before[0]), rx_lost);
-    if tally.lost != 0 || tally.bad_values != 0 || tally.bad_headers != 0 || rx_lost != 0 {
-        bail!("rx test FAILED");
-    }
-    println!("rx test PASSED: every sample checked, none lost");
-    Ok(())
 }
 
-fn check_packet(p: &[u8], fmt: Format, nch: usize, mask: u8, next: &mut Option<(u64, u16)>,
-                values: &mut [i16], t: &mut Tally) {
+/// Run the rx stream until it ends (`stop` says when to ask it to): check
+/// each packet against `expect(t)` = the four values (I0 Q0 I1 Q1) tick t
+/// must carry.
+fn rx_run(rx: &mut Endpoint<Bulk, In>, ctrl: &mut Ctrl, s: Shape, depth: usize,
+          expect: impl Fn(u64) -> [i16; 4], mut stop: impl FnMut(&Tally, f64) -> bool) -> Result<(Tally, f64)> {
+    for _ in 0..depth {
+        let buf = rx.allocate(proto::DATA_BUFFER);
+        rx.submit(buf);
+    }
+    ctrl.write(regs::RX_SPP, s.per_packet() as u32)?;
+    ctrl.write(regs::RX_COUNT, 0)?;
+    ctrl.write(regs::RX_CTRL, rx::START | rx::config(s.code, s.mask as u32))?;
+    let mut t = Tally::default();
+    let mut values = vec![0i16; 4 * 8192];
+    let start = Instant::now();
+    let mut stopping = false;
+    while !t.ended {
+        if !stopping && stop(&t, start.elapsed().as_secs_f64()) {
+            ctrl.write(regs::RX_CTRL, rx::STOP)?;
+            stopping = true;
+        }
+        let c = rx.wait_next_complete(Duration::from_secs(2)).context("no rx packet for 2 s")?;
+        let n = c.actual_len;
+        let buf = c.into_result()?;
+        check_packet(&buf[..n], s, &expect, &mut values, &mut t);
+        rx.submit(buf);
+    }
+    let seconds = start.elapsed().as_secs_f64();
+    rx.cancel_all();
+    while rx.pending() > 0 {
+        rx.wait_next_complete(Duration::from_secs(1));
+    }
+    Ok((t, seconds))
+}
+
+fn check_packet(p: &[u8], s: Shape, expect: &impl Fn(u64) -> [i16; 4], values: &mut [i16], t: &mut Tally) {
     let h = match Header::decode(p) {
-        Ok(h) if h.kind == Kind::Rx && h.format == fmt && h.channels == mask && h.flags & flag::HAS_TIME != 0 => h,
+        Ok(h) if h.kind == Kind::Rx && h.format == s.format && h.channels == s.mask
+            && h.flags & flag::HAS_TIME != 0 && p.len() >= h.length as usize => h,
         _ => { t.bad_headers += 1; return; }
     };
-    let bpt = fmt.bytes_per_time(nch);
+    let bpt = s.format.bytes_per_time(s.nch);
     let payload = h.length as usize - proto::HEADER;
-    if !payload.is_multiple_of(bpt) || p.len() < h.length as usize {
+    if !payload.is_multiple_of(bpt) {
         t.bad_headers += 1;
         return;
     }
     let n = payload / bpt;
-    if let Some((time, seq)) = *next {
-        if h.sequence != seq {
-            t.bad_headers += 1;
-        }
+    let overflow = h.flags & flag::OVERFLOW != 0;
+    if let Some((time, seq)) = t.next {
         let gap = proto::lost(time, 0, h.time);
-        if gap > 0 {
-            t.lost += gap as u64;
-        } else if gap < 0 {
+        if h.sequence != seq || gap < 0 || (gap > 0) != overflow {
             t.bad_headers += 1;
         }
-        if (gap > 0) != (h.flags & flag::OVERFLOW != 0) {
-            t.bad_headers += 1;
-        }
+        t.lost += gap.max(0) as u64;
     }
-    if h.flags & flag::OVERFLOW != 0 {
-        t.overflow_flags += 1;
-    }
+    t.overflow_flags += overflow as u64;
+    let nv = 2 * s.nch;
     let body = &p[proto::HEADER..proto::HEADER + payload];
-    let nv = 2 * nch;
-    match fmt {
+    match s.format {
         Format::Sc16 => proto::unpack_sc16(body, &mut values[..n * nv]),
         _ => proto::unpack_sc12(body, &mut values[..n * nv]),
     }
-    let first = if mask == 0b10 { 2 } else { 0 };
+    let first = if s.mask == 0b10 { 2 } else { 0 };
     for k in 0..n {
         let time = h.time + k as u64;
+        let e = expect(time);
         for v in 0..nv {
-            if values[k * nv + v] != test::pattern(time, first + v) {
+            if values[k * nv + v] != e[first + v] {
                 if t.bad_values < 5 {
-                    eprintln!("time {time} value {v}: {}, expected {}", values[k * nv + v], test::pattern(time, first + v));
+                    eprintln!("time {time} value {v}: {}, expected {}", values[k * nv + v], e[first + v]);
                 }
                 t.bad_values += 1;
             }
         }
     }
+    t.first.get_or_insert(h.time);
     t.packets += 1;
     t.samples += n as u64;
-    *next = Some((h.time + n as u64, h.sequence.wrapping_add(1)));
-    if h.flags & flag::END_OF_BURST != 0 {
-        t.ended = true;
+    t.next = Some((h.time + n as u64, h.sequence.wrapping_add(1)));
+    t.ended |= h.flags & flag::END_OF_BURST != 0;
+}
+
+// -- the tests ----------------------------------------------------------------------------------
+
+fn setup(ctrl: &mut Ctrl, source: u32, div: u32) -> Result<[u32; 7]> {
+    ctrl.write(regs::RX_CTRL, rx::STOP)?;
+    ctrl.write(regs::TEST, source)?;
+    ctrl.write(regs::TEST_DIV, div)?;
+    counters(ctrl)
+}
+
+fn rx_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
+    let s = Shape::new(a)?;
+    println!("rx-test {} x{}: {:.3} MS/s, {:.1} MB/s", a.format, a.channels, s.rate / 1e6, s.mbytes());
+    let before = setup(&mut usb.ctrl, test::PATTERN, a.div)?;
+    let pattern = |t: u64| std::array::from_fn(|k| test::pattern(t, k));
+    let (tally, seconds) = rx_run(&mut usb.rx, &mut usb.ctrl, s, a.depth, pattern,
+                                  |_, elapsed| elapsed >= a.seconds)?;
+    tally.report(seconds);
+    let ok = check_counters(&before, &counters(&mut usb.ctrl)?, [0; 7]) & tally.clean();
+    if !ok {
+        bail!("rx-test FAILED");
     }
+    println!("rx-test PASSED: every sample time checked, none lost");
+    Ok(())
+}
+
+/// The value k (I0 Q0 I1 Q1) of burst sample i: 12 bits of a 64-bit hash,
+/// never 0, so a sample missing from the burst cannot pass as idle.
+fn burst_value(i: u64, k: usize) -> i16 {
+    let x = i.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (12 * k + 8);
+    let v = (x as u16 & 0xFFF).max(1);
+    ((v << 4) as i16) >> 4
+}
+
+/// Send `n` samples as one burst starting at tick `at`: full packets, the
+/// last one shorter; START_OF_BURST + HAS_TIME on the first, END_OF_BURST
+/// on the last. Returns the packets sent.
+fn tx_burst(tx: &mut Endpoint<Bulk, Out>, s: Shape, at: u64, n: u64, depth: usize, wait: Duration) -> Result<u64> {
+    let per = s.per_packet() as u64;
+    let packets = n.div_ceil(per);
+    let mut scratch = vec![0u8; proto::DATA_BUFFER];
+    let mut values = vec![0i16; 4 * per as usize];
+    for p in 0..packets {
+        let i0 = p * per;
+        let m = per.min(n - i0);
+        let nv = 2 * s.nch;
+        for i in 0..m as usize {
+            for v in 0..nv {
+                values[i * nv + v] = burst_value(i0 + i as u64, v);
+            }
+        }
+        let mut flags = flag::HAS_TIME;
+        if p == 0 { flags |= flag::START_OF_BURST; }
+        if p == packets - 1 { flags |= flag::END_OF_BURST; }
+        let h = Header { length: 0, kind: Kind::Tx, format: s.format, channels: s.mask,
+                         sequence: p as u16, flags, time: at + i0 };
+        let size = proto::tx_packet(h, &values[..m as usize * nv], &mut scratch);
+        let mut buf = if tx.pending() < depth {
+            tx.allocate(proto::DATA_BUFFER)
+        } else {
+            tx.wait_next_complete(wait).context("tx transfer did not complete")?.into_result()?
+        };
+        buf.clear();
+        buf.extend_from_slice(&scratch[..size]);
+        tx.submit(buf);
+    }
+    while tx.pending() > 0 {
+        tx.wait_next_complete(wait).context("tx transfer did not complete")?.into_result()?;
+    }
+    Ok(packets)
+}
+
+fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
+    let s = Shape::new(a)?;
+    println!("loop-test {} x{}: {:.3} MS/s, {:.1} MB/s each way", a.format, a.channels, s.rate / 1e6, s.mbytes());
+    let before = setup(&mut usb.ctrl, test::LOOPBACK, a.div)?;
+    let lead = 0.3;                                       // s from now to the burst
+    let at = now(&mut usb.ctrl)? + (lead * s.rate) as u64;
+    let n = (a.seconds * s.rate) as u64;
+    let end = at + n;
+    let tail = (0.02 * s.rate) as u64;                    // rx keeps going this long after the burst
+    let expect = move |t: u64| -> [i16; 4] {
+        if t >= at && t < end { std::array::from_fn(|k| burst_value(t - at, k)) } else { [0; 4] }
+    };
+    let Usb { ctrl, tx, rx } = usb;
+    let (rx_result, tx_result) = std::thread::scope(|scope| {
+        let wait = Duration::from_secs_f64(lead + 5.0);
+        let sender = scope.spawn(move || tx_burst(tx, s, at, n, a.depth, wait));
+        let r = rx_run(rx, ctrl, s, a.depth, expect,
+                       |t, _| t.next.is_some_and(|(time, _)| time >= end + tail));
+        (r, sender.join().expect("tx thread"))
+    });
+    let (tally, seconds) = rx_result?;
+    let packets = tx_result?;
+    tally.report(seconds);
+    println!("tx: {n} samples in {packets} packets, burst at tick {at}");
+    let covered = tally.first.is_some_and(|f| f <= at) && tally.next.is_some_and(|(t, _)| t >= end);
+    if !covered {
+        println!("  rx did not cover the whole burst");
+    }
+    let mut want = [0; 7];
+    want[4] = 1;                                          // one BURST_ACK
+    let ok = check_counters(&before, &counters(ctrl)?, want) & tally.clean() & covered;
+    if !ok {
+        bail!("loop-test FAILED");
+    }
+    println!("loop-test PASSED: all {n} tx samples back on rx at exactly their ticks, zeros around them");
+    Ok(())
 }

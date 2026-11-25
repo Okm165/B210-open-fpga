@@ -52,10 +52,17 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The board: control (vendor requests, commands and their results) and
+/// the two data endpoints, separate so that each can run on its own thread.
 pub struct Usb {
-    device: nusb::Device,
+    pub ctrl: Ctrl,
     pub tx: Endpoint<Bulk, Out>,
     pub rx: Endpoint<Bulk, In>,
+}
+
+/// The control side: FX3 vendor requests and the command/result endpoints.
+pub struct Ctrl {
+    device: nusb::Device,
     cmd: Endpoint<Bulk, Out>,
     rsp: Endpoint<Bulk, In>,
     sequence: u16,
@@ -75,13 +82,18 @@ impl Usb {
         Ok(Usb {
             tx: i1.endpoint::<Bulk, Out>(0x02)?,
             rx: i2.endpoint::<Bulk, In>(0x86)?,
-            cmd: i3.endpoint::<Bulk, Out>(0x04)?,
-            rsp: i4.endpoint::<Bulk, In>(0x88)?,
-            device,
-            sequence: 0,
-            events: Vec::new(),
+            ctrl: Ctrl {
+                cmd: i3.endpoint::<Bulk, Out>(0x04)?,
+                rsp: i4.endpoint::<Bulk, In>(0x88)?,
+                device,
+                sequence: 0,
+                events: Vec::new(),
+            },
         })
     }
+}
+
+impl Ctrl {
 
     fn vendor_out(&self, request: u8, data: &[u8]) -> Result<()> {
         let c = ControlOut { control_type: ControlType::Vendor, recipient: Recipient::Device, request, value: 0, index: 0, data };
