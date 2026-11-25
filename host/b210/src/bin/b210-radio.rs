@@ -5,8 +5,8 @@
 use anyhow::{Context, Result, bail};
 use b210::ad9361::Bus;
 use b210::config::Config;
-use b210::device::{self, Device, PollRecord, Spi};
-use b210::usb::{DEPTH_MS_DEFAULT, Usb};
+use b210::device::{self, Device, Exec, PollRecord, Spi};
+use b210::usb::{Ctrl, Usb, DEPTH_MS_DEFAULT};
 use b210::regs;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -41,14 +41,13 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut usb = Usb::open(DEPTH_MS_DEFAULT)?;
-    let ctrl = &mut usb.ctrl;
+    let Usb { mut ctrl, .. } = Usb::open(DEPTH_MS_DEFAULT)?;
     let version = ctrl.read(regs::VERSION)?;
     println!("FPGA protocol {} build {}", version >> 16, version & 0xFFFF);
     match args.cmd {
         Cmd::Id => {
             let t = Instant::now();
-            let id = device::reset(ctrl)?;
+            let id = device::reset(&mut ctrl)?;
             println!("reset + read: {:.3} ms", ms(t));
             println!("AD9361 product id {PRODUCT:#05x} = {id:#04x} (product {:#04x}, revision {})", id & 0xF8, id & 7,
                      PRODUCT = device::PRODUCT_ID);
@@ -58,27 +57,20 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Peek { regs } => {
-            let mut spi = Spi::new(ctrl);
+            let mut spi = Spi::new(&mut ctrl);
             for r in regs {
                 let reg = u16::from_str_radix(r.trim_start_matches("0x"), 16).with_context(|| format!("register {r}"))?;
                 println!("{reg:#05x} = {:#04x}", spi.read([reg])?[0]);
             }
         }
         Cmd::Reset => {
-            device::hold_reset(ctrl)?;
+            device::hold_reset(&mut ctrl)?;
             println!("radio register {:#05x} = {:#x}: AD9361 held in reset", regs::RADIO, ctrl.read(regs::RADIO)?);
         }
         Cmd::Apply { config, from } => {
             let new = load(&config)?;
             let old = from.as_deref().map(load).transpose()?;
-            if let Err(e) = apply(ctrl, old.as_ref(), &new) {
-                // the chip as it is, for diagnosis
-                let mut spi = Spi::new(ctrl);
-                if let Ok(v) = spi.read(STATUS_REGS) {
-                    println!("after the error: {}", status_line(v));
-                }
-                return Err(e);
-            }
+            apply(ctrl, old.as_ref(), &new)?;
         }
     }
     Ok(())
@@ -96,6 +88,13 @@ fn ms(t: Instant) -> f64 {
 /// BBPLL lock (0x05E bit 7), rx and tx RF PLL lock (0x247, 0x287 bit 1),
 /// ENSM state (0x017 bits 3:0), calibrations running (0x016).
 const STATUS_REGS: [u16; 5] = [0x05E, 0x247, 0x287, 0x017, 0x016];
+
+/// The chip as it is after an error, for diagnosis.
+fn print_status_after_error<E: Exec>(spi: &mut Spi<E>) {
+    if let Ok(v) = spi.read(STATUS_REGS) {
+        println!("after the error: {}", status_line(v));
+    }
+}
 
 fn status_line([bb, rx, tx, ensm, cal]: [u8; 5]) -> String {
     let lock = |v: u8, bit: u8| if v & bit != 0 { "locked" } else { "UNLOCKED" };
@@ -137,7 +136,7 @@ fn print_polls(polls: &mut Vec<PollRecord>) {
     }
 }
 
-fn apply(ctrl: &mut b210::usb::Ctrl, old: Option<&Config>, new: &Config) -> Result<()> {
+fn apply(ctrl: Ctrl, old: Option<&Config>, new: &Config) -> Result<()> {
     let mut configs = Vec::new();
     if let Some(old) = old {
         configs.push(("from", old));
@@ -154,7 +153,13 @@ fn apply(ctrl: &mut b210::usb::Ctrl, old: Option<&Config>, new: &Config) -> Resu
 
     println!("bring-up (RESETB pulse, product id, Ad9361::init):");
     let t = Instant::now();
-    let mut dev = Device::bring_up(ctrl)?;
+    let mut dev = match Device::bring_up(ctrl) {
+        Ok(dev) => dev,
+        Err((e, ctrl)) => {
+            print_status_after_error(&mut Spi::new(ctrl));
+            return Err(e.into());
+        }
+    };
     let elapsed = ms(t);
     let stats = dev.ad.bus().stats;
     print_polls(&mut dev.ad.bus().polls);
@@ -182,6 +187,7 @@ fn apply(ctrl: &mut b210::usb::Ctrl, old: Option<&Config>, new: &Config) -> Resu
         if let Err(e) = r {
             println!("  {:>2}. failed: {e}", k + 1);
             print_polls(&mut dev.ad.bus().polls);
+            print_status_after_error(dev.ad.bus());
             return Err(e.into());
         }
         if let Some(e) = failed {

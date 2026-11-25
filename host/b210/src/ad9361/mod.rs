@@ -33,16 +33,20 @@
 //! The chip's baseband PLL (BBPLL) runs from the 40 MHz reference:
 //!
 //!   f_bbpll = 40 MHz x (N_int + N_frac / 2 088 960),  N_frac rounded,
-//!   672 MHz <= f_bbpll <= 1430 MHz,  f_adc = f_bbpll / 2^k,  k = 1 .. 6.
+//!   715 MHz <= f_bbpll <= 1430 MHz,  f_adc = f_bbpll / 2^k,  k = 1 .. 6.
 //!
 //! The receive chain decimates the ADC clock by D_rx = (1, 2 or 3) x (1 or 2)
 //! x (1 or 2) x (FIR 2 or 4) (stages HB3/DEC3, HB2, HB1, FIR; register 0x003),
 //! chosen by rate band, so f_adc = rate x D_rx. The DAC runs at f_adc, or
-//! f_adc / 2 above 336 MHz, where the transmit interpolation D_tx is D_rx / 2
+//! f_adc / 2 above 320 MHz, where the transmit interpolation D_tx is D_rx / 2
 //! (register 0x002); both directions run the same rate. The rate set is the
-//! one the PLL reaches: f_adc / D_rx (returned by `set_rate`). Every rate in
-//! [220 kHz, 61.44 MHz] has a k (the [672, 1430] MHz windows of successive k
-//! overlap, and 672 MHz / 64 / 48 = 218.75 kHz).
+//! one the PLL reaches: f_adc / D_rx (returned by `set_rate`). The bands keep
+//! every clock within ADI's limits (no-OS ad9361.h, MIN_BBPLL_FREQ ..
+//! MAX_TX_HB1): BBPLL 715 .. 1430 MHz, ADC 25 .. 640 MHz, DAC <= 320 MHz, rx
+//! half-band outputs HB3 <= 640, HB2 <= 320, HB1 <= 245.76 MHz, tx half-band
+//! inputs HB3 <= 320, HB2 <= 320, HB1 <= 160 MHz (test
+//! rate_bands_keep_adis_clock_limits). Every rate in [MIN_RATE, 61.44 MHz]
+//! has a k (the [715, 1430] MHz windows of successive k meet).
 //!
 //! # LO frequencies
 //!
@@ -78,10 +82,13 @@
 //!   61.44 MHz with one sample time per clock per channel (I and Q on the two
 //!   edges, UG-570 "CMOS dual port full duplex"), and 2R2T takes two clocks.
 //!
-//! # The one change from UHD
+//! # Changes from UHD
 //!
-//! UHD's initialize() writes TX attenuation 0 dB (registers 0x073 .. 0x076 :=
-//! 0, under a comment saying 10 dB) and then enters FDD with TX1 on: full
+//! tests/ad9361_golden.rs compares this driver with UHD's C++ access for
+//! access and allows exactly these differences.
+//!
+//! *TX attenuation at bring-up.* UHD's initialize() writes TX attenuation
+//! 0 dB (registers 0x073 .. 0x076 := 0, under a comment saying 10 dB) and then enters FDD with TX1 on: full
 //! output power until the first gain is set, and a chip state that
 //! contradicts the driver's own "tx gain 0" (= 89.75 dB attenuation). Here the
 //! same four writes carry the maximum attenuation, 4 x 89.75 = 359 = 0x167
@@ -90,9 +97,27 @@
 //! `set_channels` then runs at maximum attenuation, as every later one does
 //! in UHD (its tune() rewrites the stored gains, 0 dB by default, first).
 //!
+//! *Rate bands within ADI's clock limits* (Clocks and rate). UHD's bands
+//! run the ADC above ADI's 640 MHz from 40 MS/s (decimation 16 below 41
+//! MS/s: 656 MHz; decimation 12 up to 58 MS/s: 696 MHz) and below its
+//! 25 MHz under 1.5625 MS/s (16 MHz at 1 MS/s), and UHD's minimum rate
+//! 220 kHz needs a BBPLL below ADI's 715 MHz. Here: decimation 48 below
+//! 781.25 kS/s, 32 below 1.5625 MS/s, 16 up to 40 MS/s, 12 up to
+//! 53.33 MS/s, 8 above; the DAC halves above 320 MHz (UHD: 336 MHz, which
+//! no band reaches between 320 and 336 MHz, so no access changes); the
+//! minimum rate is 25 MHz / 48 = 520.833 kHz. Rates in [1.5625, 40] and
+//! (41, 53.33] and (58, 61.44] MS/s, init's 50 MS/s among them, keep UHD's
+//! bands access for access.
+//!
+//! *RF PLL lock.* UHD waits 2 ms after a synthesizer write and reads the
+//! lock bit once; ADI polls it until set (no-OS ad9361_check_cal_done).
+//! Here: the same 2 ms wait, then a POLL of the lock bit for up to
+//! [`PLL_LOCK_MS`]. A POLL is recorded as its first read, so a chip that is
+//! locked at once (the golden traces' `settled` rule) gives UHD's accesses.
+//!
 //! # Conversions
 //!
-//! UHD converts doubles to uint8_t/uint16_t with C casts; [`c_u8`] keeps the
+//! UHD converts doubles to uint8_t/uint16_t with C casts; `c_u8` keeps the
 //! C behaviour (truncation toward zero; gcc on x86-64 then keeps the low
 //! bits) so that the port stays exact even where a value leaves [0, 256).
 
@@ -110,7 +135,7 @@ pub enum Error {
     Bus(Box<dyn std::error::Error + Send + Sync>),
     #[error("AD9361 register {reg:#05x} = {value:#04x}: (value & {mask:#04x}) != {want:#04x} within the time limit")]
     Poll { reg: u16, mask: u8, want: u8, value: u8 },
-    #[error("AD9361 product id {0:#04x}, expected 0x08")]
+    #[error("AD9361 product id register 0x037 & 0xf8 = {0:#04x}, expected product 0x08 in bits 7:3")]
     ProductId(u8),
     #[error("AD9361 state machine in state {0:#x}, expected ALERT (0x5) or FDD (0xa)")]
     State(u8),
@@ -221,29 +246,68 @@ const TX_PORT_A_FROM: f64 = 2.5e9;
 
 // -- ranges -------------------------------------------------------------------
 
-/// Rates: UHD AD9361_MIN/MAX_CLOCK_RATE (see the module header).
-pub const MIN_RATE: f64 = 220e3;
+// The chip's limits, the one source for config.rs's validation too.
+
+/// Rates. Lower: ADI's least ADC clock over the largest decimation, 25 MHz /
+/// 48 = 520 833.3 Hz, rounded up (no-OS ad9361.h MIN_ADC_CLK; UHD's
+/// AD9361_MIN_CLOCK_RATE 220 kHz runs the ADC at 10.6 MHz). Upper: UHD
+/// AD9361_MAX_CLOCK_RATE, ADI MAX_BASEBAND_RATE.
+pub const MIN_RATE: f64 = 520_834.0;
 pub const MAX_RATE: f64 = 61.44e6;
-/// LO frequencies: the B210's range.
-pub const MIN_FREQ: f64 = 70e6;
-pub const MAX_FREQ: f64 = 6e9;
-/// Bandwidths: UHD AD9361_MIN/MAX_BW (the analog filters' roll-off).
+/// Two channels in a direction: the data port carries both (Invariants).
+pub const MAX_RATE_2CH: f64 = MAX_RATE / 2.0;
+/// LO frequencies: the AD9361's and the B210's specified tuning range
+/// (UHD's get_rf_freq_range accepts down to 50 MHz, unspecified).
+pub const MIN_LO: f64 = 70e6;
+pub const MAX_LO: f64 = 6e9;
+/// Bandwidths `set_bandwidth` takes: UHD AD9361_MIN/MAX_BW (the analog
+/// filters' roll-off). Each filter then clamps its one-sided bandwidth to
+/// its own range (below), so not every bandwidth in here is set as asked.
 pub const MIN_BANDWIDTH: f64 = 200e3;
 pub const MAX_BANDWIDTH: f64 = 56e6;
-/// rx gain index range, tx gain range (dB).
+/// The one-sided bandwidth ranges of the analog filters, (min, max) Hz:
+/// UHD's clamps, from each filter's corner range over its corner factor
+/// (see the calibrate_* functions).
+const RX_BB_BBBW: (f64, f64) = (0.143e6, 28e6);
+const RX_TIA_BBBW: (f64, f64) = (0.40e6, 28e6);
+const TX_BB_BBBW: (f64, f64) = (0.391e6, 20e6);
+const TX_SECONDARY_BBBW: (f64, f64) = (0.54e6, 20e6);
+/// The RF bandwidths that every filter of a direction is set to exactly:
+/// twice the intersection of its filters' one-sided ranges, given a rate
+/// of at least the bandwidth (`bbbw` clips to rate / 2). rx: 800 kHz ..=
+/// 56 MHz; tx: 1.08 MHz ..= 40 MHz.
+pub const MIN_RX_BANDWIDTH: f64 = 2.0 * RX_BB_BBBW.0.max(RX_TIA_BBBW.0);
+pub const MAX_RX_BANDWIDTH: f64 = 2.0 * RX_BB_BBBW.1.min(RX_TIA_BBBW.1);
+pub const MIN_TX_BANDWIDTH: f64 = 2.0 * TX_BB_BBBW.0.max(TX_SECONDARY_BBBW.0);
+pub const MAX_TX_BANDWIDTH: f64 = 2.0 * TX_BB_BBBW.1.min(TX_SECONDARY_BBBW.1);
+/// rx gain: the gain table index, 1 dB per step (fractions truncated);
+/// tx gain: 89.75 dB minus the attenuation word's 0.25 dB steps.
 pub const MAX_RX_GAIN: f64 = 76.0;
+pub const RX_GAIN_STEP: f64 = 1.0;
 pub const MAX_TX_GAIN: f64 = 89.75;
+pub const TX_GAIN_STEP: f64 = 0.25;
 
 // -- clocks ---------------------------------------------------------------------
 
-/// BBPLL: reference (REFCLK / 1, register 0x045 = 0), fractional modulus,
-/// VCO range (UHD _tune_bbvco).
+/// BBPLL: reference (REFCLK / 1, register 0x045 = 0), fractional modulus
+/// (UHD _tune_bbvco), VCO range: ADI's MIN_BBPLL_FREQ, MAX_BBPLL_FREQ
+/// (no-OS ad9361.h; UHD's minimum is 672 MHz).
 const BB_REF: f64 = 40e6;
 const BB_MOD: i32 = 2_088_960;
-const BB_VCO_MIN: f64 = 672e6;
+const BB_VCO_MIN: f64 = 715e6;
 const BB_VCO_MAX: f64 = 1430e6;
-/// Above this ADC clock the DAC runs at half of it (UHD _setup_rates).
-const DAC_MAX: f64 = 336e6;
+/// ADI's ADC clock range and DAC maximum (no-OS ad9361.h MIN_ADC_CLK,
+/// MAX_ADC_CLK, MAX_DAC_CLK).
+const MIN_ADC_CLK: f64 = 25e6;
+const MAX_ADC_CLK: f64 = 640e6;
+const MAX_DAC_CLK: f64 = MAX_ADC_CLK / 2.0;
+/// Above this ADC clock the DAC runs at half of it: ADI's DAC maximum
+/// (UHD: 336 MHz, above it).
+const DAC_MAX: f64 = MAX_DAC_CLK;
+/// Limit of the POLL for an RF synthesizer's lock bit, after UHD's 2 ms
+/// wait (module header, changes from UHD): 5x that wait, far beyond a
+/// lock that takes microseconds once the VCO is calibrated.
+const PLL_LOCK_MS: u32 = 10;
 /// RF PLLs: reference REFCLK x 2 (registers 0x2AB/0x2AC), modulus, VCO range
 /// (UHD _tune_helper).
 const RF_REF: f64 = 80e6;
@@ -254,7 +318,7 @@ const RF_VCO_MAX: f64 = 12e9;
 /// AD9361_CAL_VALID_WINDOW).
 const CAL_WINDOW: f64 = 100e6;
 /// Initial LO frequencies (UHD DEFAULT_RX_FREQ, DEFAULT_TX_FREQ).
-const INIT_FREQ: [f64; 2] = [800e6, 850e6];
+const INIT_LO: [f64; 2] = [800e6, 850e6];
 
 // -- registers --------------------------------------------------------------------
 
@@ -313,7 +377,7 @@ const fn uhd_limit(checks: u32, sleep_ms: u32) -> u32 {
 
 /// UHD's double -> uint8_t conversion (gcc, x86-64): truncate toward zero to
 /// 32 bits, keep the low 8.
-pub fn c_u8(x: f64) -> u8 {
+fn c_u8(x: f64) -> u8 {
     x as i32 as u8
 }
 
@@ -351,13 +415,13 @@ pub struct Ad9361<B: Bus> {
     loopback: u8,
     /// Per `Dir`: the LO, the last requested LO, the LO at the last
     /// calibration (Hz).
-    freq: [f64; 2],
-    req_freq: [f64; 2],
-    cal_freq: [f64; 2],
+    lo: [f64; 2],
+    req_lo: [f64; 2],
+    cal_lo: [f64; 2],
     /// Per `Dir`, per channel: the gain last set (dB).
     gain: [[f64; 2]; 2],
     /// Channel masks (bit c: channel c) of `set_channels`, rx and tx.
-    channels: [u8; 2],
+    mask: [u8; 2],
     /// The rate (UHD _baseband_bw), the last requested rate, the BBPLL and
     /// ADC clocks and the last requested ADC clock (Hz).
     rate: f64,
@@ -379,6 +443,11 @@ impl<B: Bus> Ad9361<B> {
     /// rx LO 800 MHz, tx LO 850 MHz, every calibration run, TX1 enabled at
     /// maximum attenuation, FDD.
     pub fn init(bus: B) -> Result<Self> {
+        Self::try_init(bus).map_err(|(e, _)| e)
+    }
+
+    /// `init`, giving the bus back with the error.
+    pub fn try_init(bus: B) -> std::result::Result<Self, (Error, B)> {
         let mut d = Ad9361 {
             bus,
             vcodivs: 0x00,
@@ -390,11 +459,11 @@ impl<B: Bus> Ad9361<B> {
             bbftune_mode: 0x1E,
             bist: 0,
             loopback: 0,
-            freq: INIT_FREQ,
-            req_freq: [0.0; 2],
-            cal_freq: [0.0; 2],
+            lo: INIT_LO,
+            req_lo: [0.0; 2],
+            cal_lo: [0.0; 2],
             gain: [[0.0; 2]; 2],
-            channels: [0, 0],
+            mask: [0, 0],
             rate: 0.0,
             req_rate: 0.0,
             bbpll_freq: 0.0,
@@ -405,9 +474,10 @@ impl<B: Bus> Ad9361<B> {
             rx_tune_div: 0,
             gain_table: 0,
         };
-        d.initialize()?;
-        d.bus.flush()?;
-        Ok(d)
+        match d.initialize().and_then(|()| d.bus.flush()) {
+            Ok(()) => Ok(d),
+            Err(e) => Err((e, d.bus)),
+        }
     }
 
     /// The bus (for its owner: statistics, events, the mock's log).
@@ -415,10 +485,21 @@ impl<B: Bus> Ad9361<B> {
         &mut self.bus
     }
 
+    /// The LO of `dir` as reached (Hz).
+    pub fn lo(&self, dir: Dir) -> f64 {
+        self.lo[dir as usize]
+    }
+
+    /// The bus back. Every public call ends with the queue run, so nothing
+    /// is left queued on it.
+    pub fn into_bus(self) -> B {
+        self.bus
+    }
+
     /// Set the rate (samples per second per channel); the rate reached.
     /// All calibrations run again (UHD set_clock_rate).
     pub fn set_rate(&mut self, rate: f64) -> Result<f64> {
-        let n = self.channels.iter().map(|c| c.count_ones()).max().unwrap_or(1).max(1);
+        let n = self.mask.iter().map(|c| c.count_ones()).max().unwrap_or(1).max(1);
         check("rate", rate, MIN_RATE, MAX_RATE / n as f64)?;
         let r = self.clock_rate(rate)?;
         self.bus.flush()?;
@@ -434,16 +515,16 @@ impl<B: Bus> Ad9361<B> {
         if rx == 3 || tx == 3 {
             // the rate as requested: the one reached is off by a fraction of a
             // BBPLL step (30.72 MS/s comes out 0.02 Hz high)
-            check("rate for 2 channels", self.req_rate, MIN_RATE, MAX_RATE / 2.0)?;
+            check("rate for 2 channels", self.req_rate, MIN_RATE, MAX_RATE_2CH)?;
         }
         self.chains(rx, tx)?;
         self.bus.flush()
     }
 
     /// Tune the rx or tx LO; the frequency reached (UHD tune()).
-    pub fn set_freq(&mut self, dir: Dir, freq: f64) -> Result<f64> {
-        check(["rx freq", "tx freq"][dir as usize], freq, MIN_FREQ, MAX_FREQ)?;
-        let f = self.tune(dir, freq)?;
+    pub fn set_lo(&mut self, dir: Dir, lo: f64) -> Result<f64> {
+        check(["rx LO", "tx LO"][dir as usize], lo, MIN_LO, MAX_LO)?;
+        let f = self.tune(dir, lo)?;
         self.bus.flush()?;
         Ok(f)
     }
@@ -527,9 +608,14 @@ impl<B: Bus> Ad9361<B> {
 
     /// UHD initialize(), from the reset on.
     fn initialize(&mut self) -> Result<()> {
-        // soft reset (0x000 bit 0), and the product id (0x037 bits 7:3; bits
-        // 2:0 are the revision: this board read 0x0A over the FPGA's SPI
-        // master, v1 measurement, docs/STATUS.md at tag v1-ettus-uhd)
+        // soft reset (0x000 bit 0), UHD's; kept for the golden traces, the
+        // RESETB pulse before init (device::reset) being the reset that
+        // counts: ADI's driver writes 0x81 here (bits 7 and 0, mirrored) and
+        // only without a RESETB pin, warning that the SPI soft reset "doesn't
+        // work reliably" (no-OS ad9361.c ad9361_reset). Then the product id
+        // (0x037 bits 7:3; bits 2:0 are the revision: this board read 0x0A
+        // over the FPGA's SPI master, v1 measurement, docs/STATUS.md at tag
+        // v1-ettus-uhd)
         self.writes(&[(0x000, 0x01), (0x000, 0x00)])?;
         self.wait_ms(20)?;
         let id = self.bus.read([0x037])?[0] & 0xF8;
@@ -574,8 +660,8 @@ impl<B: Bus> Ad9361<B> {
         // UHD: "The order of the following process is EXTREMELY important."
         self.enter_alert()?;
         self.calibrate_charge_pumps()?;
-        self.tune_lo(Dir::Rx, self.freq[0])?;
-        self.tune_lo(Dir::Tx, self.freq[1])?;
+        self.tune_lo(Dir::Rx, self.lo[0])?;
+        self.tune_lo(Dir::Tx, self.lo[1])?;
         self.program_mixer_gm()?;
         self.program_gain_table()?;
         self.setup_gain_control()?;
@@ -612,7 +698,7 @@ impl<B: Bus> Ad9361<B> {
     fn after_calibrations(&mut self) -> Result<()> {
         self.w(0x18B, 0xAD)?;
         self.w(0x169, 0xCF)?;
-        self.cal_freq = self.freq;
+        self.cal_lo = self.lo;
         self.writes(&[(0x012, 0x02), (0x013, 0x01), (0x015, 0x04)])
     }
 
@@ -636,8 +722,8 @@ impl<B: Bus> Ad9361<B> {
         self.setup_rates(rate)?;
         self.enter_alert()?;
         self.calibrate_charge_pumps()?;
-        self.tune_lo(Dir::Rx, self.freq[0])?;
-        self.tune_lo(Dir::Tx, self.freq[1])?;
+        self.tune_lo(Dir::Rx, self.lo[0])?;
+        self.tune_lo(Dir::Tx, self.lo[1])?;
         self.program_mixer_gm()?;
         self.program_gain_table()?;
         self.setup_gain_control()?;
@@ -660,7 +746,7 @@ impl<B: Bus> Ad9361<B> {
 
     /// UHD set_active_chains(tx1, tx2, rx1, rx2).
     fn chains(&mut self, rx: u8, tx: u8) -> Result<()> {
-        self.channels = [rx, tx];
+        self.mask = [rx, tx];
         let bits = |mask: u8| if mask & 1 != 0 { CHAIN1 } else { 0 } | if mask & 2 != 0 { CHAIN2 } else { 0 };
         self.txfilt = self.txfilt & 0x3F | bits(tx);
         self.rxfilt = self.rxfilt & 0x3F | bits(rx);
@@ -688,10 +774,10 @@ impl<B: Bus> Ad9361<B> {
     /// UHD tune().
     fn tune(&mut self, dir: Dir, value: f64) -> Result<f64> {
         let d = dir as usize;
-        if nearly_equal(value, self.req_freq[d]) {
-            return Ok(self.freq[d]);
+        if nearly_equal(value, self.req_lo[d]) {
+            return Ok(self.lo[d]);
         }
-        let last_cal = self.cal_freq[d];
+        let last_cal = self.cal_lo[d];
         let not_in_alert = self.ensm_state()? != STATE_ALERT;
         if not_in_alert {
             self.w(ENSM_CTRL, TO_ALERT)?;
@@ -711,13 +797,13 @@ impl<B: Bus> Ad9361<B> {
                 }
                 Dir::Tx => self.calibrate_tx_quadrature()?,
             }
-            self.cal_freq[d] = f;
+            self.cal_lo[d] = f;
             self.w(0x169, 0xCF)?; // rx IQ tracking on
         }
         if not_in_alert {
             self.w(ENSM_CTRL, TO_FDD)?;
         }
-        Ok(self.freq[d])
+        Ok(self.lo[d])
     }
 
     /// UHD set_gain().
@@ -766,7 +852,7 @@ impl<B: Bus> Ad9361<B> {
 
     /// The one-sided bandwidth of a filter for the RF bandwidth `rf_bw`: half
     /// of it, at most rate / 2, in [min, max] (each filter's range).
-    fn bbbw(&self, rf_bw: f64, min: f64, max: f64) -> f64 {
+    fn bbbw(&self, rf_bw: f64, (min, max): (f64, f64)) -> f64 {
         (rf_bw / 2.0).min(self.rate / 2.0).clamp(min, max)
     }
 
@@ -777,15 +863,7 @@ impl<B: Bus> Ad9361<B> {
     fn setup_rates(&mut self, rate: f64) -> Result<()> {
         self.req_rate = rate;
         let all = CHAIN1 | CHAIN2; // every chain on for the calibrations
-        let (rx, tx, fir) = match rate {
-            r if r < 0.33e6 => (X3 | HB2 | HB1 | FIR_X4, X3 | HB2 | HB1 | FIR_X4, 4),
-            r if r < 0.66e6 => (HB3 | HB2 | HB1 | FIR_X4, HB3 | HB2 | HB1 | FIR_X4, 4),
-            r if r <= 20e6 => (HB3 | HB2 | HB1 | FIR_X2, HB3 | HB2 | HB1 | FIR_X2, 2),
-            r if r < 23e6 => (X3 | HB2 | HB1 | FIR_X2, X3 | HB1 | FIR_X2, 2),
-            r if r < 41e6 => (HB3 | HB2 | HB1 | FIR_X2, HB2 | HB1 | FIR_X2, 2),
-            r if r <= 58e6 => (X3 | HB1 | FIR_X2, X3 | FIR_X2, 2),
-            _ => (HB2 | HB1 | FIR_X2, HB3 | FIR_X2, 2),
-        };
+        let (rx, tx, fir) = filters(rate);
         (self.rxfilt, self.txfilt, self.fir_factor) = (all | rx, all | tx, fir);
         let d_rx = rate_change(rx) as f64;
         let adc = self.adc_clock(rate * d_rx)?;
@@ -886,7 +964,7 @@ impl<B: Bus> Ad9361<B> {
     /// reached.
     fn tune_lo(&mut self, dir: Dir, value: f64) -> Result<f64> {
         let what = ["rx LO", "tx LO"][dir as usize];
-        let range = Error::Range { what, value, min: RF_VCO_MIN / 128.0, max: MAX_FREQ };
+        let range = Error::Range { what, value, min: RF_VCO_MIN / 128.0, max: MAX_LO };
         let k = (0..=6).find(|&k| (RF_VCO_MIN..=RF_VCO_MAX).contains(&(value * (2 << k) as f64))).ok_or(range)?;
         let div = (2 << k) as f64;
         let vco = value * div;
@@ -896,7 +974,7 @@ impl<B: Bus> Ad9361<B> {
         let lo = actual_vco / div;
         // the tx registers are the rx ones + 0x40
         let o = 0x40 * dir as u16;
-        self.req_freq[dir as usize] = value;
+        self.req_lo[dir as usize] = value;
         match dir {
             Dir::Rx => {
                 // input port (0x004 bits 5:0): C 0x30, B 0x0C, A 0x03, balanced
@@ -926,10 +1004,10 @@ impl<B: Bus> Ad9361<B> {
             (0x231 + o, nint as u8),
             (0x005, self.vcodivs), // VCO dividers 2^(k + 1): rx bits 3:0, tx 7:4
         ])?;
-        // 2 ms to lock, then the lock bit (0x247 bit 1)
+        // 2 ms to lock (UHD), then the lock bit (0x247 bit 1), polled (ADI)
         self.wait_ms(2)?;
-        self.check(0x247 + o, 0x02, 0x02)?;
-        self.freq[dir as usize] = lo;
+        self.bus.poll(0x247 + o, 0x02, 0x02, PLL_LOCK_MS)?;
+        self.lo[dir as usize] = lo;
         Ok(lo)
     }
 
@@ -981,7 +1059,7 @@ impl<B: Bus> Ad9361<B> {
     /// UHD _program_gain_table(): the rx LO's band's table, if not loaded;
     /// rows 77 .. 90 zero.
     fn program_gain_table(&mut self) -> Result<()> {
-        let rx = self.freq[0];
+        let rx = self.lo[0];
         let (n, table): (u8, &GainTable) = if rx < 1300e6 {
             (1, &tables::GAIN_SUB_1300MHZ)
         } else if rx < 4e9 {
@@ -1032,7 +1110,7 @@ impl<B: Bus> Ad9361<B> {
     /// UHD _calibrate_baseband_rx_analog_filter(): corner 1.4 bbbw, bbbw in
     /// [143 kHz, 28 MHz] (the filter's 200 kHz .. 39.2 MHz / 1.4); the bbbw.
     fn calibrate_rx_bb_filter(&mut self, rf_bw: f64) -> Result<f64> {
-        let bbbw = self.bbbw(rf_bw, 0.143e6, 28e6);
+        let bbbw = self.bbbw(rf_bw, RX_BB_BBBW);
         let tune_clk = 1.4 * bbbw * 2.0 * PI / LN_2;
         self.rx_tune_div = c_u16((self.bbpll_freq / tune_clk).ceil()).min(511);
         self.bbftune_config = self.bbftune_config & 0xFE | (self.rx_tune_div >> 8) as u8 & 1;
@@ -1061,7 +1139,7 @@ impl<B: Bus> Ad9361<B> {
     /// is at 1.4 bbbw; bbbw in [400 kHz, 28 MHz] (1 .. 70 MHz / 2.5).
     fn calibrate_rx_tia(&mut self, rf_bw: f64) -> Result<()> {
         let [c3_msb, c3_lsb, r2346] = self.bus.read([0x1EB, 0x1EC, 0x1E6])?;
-        let bbbw = self.bbbw(rf_bw, 0.40e6, 28e6);
+        let bbbw = self.bbbw(rf_bw, RX_TIA_BBBW);
         let ceil_mhz = (bbbw / 1e6).ceil();
         // filter C in fF: 160 fF x msb + 10 fF x lsb + 140 fF; R in ohms: 18.3 k x code
         let c_bbf = (c3_msb & 0x3F) as i32 * 160 + (c3_lsb & 0x7F) as i32 * 10 + 140;
@@ -1088,7 +1166,7 @@ impl<B: Bus> Ad9361<B> {
     /// UHD _calibrate_baseband_tx_analog_filter(): corner 1.6 bbbw, bbbw in
     /// [391 kHz, 20 MHz] (625 kHz .. 32 MHz / 1.6).
     fn calibrate_tx_bb_filter(&mut self, rf_bw: f64) -> Result<()> {
-        let bbbw = self.bbbw(rf_bw, 0.391e6, 20e6);
+        let bbbw = self.bbbw(rf_bw, TX_BB_BBBW);
         let tune_clk = 1.6 * bbbw * 2.0 * PI / LN_2;
         let div = c_u16((self.bbpll_freq / tune_clk).ceil()).min(511);
         self.bbftune_mode = self.bbftune_mode & 0xFE | (div >> 8) as u8 & 1;
@@ -1103,7 +1181,7 @@ impl<B: Bus> Ad9361<B> {
     /// doubling until C = 1 / (2 pi corner R) fits the 12 .. 75 pF array
     /// (code C / 1 pF - 12, at most 63).
     fn calibrate_tx_secondary_filter(&mut self, rf_bw: f64) -> Result<()> {
-        let bbbw = self.bbbw(rf_bw, 0.54e6, 20e6);
+        let bbbw = self.bbbw(rf_bw, TX_SECONDARY_BBBW);
         let mhz = bbbw / 1e6;
         let corner = 5.0 * mhz * 2.0 * PI; // rad/us
         let mut res = 100;
@@ -1211,7 +1289,7 @@ impl<B: Bus> Ad9361<B> {
     /// wait count, tracking off; UHD checks 201 times, 50 ms apart; then RF DC
     /// tracking on.
     fn calibrate_rf_dc(&mut self) -> Result<()> {
-        let counts = if self.freq[0] < 4e9 { [0x32, 0x24, 0x05] } else { [0x28, 0x34, 0x06] };
+        let counts = if self.lo[0] < 4e9 { [0x32, 0x24, 0x05] } else { [0x28, 0x34, 0x06] };
         self.writes(&[(0x186, counts[0]), (0x187, counts[1]), (0x188, counts[2])])?;
         self.writes(&[(0x185, 0x20), (0x18B, 0x83), (0x189, 0x30)])?;
         self.calibrate(CAL_RF_DC, uhd_limit(201, 50))?;
@@ -1224,8 +1302,8 @@ impl<B: Bus> Ad9361<B> {
     /// UHD checks 1001 times, 5 ms apart.
     fn calibrate_rx_quadrature(&mut self) -> Result<()> {
         self.writes(&[(0x168, 0x03), (0x16E, 0x25), (0x16A, 0x75), (0x16B, 0x95), (0x057, 0x33), (0x169, 0xC0)])?;
-        let tx = self.freq[1];
-        self.tune_lo(Dir::Tx, self.freq[0] + self.rx_bb_bw / 2.0)?;
+        let tx = self.lo[1];
+        self.tune_lo(Dir::Tx, self.lo[0] + self.rx_bb_bw / 2.0)?;
         self.calibrate(CAL_RX_QUAD, uhd_limit(1001, 5))?;
         self.w(0x057, 0x30)?; // tx mixers on
         self.tune_lo(Dir::Tx, tx)?;
@@ -1270,11 +1348,34 @@ impl<B: Bus> Ad9361<B> {
             (0x0A5, 0x01), // magnitude thresholds
             (0x0A6, 0x01),
             // gain table index giving TIA index 1, LPF index 0 in the band's table
-            (0x0AA, if self.freq[0] < 1300e6 { 0x22 } else { 0x25 }),
+            (0x0AA, if self.lo[0] < 1300e6 { 0x22 } else { 0x25 }),
             (0x0A4, 0xF0), // setting count
             (0x0AE, 0x00), // LPF gain index (split mode)
         ])?;
         self.calibrate(CAL_TX_QUAD, uhd_limit(101, 10))
+    }
+}
+
+/// The filter stages (rx 0x003, tx 0x002, without the chain bits) and the
+/// FIR factor for `rate`: UHD's _setup_rates bands, with their edges where
+/// ADI's clock limits put them (module header, changes from UHD). Each
+/// edge is the rate at which the band's ADC (or DAC) clock reaches a limit.
+fn filters(rate: f64) -> (u8, u8, u32) {
+    match rate {
+        // D 48: ADC 25 .. 37.5 MHz
+        r if r < MIN_ADC_CLK / 32.0 => (X3 | HB2 | HB1 | FIR_X4, X3 | HB2 | HB1 | FIR_X4, 4),
+        // D 32: ADC 25 .. 50 MHz
+        r if r < MIN_ADC_CLK / 16.0 => (HB3 | HB2 | HB1 | FIR_X4, HB3 | HB2 | HB1 | FIR_X4, 4),
+        // D 16, the DAC at the ADC clock: up to 320 MHz
+        r if r <= MAX_DAC_CLK / 16.0 => (HB3 | HB2 | HB1 | FIR_X2, HB3 | HB2 | HB1 | FIR_X2, 2),
+        // D 24, the DAC at half: UHD's band
+        r if r < 23e6 => (X3 | HB2 | HB1 | FIR_X2, X3 | HB1 | FIR_X2, 2),
+        // D 16: ADC up to 640 MHz
+        r if r <= MAX_ADC_CLK / 16.0 => (HB3 | HB2 | HB1 | FIR_X2, HB2 | HB1 | FIR_X2, 2),
+        // D 12: ADC up to 640 MHz
+        r if r <= MAX_ADC_CLK / 12.0 => (X3 | HB1 | FIR_X2, X3 | FIR_X2, 2),
+        // D 8: ADC up to 491.52 MHz
+        _ => (HB2 | HB1 | FIR_X2, HB3 | FIR_X2, 2),
     }
 }
 
@@ -1309,6 +1410,79 @@ mod tests {
         assert_eq!(spi_read(0x037), 0x00_3700);
     }
 
+    /// Every band edge, and next to it.
+    const RATE_EDGES: [f64; 16] = [MIN_RATE, 781_250.0 - 1.0, 781_250.0, 1.5625e6 - 1.0, 1.5625e6, 20e6, 20e6 + 1.0,
+                                   23e6 - 1.0, 23e6, 40e6, 40e6 + 1.0, 53_333_333.0, 53_333_334.0, 58e6, 58e6 + 1.0, MAX_RATE];
+
+    /// The clocks of a rate band against ADI's limits (module header): the
+    /// broken ones, named. `rxfilt`, `txfilt` are 0x003 and 0x002, `adc` the
+    /// ADC clock, `half` whether the DAC runs at half of it.
+    fn clock_violations(bbpll: f64, adc: f64, half: bool, rxfilt: u8, txfilt: u8) -> Vec<String> {
+        let stage3 = |f: u8| [1.0, 2.0, 3.0, 1.0][(f >> 4 & 3) as usize];
+        let hb = |f: u8, bit: u8| if f & bit != 0 { 2.0 } else { 1.0 };
+        let dac = if half { adc / 2.0 } else { adc };
+        // rx: the outputs of HB3/DEC3, HB2, HB1; tx: the inputs of HB3, HB2, HB1
+        let r2 = adc / stage3(rxfilt);
+        let r1 = r2 / hb(rxfilt, HB2);
+        let clkrf = r1 / hb(rxfilt, HB1);
+        let t2 = dac / stage3(txfilt);
+        let t1 = t2 / hb(txfilt, HB2);
+        let clktf = t1 / hb(txfilt, HB1);
+        [
+            ("BBPLL low", bbpll >= 715e6 - 71_500.0), // ADI: 715 MHz - 100 ppm
+            ("BBPLL high", bbpll <= 1430e6 + 143_000.0),
+            ("ADC low", adc >= 25e6),
+            ("ADC high", adc <= 640e6),
+            ("DAC high", dac <= 320e6),
+            ("rx HB3", r2 <= 640e6),
+            ("rx HB2", r1 <= 320e6),
+            ("rx HB1", clkrf <= 245.76e6),
+            ("tx HB3", t2 <= 320e6),
+            ("tx HB2", t1 <= 320e6),
+            ("tx HB1", clktf <= 160e6),
+        ]
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(what, _)| what.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn rate_bands_keep_adis_clock_limits() {
+        let mut d = Ad9361::init(Mock::settled()).unwrap();
+        let mut rates: Vec<f64> = RATE_EDGES.to_vec();
+        let mut r = MIN_RATE;
+        while r <= MAX_RATE {
+            rates.push(r);
+            r *= 1.003;
+        }
+        for &rate in &rates {
+            d.setup_rates(rate).unwrap();
+            let v = clock_violations(d.bbpll_freq, d.adc_freq, d.bbpll & 0x08 != 0, d.rxfilt, d.txfilt);
+            assert!(v.is_empty(), "{rate}: {v:?}");
+        }
+        // negative control: UHD's bands (and its 336 MHz DAC switch) break
+        // the limits, at the rates the module header names
+        let uhd = |rate: f64| -> (u8, u8) {
+            match rate {
+                r if r < 0.33e6 => (X3 | HB2 | HB1 | FIR_X4, X3 | HB2 | HB1 | FIR_X4),
+                r if r < 0.66e6 => (HB3 | HB2 | HB1 | FIR_X4, HB3 | HB2 | HB1 | FIR_X4),
+                r if r <= 20e6 => (HB3 | HB2 | HB1 | FIR_X2, HB3 | HB2 | HB1 | FIR_X2),
+                r if r < 23e6 => (X3 | HB2 | HB1 | FIR_X2, X3 | HB1 | FIR_X2),
+                r if r < 41e6 => (HB3 | HB2 | HB1 | FIR_X2, HB2 | HB1 | FIR_X2),
+                r if r <= 58e6 => (X3 | HB1 | FIR_X2, X3 | FIR_X2),
+                _ => (HB2 | HB1 | FIR_X2, HB3 | FIR_X2),
+            }
+        };
+        for (rate, broken) in [(220e3, "BBPLL low"), (1e6, "ADC low"), (40.5e6, "ADC high"), (56e6, "ADC high")] {
+            let (rx, tx) = uhd(rate);
+            let adc = rate * rate_change(rx) as f64;
+            let k = (1..=6).find(|&k| (672e6..=1430e6).contains(&(adc * (1 << k) as f64))).unwrap();
+            let v = clock_violations(adc * (1 << k) as f64, adc, adc > 336e6, rx, tx);
+            assert!(v.contains(&broken.to_string()), "{rate}: {v:?}");
+        }
+    }
+
     #[test]
     fn rate_bands_keep_tx_and_rx_rates_equal() {
         // for every band: D_rx as UHD's divfactor, and D_tx = D_rx with the DAC
@@ -1327,13 +1501,53 @@ mod tests {
             assert!((d.rate - rate).abs() <= step / 2.0 / d_rx as f64, "{rate}: {}", d.rate);
             rate *= 1.07;
         }
+        for rate in RATE_EDGES {
+            let mut d = Ad9361::init(Mock::settled()).unwrap();
+            d.setup_rates(rate).unwrap();
+            let half = d.bbpll & 0x08 != 0;
+            assert_eq!(rate_change(d.txfilt) * if half { 2 } else { 1 }, rate_change(d.rxfilt), "{rate}");
+        }
+    }
+
+    #[test]
+    fn rf_pll_lock_is_polled() {
+        // UHD's 2 ms wait, then the lock bit polled for up to PLL_LOCK_MS
+        let mut m = Mock::settled();
+        let mut d = Ad9361::init(&mut m).unwrap();
+        d.bus().log.clear();
+        d.set_lo(Dir::Tx, 2.4e9).unwrap();
+        let log = &d.bus().log;
+        let at = log.iter().position(|a| *a == Access::Read { reg: 0x287, value: 0x02 }).unwrap();
+        assert_eq!(log[at - 1], Access::Wait { us: 2000 });
+        assert_eq!(log[at + 1], Access::Poll { mask: 0x02, want: 0x02, ms: PLL_LOCK_MS, ok: true });
+    }
+
+    #[test]
+    fn realisable_bandwidths_reach_every_filter_exactly() {
+        assert_eq!((MIN_RX_BANDWIDTH, MAX_RX_BANDWIDTH, MIN_TX_BANDWIDTH, MAX_TX_BANDWIDTH), (0.8e6, 56e6, 1.08e6, 40e6));
+        let mut d = Ad9361::init(Mock::settled()).unwrap();
+        d.set_rate(MAX_RATE).unwrap();
+        let filters = [[RX_BB_BBBW, RX_TIA_BBBW], [TX_BB_BBBW, TX_SECONDARY_BBBW]];
+        let limits = [(MIN_RX_BANDWIDTH, MAX_RX_BANDWIDTH), (MIN_TX_BANDWIDTH, MAX_TX_BANDWIDTH)];
+        for (filters, (min, max)) in filters.into_iter().zip(limits) {
+            for bw in [min, (min + max) / 2.0, max] {
+                assert!(filters.iter().all(|&f| d.bbbw(bw, f) == bw / 2.0), "{bw}");
+            }
+            // negative control: just outside, some filter is clamped
+            for bw in [min - 1.0, max + 1.0] {
+                assert!(filters.iter().any(|&f| d.bbbw(bw, f) != bw / 2.0), "{bw}");
+            }
+        }
+        // and the rate clips: a bandwidth above it is not set as asked
+        d.set_rate(10e6).unwrap();
+        assert_eq!(d.bbbw(10e6, RX_TIA_BBBW), 5e6);
+        assert_ne!(d.bbbw(10e6 + 2.0, RX_TIA_BBBW), (10e6 + 2.0) / 2.0);
     }
 
     #[test]
     fn rates_reach_valid_firs() {
         // every rate band, at and next to its edges, programs a FIR set
-        for rate in [MIN_RATE, 0.33e6 - 1.0, 0.33e6, 0.66e6 - 1.0, 0.66e6, 20e6, 20e6 + 1.0, 23e6 - 1.0, 23e6, 41e6 - 1.0,
-                     41e6, 58e6, 58e6 + 1.0, MAX_RATE] {
+        for rate in RATE_EDGES {
             let mut d = Ad9361::init(Mock::settled()).unwrap();
             d.setup_rates(rate).unwrap();
         }
@@ -1343,7 +1557,7 @@ mod tests {
     fn lo_formula_lands_within_one_step() {
         // f_lo within one fractional step of the request: 80 MHz / 8388593 / div
         let mut d = Ad9361::init(Mock::settled()).unwrap();
-        for f in [MIN_FREQ, 100e6, 433.92e6, 2.4e9, 5.8e9, MAX_FREQ] {
+        for f in [MIN_LO, 100e6, 433.92e6, 2.4e9, 5.8e9, MAX_LO] {
             let lo = d.tune_lo(Dir::Rx, f).unwrap();
             assert!(lo <= f && f - lo < RF_REF / RF_MOD as f64, "{f}: {lo}");
         }
@@ -1369,7 +1583,7 @@ mod tests {
         let mut d = Ad9361::init(Mock::settled()).unwrap();
         assert!(matches!(d.set_rate(MAX_RATE + 1.0), Err(Error::Range { .. })));
         assert!(matches!(d.set_rate(MIN_RATE - 1.0), Err(Error::Range { .. })));
-        assert!(matches!(d.set_freq(Dir::Rx, 69e6), Err(Error::Range { .. })));
+        assert!(matches!(d.set_lo(Dir::Rx, 69e6), Err(Error::Range { .. })));
         assert!(matches!(d.set_gain(Dir::Tx, 0, 90.0), Err(Error::Range { .. })));
         assert!(matches!(d.set_gain(Dir::Rx, 2, 10.0), Err(Error::Range { .. })));
         assert!(matches!(d.set_bandwidth(Dir::Rx, 57e6), Err(Error::Range { .. })));

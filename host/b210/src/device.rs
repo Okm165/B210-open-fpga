@@ -31,7 +31,7 @@
 //! of the packet was skipped) is a bus error at once.
 
 use crate::ad9361::{self, Ad9361, Bus, Dir};
-use crate::config::{self, Change, Config, Direction};
+use crate::config::{self, Change, Config};
 use crate::proto::{self, Op, Reply, Status, SPI_AD9361};
 use crate::regs;
 use crate::usb;
@@ -47,15 +47,13 @@ pub const RESETB: u32 = 1 << 0;
 pub const PRODUCT_ID: u16 = 0x037;
 pub const PRODUCT_ID_VALUE: u8 = 0x0A;
 
-/// RESETB low time and the wait after its release, us. The AD9361 data
-/// sheet's pin table describes RESETB as "Asynchronous reset. Logic low
-/// resets the device."; no pulse width or recovery time from it is cited
-/// here (not checked against the full data sheet: TODO). UHD
-/// (.tools/src/uhd b200_impl.cpp `reset_codec`) toggles it with two
-/// back-to-back register writes, no wait, and relies on the soft reset and
-/// the 20 ms wait at the start of `initialize()`, which `Ad9361::init`
-/// keeps; ADI's Linux/no-OS driver (`ad9361_reset`) holds it low about 1 us
-/// and waits about 1 ms after release. 1 ms each way covers both.
+/// RESETB low time and the wait after its release, us: ADI's, low 1 ms,
+/// then 1 ms before the first SPI access (no-OS ad9361.c `ad9361_reset`,
+/// mdelay(1) on each side of the GPIO edge). ADI resets by this pin
+/// whenever there is one: its SPI soft reset "was removed from the register
+/// map, since it doesn't work reliably". UHD (b200_impl.cpp `reset_codec`)
+/// toggles the pin with two back-to-back register writes and relies on the
+/// soft reset and 20 ms wait that `Ad9361::init` keeps.
 pub const RESET_LOW_US: u32 = 1_000;
 pub const RESET_RECOVERY_US: u32 = 1_000;
 
@@ -269,35 +267,54 @@ pub enum Error {
     ProductId(u8),
 }
 
+/// A failed bring-up: the error, and the transport back.
+pub type BringUpError<E> = (Error, E);
+
 /// The configured radio: the chip, and the configuration it holds (None:
 /// unknown, as after bring-up or after a change that failed).
 pub struct Device<E: Exec = usb::Ctrl> {
     pub ad: Ad9361<Spi<E>>,
     config: Option<Config>,
-}
-
-fn dir(d: Direction) -> Dir {
-    match d {
-        Direction::Rx => Dir::Rx,
-        Direction::Tx => Dir::Tx,
-    }
-}
-
-fn mask(on: [bool; 2]) -> u8 {
-    on[0] as u8 | (on[1] as u8) << 1
+    /// What `regs::BANDS` was last set to: the band-select switches for
+    /// the LOs the chip runs.
+    bands: u32,
 }
 
 impl<E: Exec> Device<E> {
     /// Reset the chip, require its product id, run `Ad9361::init` (UHD
     /// initialize(): every calibration, FDD, TX1 on at maximum attenuation).
-    /// On an error the transport is dropped with the driver (`Ad9361::init`
-    /// does not give its bus back); pass `&mut Ctrl` to keep it.
-    pub fn bring_up(mut ctrl: E) -> Result<Self, Error> {
-        let id = reset(&mut ctrl)?;
-        if id != PRODUCT_ID_VALUE {
-            return Err(Error::ProductId(id));
+    /// On an error the transport comes back with it.
+    pub fn bring_up(mut ctrl: E) -> Result<Self, BringUpError<E>> {
+        match reset(&mut ctrl) {
+            Ok(PRODUCT_ID_VALUE) => {}
+            Ok(id) => return Err((Error::ProductId(id), ctrl)),
+            Err(e) => return Err((e.into(), ctrl)),
         }
-        Ok(Device { ad: Ad9361::init(Spi::new(ctrl))?, config: None })
+        let ad = match Ad9361::try_init(Spi::new(ctrl)) {
+            Ok(ad) => ad,
+            Err((e, spi)) => return Err((e.into(), spi.into_ctrl())),
+        };
+        // the switches for the LOs init tuned (UHD sets them at open)
+        let mut d = Device { ad, config: None, bands: 0 };
+        let bands = regs::bands::rx(d.ad.lo(Dir::Rx)) | regs::bands::tx(d.ad.lo(Dir::Tx));
+        match d.set_bands(bands) {
+            Ok(()) => Ok(d),
+            Err(e) => Err((e, d.into_ctrl())),
+        }
+    }
+
+    /// Write the band-select switches (`regs::BANDS`), after the queue.
+    fn set_bands(&mut self, bands: u32) -> Result<(), Error> {
+        let spi = self.ad.bus();
+        spi.flush()?;
+        check_all(&spi.ctrl().exec(&[Op::Write { addr: regs::BANDS, data: bands }])?)?;
+        self.bands = bands;
+        Ok(())
+    }
+
+    /// The transport back (every public call leaves nothing queued).
+    pub fn into_ctrl(self) -> E {
+        self.ad.into_bus().into_ctrl()
     }
 
     /// The configuration the chip holds, if known.
@@ -326,9 +343,9 @@ impl<E: Exec> Device<E> {
         Ok(())
     }
 
-    fn change(&mut self, c: &Change) -> ad9361::Result<()> {
+    fn change(&mut self, c: &Change) -> Result<(), Error> {
         let ad = &mut self.ad;
-        match *c {
+        Ok(match *c {
             // ref_sel and the ADF4001 are not driven by this FPGA image: the
             // TCXO runs free. The code that drives them reads the reference
             // from `config()`.
@@ -337,18 +354,21 @@ impl<E: Exec> Device<E> {
             // reprogrammed, both filters set to the rate, every calibration
             // run, the enabled chains restored (what `changes` assumes)
             Change::Rate { hz } => ad.set_rate(hz).map(drop),
-            Change::Bandwidth { direction, hz } => ad.set_bandwidth(dir(direction), hz).map(drop),
-            Change::Lo { direction, hz } => ad.set_freq(dir(direction), hz).map(drop),
-            Change::Chains(ch) => ad.set_channels(mask(ch.rx), mask(ch.tx)),
-            // the antenna switches are FPGA pins this image holds low (with
-            // the PA enables); the code that drives them reads `config()`
-            Change::Antenna { .. } => Ok(()),
+            Change::Bandwidth { direction, hz } => ad.set_bandwidth(direction, hz).map(drop),
+            // the front end's band-select switches follow the LO reached
+            // (UHD update_bandsel)
+            Change::Lo { direction, hz } => {
+                let lo = ad.set_lo(direction, hz)?;
+                let bands = match direction {
+                    Dir::Rx => self.bands & !regs::bands::RX | regs::bands::rx(lo),
+                    Dir::Tx => self.bands & !regs::bands::TX | regs::bands::tx(lo),
+                };
+                return self.set_bands(bands);
+            }
+            Change::Chains(ch) => ad.set_channels(ch.rx, ch.tx),
             // rx: gain index (dB); tx: 89.75 dB - attenuation, the driver's gain
-            Change::Gain { direction, channel, db } => ad.set_gain(dir(direction), channel, db).map(drop),
-            // nothing to write: the format is part of the rx_ctrl START word
-            // (and of every tx packet), rx_spp is written at stream start
-            Change::Format(_) | Change::RxSpp(_) => Ok(()),
-        }
+            Change::Gain { direction, channel, db } => ad.set_gain(direction, channel, db).map(drop),
+        }?)
     }
 
     /// Hold the chip in reset (regs::RADIO = 0); the configuration is lost.
@@ -363,25 +383,27 @@ impl<E: Exec> Device<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ad9361::mock;
-    use crate::config::{Antenna, Chains};
+    use crate::ad9361::{mock, Dir};
+    use crate::config::Chains;
 
     /// A fake FPGA: an AD9361 register file answering by a rule
     /// (`mock::settled`), POLL executed as PROTOCOL.md says (repeat the last
     /// SPI read), every packet recorded.
+    #[derive(Debug)]
     struct Fpga {
         regs: [u8; 1024],
         rule: fn(u16, &[u8; 1024]) -> u8,
         packets: Vec<Vec<Op>>,
         last_read: Option<u16>,
         radio: u32,
+        bands: u32,
     }
 
     impl Fpga {
         fn new(rule: fn(u16, &[u8; 1024]) -> u8) -> Fpga {
             let mut regs = [0; 1024];
             regs[0x0A3] = 0x4A; // as mock::Mock
-            Fpga { regs, rule, packets: Vec::new(), last_read: None, radio: 0 }
+            Fpga { regs, rule, packets: Vec::new(), last_read: None, radio: 0, bands: 0 }
         }
 
         fn ops(&self) -> Vec<Op> {
@@ -414,8 +436,10 @@ mod tests {
                         reply(5, if v & mask == value { Status::Ok } else { Status::Timeout }, v as u32)
                     }
                     Op::Write { addr, data } => {
-                        if addr == regs::RADIO {
-                            self.radio = data;
+                        match addr {
+                            regs::RADIO => self.radio = data,
+                            regs::BANDS => self.bands = data,
+                            _ => {}
                         }
                         reply(1, Status::Ok, 0)
                     }
@@ -556,7 +580,8 @@ mod tests {
     #[test]
     fn other_statuses_are_bus_errors() {
         let mut b = Spi::new(Fpga::new(mock::settled));
-        b.push(Op::At { time: 0 }, Tag::Plain).unwrap();
+        // the fake answers a register read as an unknown opcode
+        b.push(Op::Read { addr: 0 }, Tag::Plain).unwrap();
         assert!(matches!(b.flush(), Err(ad9361::Error::Bus(_))));
     }
 
@@ -578,10 +603,16 @@ mod tests {
         assert_eq!(f.radio, 0);
         assert_eq!(f.packets.last().unwrap(), &[Op::Write { addr: regs::RADIO, data: 0 }]);
         let mut f = Fpga::new(|reg, regs| if reg == PRODUCT_ID { 0x0B } else { mock::settled(reg, regs) });
-        assert!(matches!(Device::bring_up(&mut f), Err(Error::ProductId(0x0B))));
+        assert!(matches!(Device::bring_up(&mut f), Err((Error::ProductId(0x0B), _))));
         assert_eq!(f.packets.len(), 1);
-        // a calibration that never ends fails the bring-up as a poll error
-        assert!(matches!(Device::bring_up(Fpga::new(cal_stuck)), Err(Error::Ad9361(ad9361::Error::Poll { reg: 0x016, .. }))));
+        // a calibration that never ends fails the bring-up as a poll error,
+        // and the transport comes back with it, every packet recorded
+        let Err((e, f)) = Device::bring_up(Fpga::new(cal_stuck)) else { panic!("bring-up passed") };
+        assert!(matches!(e, Error::Ad9361(ad9361::Error::Poll { reg: 0x016, .. })), "{e}");
+        assert!(f.packets.len() > 1);
+        // and from a configured device
+        let d = Device::bring_up(Fpga::new(mock::settled)).unwrap();
+        assert_eq!(d.into_ctrl().radio, RESETB);
     }
 
     fn spi_writes(ops: &[Op], reg: u16) -> Vec<u8> {
@@ -605,7 +636,6 @@ mod tests {
         // one value: one change, no other write
         let mut new = example.clone();
         new.rx.as_mut().unwrap().ch1.as_mut().unwrap().gain_db = 20.0;
-        new.rx.as_mut().unwrap().ch0.as_mut().unwrap().antenna = Antenna::TxRx;
         let before = d.ad.bus().stats.ops;
         d.apply(&new).unwrap();
         assert_eq!(d.ad.bus().stats.ops - before, 1);
@@ -621,9 +651,36 @@ mod tests {
         assert_eq!((spi_writes(&ops, 0x074).last(), spi_writes(&ops, 0x076).last()), (Some(&0), Some(&0)));
         // every chain on, FDD at the end
         assert_eq!((f.regs[0x002] & 0xC0, f.regs[0x003] & 0xC0, f.regs[0x014]), (0xC0, 0xC0, 0x21));
-        // nothing but SPI, WAIT and POLL after the reset packet: format and
-        // spp are not written
-        assert!(f.packets[1..].iter().flatten().all(|o| matches!(o, Op::Spi { .. } | Op::Wait { .. } | Op::Poll { .. })));
+        // nothing but SPI, WAIT, POLL and the band switches after the reset
+        // packet: the stream settings (format, spp) are no radio operation
+        assert!(f.packets[1..].iter().flatten().all(|o| matches!(o,
+            Op::Spi { .. } | Op::Wait { .. } | Op::Poll { .. } | Op::Write { addr: regs::BANDS, .. })));
+    }
+
+    #[test]
+    fn band_switches_follow_the_los() {
+        use regs::bands::*;
+        let mut f = Fpga::new(mock::settled);
+        let mut d = Device::bring_up(&mut f).unwrap();
+        // init's LOs: rx 800 MHz (C), tx 850 MHz (B), in their own packet
+        assert_eq!(d.bands, RX_C | TX_B);
+        let example = Config::parse(include_str!("../examples/config.toml")).unwrap();
+        d.apply(&example).unwrap(); // 2.45 GHz both: rx B, tx B
+        assert_eq!(d.bands, RX_B | TX_B);
+        let mut high = example.clone();
+        high.rx.as_mut().unwrap().lo_hz = 5.8e9;
+        high.tx.as_mut().unwrap().lo_hz = 2.5e9;
+        d.apply(&high).unwrap();
+        assert_eq!(d.bands, RX_A | TX_A);
+        // an rx change leaves the tx switch alone
+        let mut low_rx = high.clone();
+        low_rx.rx.as_mut().unwrap().lo_hz = 433e6;
+        d.apply(&low_rx).unwrap();
+        assert_eq!(d.bands, RX_C | TX_A);
+        drop(d);
+        assert_eq!(f.bands, RX_C | TX_A, "what the FPGA was told");
+        let writes = f.ops().iter().filter(|o| matches!(o, Op::Write { addr: regs::BANDS, .. })).count();
+        assert_eq!(writes, 1 + 2 + 2 + 1, "bring-up, then one per LO change");
     }
 
     #[test]
@@ -653,9 +710,9 @@ mod tests {
         let mut d = Device::bring_up(&mut f).unwrap();
         for c in [
             Change::Rate { hz: 20e6 },
-            Change::Chains(Chains { rx: [true, false], tx: [true, false] }),
-            Change::Gain { direction: Direction::Rx, channel: 0, db: 30.0 },
-            Change::Gain { direction: Direction::Tx, channel: 0, db: 10.0 },
+            Change::Chains(Chains { rx: 0b01, tx: 0b01 }),
+            Change::Gain { direction: Dir::Rx, channel: 0, db: 30.0 },
+            Change::Gain { direction: Dir::Tx, channel: 0, db: 10.0 },
             Change::Rate { hz: 10e6 },
         ] {
             d.change(&c).unwrap();

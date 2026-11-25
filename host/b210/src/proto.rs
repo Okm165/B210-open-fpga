@@ -4,6 +4,8 @@
 //! the configured rate); sample values are the AD9361's 12-bit
 //! two's-complement codes c in [-2048, 2047], held in `i16`.
 
+use std::ops::Range;
+
 /// FX3 DMA buffer of a data endpoint (EP2, EP6), bytes.
 pub const DATA_BUFFER: usize = 16_384;
 /// FX3 DMA buffer of a control endpoint (EP4, EP8) at SuperSpeed, bytes.
@@ -16,6 +18,11 @@ pub const PAYLOAD: usize = DATA_BUFFER - HEADER;
 /// Operations per command packet: (1024 - 16) / 8.
 pub const MAX_OPS: usize = (CONTROL_BUFFER - HEADER) / 8;
 pub const VERSION: u8 = 1;
+/// The bus's data ceiling, bytes/s (section 3: 32 bits x 100 MHz): the
+/// stream rate x bytes per sample time, rx and tx summed, must stay below it.
+pub const BUS_BYTES_PER_SEC: f64 = 4.0 * 100e6;
+/// The least rx packet the FPGA makes, sample times (section 3, rx_spp).
+pub const MIN_SPP: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -26,26 +33,39 @@ pub enum Kind {
     Event = 4,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Samples on the wire (section 3); a header's format 0 (no samples) is
+/// `Header::format == None`. In a configuration file and on the command
+/// line: "sc16", "sc12".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
-    None = 0,
+    /// Each value c << 4 in 16 bits: 4 bytes per complex sample.
     Sc16 = 1,
+    /// Each value in 12 bits: 3 bytes per complex sample.
     Sc12 = 2,
 }
 
+impl std::fmt::Display for Format {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Format::Sc16 => "sc16",
+            Format::Sc12 => "sc12",
+        })
+    }
+}
+
 impl Format {
-    /// Bytes per sample time for `channels` channels (I and Q each).
-    pub fn bytes_per_time(self, channels: usize) -> usize {
+    /// Bytes per sample time of `count` channels (I and Q each).
+    pub fn bytes_per_time(self, count: usize) -> usize {
         match self {
-            Format::None => 0,
-            Format::Sc16 => 4 * channels,
-            Format::Sc12 => 3 * channels,
+            Format::Sc16 => 4 * count,
+            Format::Sc12 => 3 * count,
         }
     }
 
-    /// Sample times in a full data packet.
-    pub fn times_per_packet(self, channels: usize) -> usize {
-        PAYLOAD / self.bytes_per_time(channels)
+    /// Sample times in a full data packet of `count` channels (count >= 1).
+    pub fn full_spp(self, count: usize) -> usize {
+        PAYLOAD / self.bytes_per_time(count)
     }
 }
 
@@ -63,9 +83,10 @@ pub struct Header {
     /// Meaningful bytes, header included.
     pub length: u16,
     pub kind: Kind,
-    pub format: Format,
-    /// Bit c set: channel c present.
-    pub channels: u8,
+    /// None: format 0, a packet without samples.
+    pub format: Option<Format>,
+    /// Channel mask: bit c set, channel c present.
+    pub mask: u8,
     pub sequence: u16,
     pub flags: u16,
     /// Tick of the first sample time (valid with `flag::HAS_TIME`).
@@ -87,8 +108,8 @@ impl Header {
     pub fn encode(&self) -> [u8; HEADER] {
         let w0 = self.length as u32
             | (self.kind as u32) << 16
-            | (self.format as u32) << 20
-            | (self.channels as u32 & 0xF) << 24
+            | self.format.map_or(0, |f| f as u32) << 20
+            | (self.mask as u32 & 0xF) << 24
             | (VERSION as u32) << 28;
         let w1 = self.sequence as u32 | (self.flags as u32) << 16;
         let mut b = [0; HEADER];
@@ -117,9 +138,9 @@ impl Header {
             k => return Err(Error::Kind(k as u8)),
         };
         let format = match (w0 >> 20) & 0xF {
-            0 => Format::None,
-            1 => Format::Sc16,
-            2 => Format::Sc12,
+            0 => None,
+            1 => Some(Format::Sc16),
+            2 => Some(Format::Sc12),
             f => return Err(Error::Format(f as u8)),
         };
         let length = w0 as u16;
@@ -134,7 +155,7 @@ impl Header {
             length,
             kind,
             format,
-            channels: ((w0 >> 24) & 0xF) as u8,
+            mask: ((w0 >> 24) & 0xF) as u8,
             sequence: w1 as u16,
             flags,
             time: u64::from_le_bytes(b[8..16].try_into().unwrap()),
@@ -155,6 +176,34 @@ pub fn transfer_size(length: usize, buffer: usize) -> usize {
     words + if words.is_multiple_of(1024) { 4 } else { 0 }
 }
 
+/// The complete packets in `stream`, a byte stream from an endpoint with
+/// DMA buffer `buffer`: ranges of their wire bytes, a packet's size being
+/// S(L) of its header's length L (section 1). Everything after the last
+/// range is an incomplete packet, to be completed by the next transfer.
+/// Pure: the result depends only on the concatenated stream, not on how it
+/// was split into transfers. A header that does not decode is an error for
+/// the whole stream: there is no length to resynchronise on.
+pub fn packets(stream: &[u8], buffer: usize) -> Result<Vec<Range<usize>>, Error> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while stream.len() - at >= HEADER {
+        let h = Header::decode(&stream[at..at + HEADER])?;
+        let size = transfer_size(h.length as usize, buffer);
+        if size > buffer {
+            // a length just below the buffer that rounds up to a multiple of
+            // 1024 is padded by 4 and no longer fits the buffer: no packet
+            // can have such a length
+            return Err(Error::Length(h.length));
+        }
+        if at + size > stream.len() {
+            break;
+        }
+        out.push(at..at + size);
+        at += size;
+    }
+    Ok(out)
+}
+
 /// Samples lost between two consecutive packets of one stream:
 /// `time - (previous time + sample times in the previous packet)`.
 pub fn lost(previous_time: u64, previous_times: usize, time: u64) -> i64 {
@@ -162,6 +211,11 @@ pub fn lost(previous_time: u64, previous_times: usize, time: u64) -> i64 {
 }
 
 // -- samples ------------------------------------------------------------------
+
+/// The 12-bit two's-complement code in the low 12 bits of `x`, sign-extended.
+pub fn sext12(x: u16) -> i16 {
+    ((x << 4) as i16) >> 4
+}
 
 /// sc12: value v occupies bits [12 v, 12 v + 12) of the little-endian
 /// byte stream, low bit first; two values make three bytes.
@@ -178,10 +232,9 @@ pub fn pack_sc12(values: &[i16], out: &mut [u8]) {
 /// Inverse of `pack_sc12`; each 12-bit field is sign-extended.
 pub fn unpack_sc12(bytes: &[u8], out: &mut [i16]) {
     assert!(bytes.len().is_multiple_of(3) && out.len() >= bytes.len() / 3 * 2);
-    let sext = |x: u16| ((x << 4) as i16) >> 4;
     for (b, pair) in bytes.as_chunks::<3>().0.iter().zip(out.as_chunks_mut::<2>().0) {
-        pair[0] = sext(b[0] as u16 | (b[1] as u16 & 0xF) << 8);
-        pair[1] = sext((b[1] as u16) >> 4 | (b[2] as u16) << 4);
+        pair[0] = sext12(b[0] as u16 | (b[1] as u16 & 0xF) << 8);
+        pair[1] = sext12((b[1] as u16) >> 4 | (b[2] as u16) << 4);
     }
 }
 
@@ -201,22 +254,30 @@ pub fn unpack_sc16(bytes: &[u8], out: &mut [i16]) {
     }
 }
 
+/// Unpack `bytes` of `format` into `out` (`unpack_sc16` or `unpack_sc12`).
+pub fn unpack(format: Format, bytes: &[u8], out: &mut [i16]) {
+    match format {
+        Format::Sc16 => unpack_sc16(bytes, out),
+        Format::Sc12 => unpack_sc12(bytes, out),
+    }
+}
+
 /// A data packet in `out`: the header `h` (its length and kind are set
-/// here: kind Tx) and the values of whole sample times (I0 Q0, or I0 Q0 I1
-/// Q1 per time), packed in `h.format`, zero-padded to the transfer size,
-/// which is returned.
+/// here: kind Tx; its format must be set) and the values of whole sample
+/// times (I0 Q0, or I0 Q0 I1 Q1 per time), packed in `h.format`,
+/// zero-padded to the transfer size, which is returned.
 pub fn tx_packet(mut h: Header, values: &[i16], out: &mut [u8]) -> usize {
-    let per_time = 2 * h.channels.count_ones() as usize;
+    let format = h.format.expect("a data packet has a format");
+    let per_time = 2 * h.mask.count_ones() as usize;
     assert!(per_time > 0 && values.len().is_multiple_of(per_time));
-    let length = HEADER + values.len() / 2 * h.format.bytes_per_time(1);
+    let length = HEADER + values.len() / 2 * format.bytes_per_time(1);
     assert!(length <= DATA_BUFFER && out.len() >= DATA_BUFFER);
     h.length = length as u16;
     h.kind = Kind::Tx;
     out[..HEADER].copy_from_slice(&h.encode());
-    match h.format {
+    match format {
         Format::Sc16 => pack_sc16(values, &mut out[HEADER..length]),
         Format::Sc12 => pack_sc12(values, &mut out[HEADER..length]),
-        Format::None => assert!(values.is_empty()),
     }
     let size = transfer_size(length, DATA_BUFFER);
     out[length..size].fill(0);
@@ -243,11 +304,6 @@ pub enum Op {
     /// earlier one) until `(result[15:0] & mask) == value`, for at most `ms`
     /// milliseconds (0: one try).
     Poll { mask: u16, value: u16, ms: u8 },
-    /// Opcode 6 AT: reserved, not implemented by the FPGA (fpga/rtl/command.v
-    /// answers it as an unknown opcode, status 3, and skips the rest of the
-    /// packet). Meant to hold the following operations until `time` (32 bits
-    /// sent, resolved as `resolve_time` does).
-    At { time: u64 },
 }
 
 impl Op {
@@ -258,7 +314,6 @@ impl Op {
             Op::Spi { device, word } => (3, device as u32, 0, word & 0xFF_FFFF),
             Op::Wait { us } => (4, 0, 0, us),
             Op::Poll { mask, value, ms } => (5, ms as u32, 0, (mask as u32) << 16 | value as u32),
-            Op::At { time } => (6, 0, 0, time as u32),
         };
         let a = opcode << 24 | arg << 16 | addr;
         let mut b = [0; 8];
@@ -277,8 +332,8 @@ pub fn command(sequence: u16, ops: &[Op]) -> Result<Vec<u8>, Error> {
     let header = Header {
         length: length as u16,
         kind: Kind::Command,
-        format: Format::None,
-        channels: 0,
+        format: None,
+        mask: 0,
         sequence,
         flags: 0,
         time: 0,
@@ -296,10 +351,29 @@ pub fn command(sequence: u16, ops: &[Op]) -> Result<Vec<u8>, Error> {
 pub enum Status {
     Ok,
     Timeout,
-    /// Status 2: reserved for AT, not implemented; the FPGA never sends it.
-    Late,
     UnknownOp,
     Other(u8),
+}
+
+impl Status {
+    /// Status 0 only. Status 1 is a legitimate result of a POLL (the value
+    /// never matched within the time limit), which `usb::Ctrl::exec` exposes
+    /// to the caller; only `read` and `write`, whose operations have no
+    /// timeout result, turn any non-zero status into an error.
+    pub fn is_ok(self) -> bool {
+        matches!(self, Status::Ok)
+    }
+}
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Ok => f.write_str("ok"),
+            Status::Timeout => f.write_str("timeout (poll)"),
+            Status::UnknownOp => f.write_str("unknown opcode/argument"),
+            Status::Other(code) => write!(f, "unknown status {code}"),
+        }
+    }
 }
 
 /// One operation's result.
@@ -324,7 +398,6 @@ pub fn replies(payload: &[u8]) -> Vec<Reply> {
                 status: match (a >> 16) as u8 {
                     0 => Status::Ok,
                     1 => Status::Timeout,
-                    2 => Status::Late,
                     3 => Status::UnknownOp,
                     s => Status::Other(s),
                 },
@@ -349,7 +422,7 @@ pub enum EventCode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Event {
     pub code: EventCode,
-    pub channels: u8,
+    pub mask: u8,
     /// Samples dropped, bursts or packets, by code.
     pub count: u32,
     pub time: u64,
@@ -371,18 +444,11 @@ pub fn events(payload: &[u8]) -> Vec<Event> {
                 6 => EventCode::BadPacket,
                 c => EventCode::Other(c),
             },
-            channels: b[1],
+            mask: b[1],
             count: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
             time: u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]),
         })
         .collect()
-}
-
-/// The time an At operation would mean: the t with t mod 2^32 = `bits` and
-/// t - now in [-2^31, 2^31). The FPGA implements no AT (PROTOCOL.md 4:
-/// reserved, not implemented).
-pub fn resolve_time(now: u64, bits: u32) -> u64 {
-    now.wrapping_add(bits.wrapping_sub(now as u32) as i32 as i64 as u64)
 }
 
 #[cfg(test)]
@@ -397,10 +463,10 @@ mod tests {
                 assert_eq!(PAYLOAD % f.bytes_per_time(ch), 0, "{f:?} x {ch}");
             }
         }
-        assert_eq!(Format::Sc16.times_per_packet(1), 4092);
-        assert_eq!(Format::Sc16.times_per_packet(2), 2046);
-        assert_eq!(Format::Sc12.times_per_packet(1), 5456);
-        assert_eq!(Format::Sc12.times_per_packet(2), 2728);
+        assert_eq!(Format::Sc16.full_spp(1), 4092);
+        assert_eq!(Format::Sc16.full_spp(2), 2046);
+        assert_eq!(Format::Sc12.full_spp(1), 5456);
+        assert_eq!(Format::Sc12.full_spp(2), 2728);
         assert_eq!(MAX_OPS, 126);
     }
 
@@ -409,8 +475,8 @@ mod tests {
         let h = Header {
             length: 16_384,
             kind: Kind::Rx,
-            format: Format::Sc12,
-            channels: 0b11,
+            format: Some(Format::Sc12),
+            mask: 0b11,
             sequence: 0xBEEF,
             flags: flag::HAS_TIME | flag::OVERFLOW,
             time: 0x0123_4567_89AB_CDEF,
@@ -426,6 +492,54 @@ mod tests {
         b[7] |= 0x80; // undefined flag
         assert!(matches!(Header::decode(&b), Err(Error::Flags(_))));
         assert_eq!(Header::decode(&b[..8]), Err(Error::Short(8)));
+        let mut b = h.encode();
+        b[2] = 0x30 | (b[2] & 0x0F); // format 3
+        assert_eq!(Header::decode(&b), Err(Error::Format(3)));
+        // format 0 is a packet without samples
+        let none = Header { format: None, ..h };
+        assert_eq!(Header::decode(&none.encode()), Ok(none));
+        assert_eq!(none.encode()[2] >> 4, 0);
+        // lengths below the header and above the data buffer
+        for (length, ok) in [(15u16, false), (16, true), (16_384, true), (16_385, false), (0xFFFF, false)] {
+            let r = Header::decode(&Header { length, ..h }.encode());
+            assert_eq!(r.is_ok(), ok, "{length}");
+            if !ok {
+                assert_eq!(r, Err(Error::Length(length)));
+            }
+        }
+    }
+
+    #[test]
+    fn operations_encode_as_section_4() {
+        // word 0: opcode << 24 | arg << 16 | addr; word 1: data (little-endian)
+        let words = |op: Op| {
+            let b = op.encode();
+            (u32::from_le_bytes(b[0..4].try_into().unwrap()), u32::from_le_bytes(b[4..8].try_into().unwrap()))
+        };
+        assert_eq!(words(Op::Write { addr: 0x3FF, data: 0xDEAD_BEEF }), (0x0100_03FF, 0xDEAD_BEEF));
+        assert_eq!(words(Op::Read { addr: 0x086 }), (0x0200_0086, 0));
+        assert_eq!(words(Op::Spi { device: SPI_ADF4001, word: 0xFF12_3456 }), (0x0301_0000, 0x12_3456));
+        assert_eq!(words(Op::Wait { us: 20_000 }), (0x0400_0000, 20_000));
+        assert_eq!(words(Op::Poll { mask: 0x80, value: 0x40, ms: 255 }), (0x05FF_0000, 0x0080_0040));
+    }
+
+    #[test]
+    fn events_decode_as_section_5() {
+        // code, mask, 2 reserved bytes, count, time; codes 1 .. 6 and one unknown
+        let mut payload = Vec::new();
+        for (code, count) in [(1u8, 7u32), (2, 1), (3, 2), (4, 3), (5, 1), (6, 9), (9, 4)] {
+            payload.extend_from_slice(&[code, 0b10, 0, 0]);
+            payload.extend_from_slice(&count.to_le_bytes());
+            payload.extend_from_slice(&(0x1_0000_0000u64 + code as u64).to_le_bytes());
+        }
+        let e = events(&payload);
+        let codes: Vec<EventCode> = e.iter().map(|e| e.code).collect();
+        assert_eq!(codes, [EventCode::Overflow, EventCode::Underflow, EventCode::Late, EventCode::SeqError,
+                           EventCode::BurstAck, EventCode::BadPacket, EventCode::Other(9)]);
+        assert_eq!(e[0], Event { code: EventCode::Overflow, mask: 0b10, count: 7, time: 0x1_0000_0001 });
+        assert_eq!(e[5].count, 9);
+        // a trailing partial record is not an event
+        assert_eq!(events(&payload[..16 + 15]).len(), 1);
     }
 
     #[test]
@@ -484,13 +598,18 @@ mod tests {
     }
 
     #[test]
-    fn at_time_resolves_within_half_the_wrap() {
-        let now = 5u64 << 32 | 0x8000_0000;
-        for t in [now, now + 1, now + (1 << 31) - 1, now - (1 << 31)] {
-            assert_eq!(resolve_time(now, t as u32), t);
+    fn status_mapping_is_protocol_section_4() {
+        // one result per status code; 2 (reserved) is no status of its own
+        let mut payload = Vec::new();
+        for status in [0u8, 1, 2, 3, 7] {
+            let a = 2u32 << 24 | (status as u32) << 16 | 3;
+            payload.extend_from_slice(&a.to_le_bytes());
+            payload.extend_from_slice(&0x11u32.to_le_bytes());
         }
-        // 2^31 ahead is the same 32 bits as 2^31 behind: resolved as behind
-        assert_eq!(resolve_time(now, (now + (1 << 31)) as u32), now - (1 << 31));
+        let r: Vec<Status> = replies(&payload).iter().map(|r| r.status).collect();
+        assert_eq!(r, [Status::Ok, Status::Timeout, Status::Other(2), Status::UnknownOp, Status::Other(7)]);
+        // only status 0 counts as ok; a POLL timeout is a legitimate non-ok reply
+        assert!(r[0].is_ok() && r[1..].iter().all(|s| !s.is_ok()));
     }
 
     #[test]
@@ -499,19 +618,128 @@ mod tests {
         for (format, ch, times) in [(Format::Sc12, 0b11u8, 2728), (Format::Sc16, 0b01, 4092), (Format::Sc16, 0b11, 128)] {
             let nv = 2 * ch.count_ones() as usize * times;
             let values: Vec<i16> = (0..nv).map(|i| ((i * 2654435761) >> 7) as i16 >> 4).collect();
-            let h = Header { length: 0, kind: Kind::Rx, format, channels: ch, sequence: 9,
+            let h = Header { length: 0, kind: Kind::Rx, format: Some(format), mask: ch, sequence: 9,
                              flags: flag::START_OF_BURST | flag::HAS_TIME, time: 77 };
             let size = tx_packet(h, &values, &mut out);
             let d = Header::decode(&out).unwrap();
-            assert_eq!((d.kind, d.format, d.channels, d.sequence, d.time), (Kind::Tx, format, ch, 9, 77));
+            assert_eq!((d.kind, d.format, d.mask, d.sequence, d.time), (Kind::Tx, Some(format), ch, 9, 77));
             assert_eq!(size, transfer_size(d.length as usize, DATA_BUFFER));
             let mut back = vec![0; nv];
             let body = &out[HEADER..d.length as usize];
-            match format { Format::Sc16 => unpack_sc16(body, &mut back), _ => unpack_sc12(body, &mut back) }
+            unpack(format, body, &mut back);
             assert_eq!(back, values);
             assert!(out[d.length as usize..size].iter().all(|&b| b == 0));
         }
     }
+
+    fn header(length: u16, kind: Kind, sequence: u16) -> Header {
+        Header {
+            length,
+            kind,
+            format: None,
+            mask: 0,
+            sequence,
+            flags: if kind == Kind::Event { flag::HAS_TIME } else { 0 },
+            time: 0,
+        }
+    }
+
+    /// A packet padded to its wire size S(L).
+    fn packet(length: usize, kind: Kind, sequence: u16) -> Vec<u8> {
+        let size = transfer_size(length, CONTROL_BUFFER);
+        let mut p = vec![0u8; size];
+        p[..HEADER].copy_from_slice(&header(length as u16, kind, sequence).encode());
+        p
+    }
+
+    /// Feed `chunks` the way `usb` feeds EP8 transfers and return the packets it saw.
+    fn split_chunks(chunks: &[&[u8]]) -> Vec<Vec<u8>> {
+        let mut pending = Vec::new();
+        let mut out = Vec::new();
+        for chunk in chunks {
+            pending.extend_from_slice(chunk);
+            match packets(&pending, CONTROL_BUFFER) {
+                Ok(frames) => {
+                    let used = frames.last().map_or(0, |r| r.end);
+                    for r in frames {
+                        out.push(pending[r].to_vec());
+                    }
+                    pending.drain(..used);
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn splitter_keeps_awkward_sizes_across_transfer_boundaries() {
+        // A table with full 1024-byte packets, packets whose pad is 4 (none:
+        // 1021..1023 are invalid on a control endpoint), header-only packets
+        // and lengths on both sides of 1024.
+        let lengths = [16usize, 20, 24, 1008, 1016, 1024, 16, 1024, 1008, 24];
+        let mut stream = Vec::new();
+        for (i, &len) in lengths.iter().enumerate() {
+            let kind = if i % 2 == 0 { Kind::Result } else { Kind::Event };
+            stream.extend_from_slice(&packet(len, kind, i as u16));
+        }
+        let all: Vec<Vec<u8>> = lengths
+            .iter()
+            .enumerate()
+            .map(|(i, &len)| packet(len, if i % 2 == 0 { Kind::Result } else { Kind::Event }, i as u16))
+            .collect();
+
+        // The same stream cut in awkward places: an 8-byte and a 15-byte
+        // first chunk split the first header in two; cuts at 1023/1024/1025
+        // straddle a full packet; one byte at a time proves the leftover.
+        let cuts: &[&[usize]] = &[
+            &[8, 20, stream.len()],
+            &[15, 16, stream.len()],
+            &[0, 1, 1023, 1024, 1025, stream.len()],
+            &[1024, 2048, 3 * 1024, stream.len()],
+            &[16],
+        ];
+        for cuts in cuts {
+            let mut chunks = Vec::new();
+            let mut at = 0;
+            for &cut in *cuts {
+                chunks.push(&stream[at..cut]);
+                at = cut;
+            }
+            if at < stream.len() {
+                chunks.push(&stream[at..]);
+            }
+            assert_eq!(split_chunks(&chunks), all, "cuts {cuts:?}");
+        }
+        assert_eq!(split_chunks(&[&stream]), all);
+    }
+
+    #[test]
+    fn splitter_waits_for_a_whole_header_and_a_whole_packet() {
+        let p = packet(24, Kind::Result, 7);
+        // A header split in two: 8 bytes, then the rest.
+        assert!(split_chunks(&[&p[..8]]).is_empty());
+        assert!(split_chunks(&[&p[..15]]).is_empty());
+        assert_eq!(split_chunks(&[&p[..8], &p[8..]]), vec![p.clone()]);
+        // 16 bytes is a whole header but not a whole packet.
+        assert!(split_chunks(&[&p[..16]]).is_empty());
+        // One byte short of the wire size: still pending, not a packet.
+        assert!(split_chunks(&[&p[..p.len() - 1]]).is_empty());
+        assert_eq!(split_chunks(&[&p[..p.len() - 1], &p[p.len() - 1..]]), vec![p]);
+    }
+
+    #[test]
+    fn splitter_rejects_a_length_that_cannot_fit_the_control_buffer() {
+        // L = 1021 rounds to 1024 and the rule adds 4, so S(L) = 1028 > 1024.
+        let mut buf = vec![0u8; 1028];
+        buf[..HEADER].copy_from_slice(&header(1021, Kind::Result, 1).encode());
+        assert_eq!(packets(&buf, CONTROL_BUFFER), Err(Error::Length(1021)));
+        // Negative control: the largest valid non-full length is 1016.
+        let mut ok = vec![0u8; 1016];
+        ok[..HEADER].copy_from_slice(&header(1016, Kind::Result, 1).encode());
+        assert_eq!(packets(&ok, CONTROL_BUFFER).unwrap().len(), 1);
+    }
+
 
     #[test]
     fn lost_samples_from_time_gap() {

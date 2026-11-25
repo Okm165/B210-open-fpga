@@ -176,9 +176,75 @@ pub fn dbfs(power: f64) -> f64 {
     (10.0 * (power / (fs * fs)).log10()).max(-200.0)
 }
 
+/// A complex test tone, coherently sampled: its frequency is snapped to
+/// f = m rate / L with L = 2^16 and m odd (coprime with L, so the tone
+/// passes through all L phases before it repeats), and its L complex values
+/// are computed once. Sample time i is then entry (i m) mod L: exact,
+/// periodic, and a table lookup - computing cos/sin per value (250 M/s at
+/// 2 x 30.72 MS/s) is more than one host core can do, and a tx stream then
+/// underflows. Channel 0 plays +f, channel 1 -f (the conjugate), so a
+/// swapped I/Q or a swapped channel shows in the spectrum. Amplitude
+/// A = 2048 x 10^(dbfs/20) codes, rounded and held to the 12-bit range.
+pub struct Tone {
+    table: Vec<[i16; 2]>,
+    /// The tone's frequency, in rate / L.
+    pub m: u64,
+}
+
+impl Tone {
+    pub const L: u64 = 1 << 16;
+
+    pub fn new(f: f64, rate: f64, dbfs: f64) -> Tone {
+        // the nearest odd m: 2 round((x - 1) / 2) + 1, at most one step away
+        let x = f / rate * Self::L as f64;
+        let m = (2 * ((x - 1.0) / 2.0).round() as i64 + 1).rem_euclid(Self::L as i64) as u64;
+        let a = crate::iq::FULL_SCALE * 10f64.powf(dbfs / 20.0);
+        let code = |x: f64| (a * x).round().clamp(-2048.0, 2047.0) as i16;
+        let table = (0..Self::L)
+            .map(|k| {
+                let p = 2.0 * std::f64::consts::PI * k as f64 / Self::L as f64;
+                [code(p.cos()), code(p.sin())]
+            })
+            .collect();
+        Tone { table, m }
+    }
+
+    /// The frequency actually played, Hz, in -rate/2 .. rate/2.
+    pub fn freq(&self, rate: f64) -> f64 {
+        let m = if self.m >= Self::L / 2 { self.m as f64 - Self::L as f64 } else { self.m as f64 };
+        m * rate / Self::L as f64
+    }
+
+    /// Value v (I0 Q0 I1 Q1) of sample time i.
+    pub fn value(&self, i: u64, v: usize) -> i16 {
+        let [c, s] = self.table[(i.wrapping_mul(self.m) % Self::L) as usize];
+        match v {
+            0 | 2 => c,
+            1 => s,
+            _ => s.saturating_neg(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tone_is_coherent_conjugate_on_channel_1_and_matches_direct_computation() {
+        let rate = 30.72e6;
+        let t = Tone::new(1.234567e6, rate, -1.0);
+        assert_eq!(t.m % 2, 1, "m odd: coprime with L");
+        assert!((t.freq(rate) - 1.234567e6).abs() <= rate / Tone::L as f64, "snapped within one step");
+        let a = 2048.0 * 10f64.powf(-1.0 / 20.0);
+        for i in [0u64, 1, 12345, 1 << 40] {
+            let p = 2.0 * std::f64::consts::PI * (t.m * (i % Tone::L) % Tone::L) as f64 / Tone::L as f64;
+            assert_eq!(t.value(i, 0), (a * p.cos()).round() as i16, "i={i}");
+            assert_eq!(t.value(i, 1), (a * p.sin()).round() as i16, "i={i}");
+            assert_eq!((t.value(i, 2), t.value(i, 3)), (t.value(i, 0), -t.value(i, 1)));
+        }
+        assert!(Tone::new(-2e6, rate, 0.0).freq(rate) < 0.0, "negative frequencies stay negative");
+    }
 
     /// A complex tone of amplitude `a` at frequency `f` cycles per sample,
     /// rounded to codes.

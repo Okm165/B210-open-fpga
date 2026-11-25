@@ -87,16 +87,19 @@ fpga/
 ```text
 src/
   lib.rs          the crate
-  proto.rs        PROTOCOL.md: headers, S(L), sc12/sc16 packing, operations, results, events
-  usb.rs          the FX3's boot and vendor requests (firmware, FPGA load, GPIF reset), the four endpoints, the result/event reader thread
-  regs.rs         register addresses and fields (PROTOCOL.md 6)
+  proto.rs        PROTOCOL.md: headers, S(L) and the packet splitter, sc12/sc16 packing, operations, results, events, the bus limit
+  usb.rs          the FX3's boot and vendor requests (firmware, FPGA load, GPIF reset), the four endpoints, commands one at a time (result and events from EP8), drain, real-time priority
+  regs.rs         register addresses and fields (PROTOCOL.md 6), typed reads (time, counters, health)
+  stream.rs       the rx loop, the checker of every packet, tx bursts
   config.rs       the TOML schema, its limits, and the ordered operations from one state to another
-  ad9361/         the AD9361 driver over a Bus of SPI, WAIT, POLL (mod.rs), UHD's tables (tables.rs), a recording Bus for tests (mock.rs)
-  dsp.rs          spectra: window, scaling, Welch averaging, dBFS
+  device.rs       the AD9361 on the board: its Bus over the FPGA's operations, the RESETB bring-up, a configuration applied
+  ad9361/         the AD9361 driver over a Bus of SPI, WAIT, POLL, and the chip's limits (mod.rs), UHD's tables (tables.rs), a recording Bus for tests (mock.rs)
+  dsp.rs          spectra: window, scaling, Welch averaging, dBFS; the coherent test tone
   iq.rs           one channel of I/Q on disk (i16 interleaved), per-channel files
   quality.rs      signal quality: level, DC, I/Q balance, SNR, SINAD, SFDR, ENOB, findings
-  bin/b210.rs     binary `b210`: load, read, write, monitor, rx-test, loop-test, capture
+  bin/b210.rs     binary `b210`: load, state, read, write, monitor, rx-test, loop-test, capture
   bin/b210-plot.rs binary `b210-plot`: a capture's report, spectrum, waterfall, time, histogram, constellation in the terminal
+  bin/b210-radio.rs binary `b210-radio`: the AD9361 from a configuration file (id, apply, peek, reset)
 tests/ad9361_golden.rs   the driver against UHD's C++ traces
 examples/config.toml     every configuration key
 ```

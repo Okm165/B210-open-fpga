@@ -12,14 +12,21 @@
 //! bit), in order. A POLL counts as its first read: UHD's wait loops read
 //! once when the chip is already done, as `settled` says it is.
 //!
-//! The one allowed difference: in each `init`, UHD's TX attenuation writes
-//! 0x073 .. 0x076 := 0 (0 dB) are ours with the maximum attenuation
-//! (0x67, 0x01, 0x67, 0x01: 359 = 4 x 89.75 quarter-dB steps).
+//! The allowed differences (the driver's module header, changes from UHD):
+//! - in each `init`, UHD's TX attenuation writes 0x073 .. 0x076 := 0 (0 dB)
+//!   are ours with the maximum attenuation (0x67, 0x01, 0x67, 0x01: 359 =
+//!   4 x 89.75 quarter-dB steps);
+//! - the rate bands moved to keep ADI's clock limits: a scenario is compared
+//!   up to its first `rate` command into a moved band (below 1.5625 MS/s,
+//!   in (40, 41) MS/s, in (53.33, 58] MS/s), where UHD's driver runs a clock
+//!   out of ADI's range. The RF PLL lock POLL needs no allowance: a POLL
+//!   counts as its first read.
 //!
 //! Negative controls: a changed, dropped, added or swapped access in the
 //! golden trace fails the comparison; the unmodified UHD trace differs from
-//! ours exactly at the four attenuation writes of each init; another read
-//! rule changes what the Rust driver writes.
+//! ours exactly at the four attenuation writes of each init; the full
+//! scenarios with a moved band do differ, at that `rate` command; another
+//! read rule changes what the Rust driver writes.
 
 use b210::ad9361::mock::{self, Access, Mock};
 use b210::ad9361::{Ad9361, Dir, Test};
@@ -95,6 +102,25 @@ fn commands(trace: &[Line]) -> Vec<String> {
     trace.iter().filter_map(|l| if let Line::Cmd(c) = l { Some(c.clone()) } else { None }).collect()
 }
 
+/// A rate whose band this driver moved from UHD's (module doc).
+fn moved_band(rate: f64) -> bool {
+    rate < 1.5625e6 || (rate > 40e6 && rate < 41e6) || (rate > 640e6 / 12.0 && rate <= 58e6)
+}
+
+/// How many of a scenario's commands are compared: those before its first
+/// `rate` into a moved band.
+fn compared(cmds: &[String]) -> usize {
+    cmds.iter()
+        .position(|c| c.strip_prefix("rate ").is_some_and(|r| moved_band(r.parse().unwrap())))
+        .unwrap_or(cmds.len())
+}
+
+/// A trace up to (not including) its command number `n`.
+fn first_commands(trace: &[Line], n: usize) -> &[Line] {
+    let end = trace.iter().enumerate().filter(|(_, l)| matches!(l, Line::Cmd(_))).nth(n).map_or(trace.len(), |(i, _)| i);
+    &trace[..end]
+}
+
 /// The scenario on the Rust driver over `m`, as trace lines.
 fn run(cmds: &[String], m: &mut Mock) -> Result<Vec<Line>, String> {
     fn drain(m: &mut Mock, out: &mut Vec<Line>) {
@@ -122,7 +148,7 @@ fn run(cmds: &[String], m: &mut Mock) -> Result<Vec<Line>, String> {
         let ret = match (w[0], w.len()) {
             ("rate", 2) => d.set_rate(num(w[1])).map(Some),
             ("channels", 3) => d.set_channels(byte(w[1]), byte(w[2])).map(|_| None),
-            ("freq", 3) => d.set_freq(dir(w[1]), num(w[2])).map(Some),
+            ("freq", 3) => d.set_lo(dir(w[1]), num(w[2])).map(Some),
             ("gain", 4) => d.set_gain(dir(w[1]), w[2].parse().unwrap(), num(w[3])).map(Some),
             ("bandwidth", 3) => d.set_bandwidth(dir(w[1]), num(w[2])).map(Some),
             ("delays", 3) => d.set_delays(byte(w[1]), byte(w[2])).map(|_| None),
@@ -145,8 +171,18 @@ fn run(cmds: &[String], m: &mut Mock) -> Result<Vec<Line>, String> {
     Ok(out)
 }
 
+/// The Rust driver on the compared part of a scenario, and UHD's trace of
+/// the same part.
+fn rust_and_golden(name: &str) -> (Vec<Line>, Vec<Line>) {
+    let golden = parse_trace(name);
+    let cmds = commands(&golden);
+    let n = compared(&cmds);
+    let actual = run(&cmds[..n], &mut Mock::settled()).unwrap_or_else(|e| panic!("{name}: {e}"));
+    (actual, first_commands(&golden, n).to_vec())
+}
+
 fn rust(name: &str) -> Vec<Line> {
-    run(&commands(&parse_trace(name)), &mut Mock::settled()).unwrap_or_else(|e| panic!("{name}: {e}"))
+    rust_and_golden(name).0
 }
 
 const UHD_ATTEN: [Line; 4] = [Line::W(0x073, 0), Line::W(0x074, 0), Line::W(0x075, 0), Line::W(0x076, 0)];
@@ -226,8 +262,10 @@ fn rust_driver_does_what_uhd_does() {
         assert_eq!(&commands(&golden), cmds, "{name}: trace not current with scenarios.txt: run generate.sh");
         let writes = count(&golden, |l| matches!(l, Line::W(..)));
         assert!(writes > 2000, "{name}: only {writes} writes: a vacuous trace");
+        let n = compared(cmds);
+        let golden = first_commands(&golden, n).to_vec();
         let mut m = Mock::settled();
-        let actual = run(cmds, &mut m);
+        let actual = run(&cmds[..n], &mut m);
         // command packets a binding sends (before splitting at 126 operations);
         // UHD's driver makes one bus round trip per access
         let packets = m.round_trips;
@@ -300,8 +338,7 @@ fn uhd_unmodified_differs_only_in_the_tx_attenuation() {
     // without the allowed difference applied, every scenario differs from
     // ours exactly at the four attenuation writes of its init, nowhere else
     for (name, _) in scenarios() {
-        let golden = parse_trace(&name);
-        let actual = rust(&name);
+        let (actual, golden) = rust_and_golden(&name);
         assert_eq!(golden.len(), actual.len(), "{name}");
         let differ: Vec<usize> = (0..golden.len()).filter(|&i| golden[i] != actual[i]).collect();
         let allowed: Vec<usize> = atten_positions(&golden).unwrap().iter().flat_map(|&i| i..i + 4).collect();
@@ -309,6 +346,28 @@ fn uhd_unmodified_differs_only_in_the_tx_attenuation() {
         assert_eq!(differ, allowed, "{name}");
         assert_eq!(actual[allowed[0]..allowed[0] + 4], OUR_ATTEN, "{name}");
     }
+}
+
+#[test]
+fn the_moved_rate_bands_are_compared_up_to_their_rate_command() {
+    // which scenarios are cut, and where; init and the scenarios at 30.72 and
+    // 61.44 MS/s are compared whole
+    let cut: Vec<(String, usize, usize)> = scenarios()
+        .into_iter()
+        .filter(|(_, cmds)| compared(cmds) < cmds.len())
+        .map(|(name, cmds)| (name, compared(&cmds), cmds.len()))
+        .collect();
+    assert_eq!(cut, [("b210_1m".to_string(), 1, 9), ("rates".into(), 1, 22), ("bandwidths".into(), 17, 20)]);
+    // negative control: the full scenarios differ from UHD there, so the cut
+    // is needed and not hiding anything before it
+    let full = |name: &str| {
+        let golden = ours(&parse_trace(name));
+        run(&commands(&golden), &mut Mock::settled()).and_then(|actual| compare(&golden, &actual))
+    };
+    assert!(full("b210_1m").unwrap_err().contains("(in `rate 1e6`)"));
+    assert!(full("bandwidths").unwrap_err().contains("(in `rate 1e6`)"));
+    assert!(full("rates").unwrap_err().starts_with("rate 220e3: "), "below the minimum rate");
+    assert!(moved_band(56e6) && !moved_band(50e6) && !moved_band(61.44e6) && !moved_band(30.72e6));
 }
 
 #[test]

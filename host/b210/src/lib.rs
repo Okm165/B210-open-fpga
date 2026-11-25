@@ -9,4 +9,5 @@ pub mod iq;
 pub mod quality;
 pub mod proto;
 pub mod regs;
+pub mod stream;
 pub mod usb;

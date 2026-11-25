@@ -42,7 +42,7 @@ b210 write <ADDR> <VALUE>  # write a register
 b210 monitor [--interval-ms 500]       # live status, event counters, USB events
 b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
 b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
-b210 capture [STREAM] [--out capture.raw] [--source pattern|loopback]
+b210 capture [STREAM] [--out capture.raw] [--source pattern|tone]
 b210-plot <FILE> [--rate HZ] [--view spectrum|time|both] [--fft N] [--lo HZ] [--hi HZ]
 ```
 
@@ -50,6 +50,10 @@ b210-plot <FILE> [--rate HZ] [--view spectrum|time|both] [--fft N] [--lo HZ] [--
 `--div`, `--depth-ms`. `capture` writes interleaved i16 I/Q, one file per
 channel; `b210-plot` draws spectrum and I/Q in the terminal. `--help` on
 any command gives the full list and defaults.
+
+The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
+p. 15), whatever the gain: no setting protects the receiver from a stronger
+signal at the port, which must be attenuated before it.
 
 ## v1
 

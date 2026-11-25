@@ -3,21 +3,23 @@
 # Full duplex, 2 rx + 2 tx channels at 30.72 MS/s (sc12: 369 of 400 MB/s).
 
 rate_hz   = 30.72e6     # sample rate of every channel, Hz (the AD9361 has one)
-reference = "internal"  # "internal": the 40 MHz TCXO free-running (default);
-                        # "external": locked to 10 MHz at the REF input
+reference = "internal"  # the 40 MHz TCXO free-running (default; "external",
+                        # locked to 10 MHz at REF, is not built yet)
 format    = "sc12"      # samples on the wire: "sc12" 3 bytes, "sc16" 4 bytes
                         # per complex sample
 
 [rx]                    # present = receiving; absent = both rx channels off
 lo_hz        = 2.45e9   # one synthesizer for both rx channels, Hz
 bandwidth_hz = 20e6     # one analog filter setting for both rx channels, Hz
+                        # (800e3 .. 56e6, at most rate_hz)
 spp          = 1024     # sample times per packet (latency 1024 / rate =
                         # 33 us); default: a full 16 KiB packet
-ch0 = { gain_db = 40, antenna = "RX2" }  # gain 0 .. 76 dB in 1 dB steps;
-ch1 = { gain_db = 35, antenna = "RX2" }  # port "RX2" (default) or "TX/RX"
+ch0 = { gain_db = 40 }  # gain 0 .. 76 dB in 1 dB steps
+ch1 = { gain_db = 35 }
 
 [tx]                    # present = transmitting; absent = both tx channels off
 lo_hz        = 2.45e9   # one synthesizer for both tx channels, Hz
 bandwidth_hz = 20e6     # one analog filter setting for both tx channels, Hz
+                        # (1.08e6 .. 40e6, at most rate_hz)
 ch0 = { gain_db = 60 }  # gain 0 .. 89.75 dB in 0.25 dB steps:
 ch1 = { gain_db = 55.5 }  # attenuation = 89.75 dB - gain_db
