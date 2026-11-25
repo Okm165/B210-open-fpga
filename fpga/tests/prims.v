@@ -70,3 +70,45 @@ module IOBUF #(
   bufif0 (IO, I, T);
   assign O = IO;
 endmodule
+
+// BUFG, IBUFDS: wires.
+module BUFG (input I, output O); assign O = I; endmodule
+module IBUFDS #(parameter DIFF_TERM = "FALSE", IOSTANDARD = "DEFAULT") (input I, IB, output O);
+  assign O = I;
+endmodule
+
+// MMCME2_ADV: the output clocks its parameters define, from CLKIN1's period
+// (not measured: CLKIN1_PERIOD is trusted), LOCKED 64 input cycles after
+// RST falls. VCO period = CLKIN1_PERIOD * DIVCLK_DIVIDE / CLKFBOUT_MULT_F;
+// CLKOUTn period = VCO period * its divide; CLKOUT2 shifted by its phase.
+// Only the outputs the designs here use are modelled.
+module MMCME2_ADV #(
+  parameter BANDWIDTH = "OPTIMIZED", COMPENSATION = "ZHOLD", STARTUP_WAIT = "FALSE",
+  parameter real CLKIN1_PERIOD = 10.0, CLKFBOUT_MULT_F = 5.0, CLKOUT0_DIVIDE_F = 1.0,
+  parameter real CLKOUT2_PHASE = 0.0, CLKFBOUT_PHASE = 0.0, CLKOUT0_PHASE = 0.0, CLKOUT1_PHASE = 0.0,
+  parameter real CLKOUT0_DUTY_CYCLE = 0.5, CLKOUT1_DUTY_CYCLE = 0.5, CLKOUT2_DUTY_CYCLE = 0.5, REF_JITTER1 = 0.01,
+  parameter integer DIVCLK_DIVIDE = 1, CLKOUT1_DIVIDE = 1, CLKOUT2_DIVIDE = 1, CLKOUT3_DIVIDE = 1,
+  parameter CLKOUT4_CASCADE = "FALSE"
+) (
+  input CLKIN1, CLKIN2, CLKINSEL, CLKFBIN, RST, PWRDWN, DCLK, DEN, DWE, PSCLK, PSEN, PSINCDEC,
+  input [6:0] DADDR, input [15:0] DI,
+  output CLKFBOUT, CLKFBOUTB, CLKOUT0, CLKOUT0B, CLKOUT1, CLKOUT1B, CLKOUT2, CLKOUT2B,
+  output CLKOUT3, CLKOUT3B, CLKOUT4, CLKOUT5, CLKOUT6,
+  output [15:0] DO, output DRDY, PSDONE, LOCKED, CLKFBSTOPPED, CLKINSTOPPED
+);
+  real vco, p0, p1, p2;
+  initial begin
+    vco = CLKIN1_PERIOD * DIVCLK_DIVIDE / CLKFBOUT_MULT_F;
+    p0 = vco * CLKOUT0_DIVIDE_F; p1 = vco * CLKOUT1_DIVIDE; p2 = vco * CLKOUT2_DIVIDE;
+  end
+  reg c0 = 0, c1 = 0, c2 = 0, lock = 0;
+  integer n = 0;
+  always @(posedge CLKIN1 or posedge RST) if (RST) begin n = 0; lock <= 0; end else if (n < 64) n = n + 1; else lock <= 1;
+  always begin wait (lock); #(p0 / 2) c0 = lock && !c0; end
+  always begin wait (lock); #(p1 / 2) c1 = lock && !c1; end
+  always begin wait (lock); #(p2 * CLKOUT2_PHASE / 360.0); while (lock) begin #(p2 / 2) c2 = !c2; end c2 = 0; end
+  assign {CLKOUT0, CLKOUT1, CLKOUT2, LOCKED} = {c0, c1, c2, lock};
+  assign {CLKOUT0B, CLKOUT1B, CLKOUT2B} = ~{c0, c1, c2};
+  assign {CLKFBOUT, CLKFBOUTB, CLKOUT3, CLKOUT3B, CLKOUT4, CLKOUT5, CLKOUT6} = 7'b0100000;
+  assign {DO, DRDY, PSDONE, CLKFBSTOPPED, CLKINSTOPPED} = 0;
+endmodule

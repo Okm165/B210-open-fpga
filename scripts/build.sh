@@ -36,12 +36,12 @@ OUT=build/fpga
 LOGS=build/fpga/logs
 cd "$ROOT"
 SRCS="${SRCS:-$(grep '^src/' scripts/sources.txt | tr '\n' ' ')}"
-[[ "$DESIGN" == b200 ]] || SRCS+=" src/top/$DESIGN.v"
+[[ "$DESIGN" == b200 || ! -f src/top/$DESIGN.v ]] || SRCS+=" src/top/$DESIGN.v"
 XDC="${XDC:-src/constraints/b210.xdc}"
 [[ -f "$XDC" ]] || { echo "build: no constraints file $XDC" >&2; exit 2; }
 # What this image is built from is fixed now, before the first tool reads a
 # file: the build takes hours and the repository moves on meanwhile.
-SOURCE="$(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src scripts container)" ]] || echo ' + uncommitted changes')"
+SOURCE="$(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src fpga scripts container)" ]] || echo ' + uncommitted changes')"
 for tool in "$NEXTPNR" "$CHIPDB"; do
   [[ -s "$tool" ]] || { echo "build: missing $tool (scripts/toolchain.sh builds it)" >&2; exit 2; }
 done
