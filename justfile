@@ -77,6 +77,11 @@ sdr *args:
 eye img=bin:
     scripts/eyescan.sh {{ img }} 61.44e6
 
+# Quick check (~5 min): same checks, fewer runs; never an acceptance
+[group('board')]
+check img=bin:
+    QUICK=1 scripts/hw_gate.sh {{ img }}
+
 # Full hardware acceptance; evidence in build/hw-gate-<UTC>/
 [group('board')]
 gate img=bin:

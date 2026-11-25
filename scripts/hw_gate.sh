@@ -89,15 +89,21 @@ IMG=$(realpath "${1:?usage: hw_gate.sh <image.bin>}")
 # One B2xx on the host needs no serial; SERIAL=<serial> picks among several.
 DEV="type=b200${SERIAL:+,serial=$SERIAL}"
 EYE_MIN_STEPS=${EYE_MIN_STEPS:-8}
-PRBS_RUNS=${PRBS_RUNS:-8}
+# QUICK=1 (just check): the same checks, fewer of them, for day-to-day work;
+# it ends in CHECK PASS, never GATE PASS.  The eye scan, the spectral
+# checks, decimations 2-16, loopback x4 and the bus margin are left out.
+QUICK=${QUICK:-0}
+full() { (( ! QUICK )); }
+PRBS_RUNS=${PRBS_RUNS:-$(full && echo 8 || echo 2)}
 BUS_MARGIN_STEPS=${BUS_MARGIN_STEPS:-20}
-THROUGHPUT_TRIES=${THROUGHPUT_TRIES:-5}
+THROUGHPUT_TRIES=${THROUGHPUT_TRIES:-$(full && echo 5 || echo 2)}
+COUNTED=$(full && echo 2 || echo 1)   # clean runs on a quiet host needed per mode
 UHD=$PWD/.tools/uhd315
 [[ -x $UHD/bin/benchmark_rate && -s $UHD/images/usrp_b200_fw.hex ]] \
   || { echo "no host side in $UHD: run scripts/toolchain.sh uhd" >&2; exit 2; }
 export UHD_IMAGES_DIR=$UHD/images LD_LIBRARY_PATH=$UHD/lib
 ARGS="$DEV,fpga=${IMG}"
-OUT="build/hw-gate-$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="build/hw-$(full && echo gate || echo check)-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 fail() { echo "GATE FAIL ($1): $2" >&2; exit 1; }
 inconclusive() { echo "GATE INCONCLUSIVE ($1): $2" >&2; exit 3; }
@@ -136,6 +142,7 @@ grep -q "Loading FPGA image: $IMG" "$OUT/02-init.txt" || fail init "UHD did not 
   || fail init "expected two radio cores"
 grep -E "Loading FPGA|loopback test passed|FPGA Version" "$OUT/02-init.txt" || true
 
+if full; then
 echo "== AD9361 interface eye at 61.44 MHz =="
 scripts/eyescan.sh "$IMG" 61.44e6 > "$OUT/03-eye.txt" 2>&1 || true
 tail -5 "$OUT/03-eye.txt"
@@ -148,6 +155,7 @@ for side in rx tx; do
   [[ "${BELOW:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${BELOW:-0} steps, need $EYE_MIN_STEPS"
 done
 
+fi
 echo "== known signals through the sample paths =="
 samples() {   # samples <name> <sample_check.py arguments...>
   local log="$OUT/04-samples-$1.txt" rc=0; shift
@@ -155,6 +163,7 @@ samples() {   # samples <name> <sample_check.py arguments...>
   sed 's/^/  /' "$log"
   [[ $rc -eq 0 ]] && grep -q '^RESULT: PASS' "$log" || fail samples "$* : see $log"
 }
+if full; then
 echo " receive: AD9361 test tone"
 # --sfdr/--sinad: what a healthy image gives in each mode, the worse channel of
 # every recorded gate run (they repeat to 0.5 dB); 2 dB less fails.  The x4
@@ -168,6 +177,7 @@ echo " transmit: host tones through the AD9361 digital loopback"
 samples tx-x4         --loopback 300e3 --rate 7.68e6 --mcr 30.72e6 --samples 1048576 --sfdr 82.3 --sinad 73.6
 samples tx-2r2t-sc12  --loopback 1e6 --rate 30.72e6 --otw sc12                 --sfdr 69.8 --sinad 58.6
 samples tx-1ch-61     --loopback 2e6 --rate 61.44e6 --chans 0 --otw sc8        --sfdr 58.1 --sinad 43.7
+fi
 echo " receive: AD9361 pseudo-random sequence, bit exact"
 for run in $(seq 1 "$PRBS_RUNS"); do
   samples "rx-prbs-2ch-$run" --prbs --rate 30.72e6
@@ -190,14 +200,19 @@ exact() {   # exact <name> <BIST|LOOPBACK> <host rate> <channels> <samples> <tx 
   grep -q '^RESULT: PASS' "$log" || { echo "GATE FAIL (dsp): $name: see $log" >&2; return 1; }
 }
 exact rx-d1  BIST=0x09  30.72e6 0,1 1048576 "" rx --decim 1
+if full; then
 exact rx-d2  BIST=0x09  15.36e6 0,1 524288  "" rx --decim 2
 exact rx-d3  BIST=0x09  10.24e6 0,1 524288  "" rx --decim 3
 exact rx-d4  BIST=0x09  7.68e6  0,1 524288  "" rx --decim 4
 exact rx-d8  BIST=0x09  3.84e6  0,1 262144  "" rx --decim 8
 exact rx-d16 BIST=0x09  1.92e6  0,1 262144  "" rx --decim 16
+fi
 exact loop-x1 LOOPBACK=1 30.72e6 0  1048576 1e6   loop --interp 1 --dac round
+if full; then
 exact loop-x4 LOOPBACK=1 7.68e6  0,1 524288 300e3 loop --interp 4 --dac round
+fi
 
+if full; then
 echo "== FX3 bus with the forwarded clock $BUS_MARGIN_STEPS steps earlier and later =="
 FASM="$(dirname "$IMG")/pnr/$(basename "$IMG" .bin | sed 's/^usrp_//').fasm"
 [[ -s $FASM ]] || fail "bus margin" "no routed design at $FASM"
@@ -214,6 +229,7 @@ python3 scripts/bus_window.py "${FASM#$PWD/}" --around "$BUS_MARGIN_STEPS" --ima
   || { tail -4 "$OUT/06-bus-margin.txt"; fail "bus margin" "see $OUT/06-bus-margin.txt and build/tmp/"; }
 sed 's/^/  /' "$OUT/06-bus-margin.txt"
 
+fi
 echo "== throughput on a quiet host =="
 # CPU pressure in percent: over a run from the kernel's cumulative stall time
 # ("some ... total=", microseconds), over the last 10 s from its "avg10".
@@ -253,7 +269,7 @@ ok() { [[ $1 == ok || $1 == "ok ("* ]]; }
 bench() {   # bench <name> <rx samples due> <tx samples due> <benchmark args...>
   local name=$1 rx_due=$2 tx_due=$3; shift 3
   local counted=0 try=0 verdict s0 t0 whole last
-  while (( counted < 2 && try < THROUGHPUT_TRIES )); do
+  while (( counted < COUNTED && try < THROUGHPUT_TRIES )); do
     try=$((try + 1))
     until below "$(avg10)" "$QUIET_PSI" || (( SECONDS >= DEADLINE )); do sleep 10; done
     s0=$(stall_us); t0=$(date +%s%6N)
@@ -266,11 +282,12 @@ bench() {   # bench <name> <rx samples due> <tx samples due> <benchmark args...>
       counted=$((counted + 1))
     fi
   done
-  (( counted >= 2 )) || inconclusive throughput "$name: $counted of $try runs on a quiet host; QUIET_PSI=$QUIET_PSI"
+  (( counted >= COUNTED )) || inconclusive throughput "$name: $counted of $try runs on a quiet host; QUIET_PSI=$QUIET_PSI"
 }
 BUF=$BUF16 bench rx2    614400000 0         --rx_rate 30.72e6 --channels 0,1
 BUF=$BUF16 bench tx2    0         614400000 --tx_rate 30.72e6 --channels 0,1
 BUF=$BUF16 bench rx1    614400000 0         --rx_rate 61.44e6 --channels 0
 BUF=$BUF12 bench 2r2t12 614400000 614400000 --rx_rate 30.72e6 --tx_rate 30.72e6 --channels 0,1 --rx_otw sc12 --tx_otw sc12
 
+full || { echo "CHECK PASS: $IMG ($SHA), not an acceptance (just gate)  evidence in $OUT"; exit 0; }
 echo "GATE PASS: $IMG ($SHA)  evidence in $OUT"
