@@ -231,14 +231,11 @@ bits matches a plain-logic multiplier cycle for cycle.
 
 ## Reproducibility gaps
 
-- `container/base.Dockerfile` installs a Java runtime and pypy3 that no tool
-  in the flow uses (they were for a place-and-route engine built in the
-  container, which is now built on the host by `scripts/toolchain.sh`).
-  Removing them means rebuilding the base image, which would change the
-  recorded environment, so it is left for a deliberate rebuild.  The images
-  in use were built from the current pinned definitions.
 - `scripts/toolchain.sh` rebuilds the place-and-route engine, the device
   database and the measuring UHD from pinned sources; the engine and
   database hashes repeat and a design rebuilt with them is byte-identical.
-  The container (`b210-open-fpga:0.2.0`) is built from pinned sources and
-  produces byte-identical bitstreams.
+  The container (`b210-open-fpga:0.3.0`, one `container/Dockerfile`, 299 MB:
+  the two tools and their run-time libraries, no compiler) is built from
+  pinned sources.  Against the 1.87 GB image it replaces, the synthesized
+  netlist of the full design and the bitstream assembled from the same
+  routed design are byte-identical.

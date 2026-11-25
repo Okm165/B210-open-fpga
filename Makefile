@@ -27,11 +27,8 @@ IVERILOG ?= iverilog
 VVP      ?= vvp
 
 CONTAINER_ENGINE ?= podman
-TAG              ?= 0.2.0
-BASE_IMAGE       ?= b210-open-fpga-base:$(TAG)
-YOSYS_IMAGE      ?= b210-open-fpga-yosys:$(TAG)
-PRJXRAY_IMAGE    ?= b210-open-fpga-prjxray:$(TAG)
-FPGA_IMAGE       ?= b210-open-fpga:$(TAG)
+# The same default as scripts/build.sh and scripts/assemble.sh.
+FPGA_IMAGE       ?= b210-open-fpga:0.3.0
 
 ifeq ($(CONTAINER_ENGINE),podman)
 CONTAINER_USER_FLAGS := --userns=keep-id
@@ -41,7 +38,6 @@ endif
 
 CONTAINER_RUN := $(CONTAINER_ENGINE) run --rm -i $(CONTAINER_USER_FLAGS) \
   -v "$(ROOT):$(CR):z" -w "$(CR)" -e HOME="$(CR)/build"
-CONTAINER_BUILD := $(CONTAINER_ENGINE) build --build-arg JOBS=$(shell nproc)
 
 TEST_SRCS := \
   $(ROOT)/src/rtl/control/bin2gray.v \
@@ -278,7 +274,7 @@ FRAMER_TEST_SRCS := $(ELAB_SRCS) \
   $(ROOT)/tests/tb_rx_framer.v
 
 
-.PHONY: help test test-data test-dsp test-dsp-postsyn test-dsp-netlist test-data2 elab sim tools tools-base tools-yosys tools-prjxray \
+.PHONY: help test test-data test-dsp test-dsp-postsyn test-dsp-netlist test-data2 elab sim tools \
         shell toolchain build eye gate clean image-clean
 
 help:
@@ -297,27 +293,12 @@ help:
 	  '  make image-clean  Remove the container images'
 
 # ---------------------------------------------------------------------------
-# Atomic toolchain images.
+# The container image: Yosys and the Project X-Ray tools.
 # ---------------------------------------------------------------------------
 
-tools-base:
-	$(CONTAINER_BUILD) -t $(BASE_IMAGE) \
-	  -f $(ROOT)/container/base.Dockerfile $(ROOT)
-
-tools-yosys: tools-base
-	$(CONTAINER_BUILD) --build-arg BASE_IMAGE=$(BASE_IMAGE) \
-	  -t $(YOSYS_IMAGE) -f $(ROOT)/container/yosys.Dockerfile $(ROOT)
-
-tools-prjxray: tools-base
-	$(CONTAINER_BUILD) --build-arg BASE_IMAGE=$(BASE_IMAGE) \
-	  -t $(PRJXRAY_IMAGE) -f $(ROOT)/container/prjxray.Dockerfile $(ROOT)
-
-tools: tools-yosys tools-prjxray
-	$(CONTAINER_ENGINE) build \
-	  --build-arg BASE_IMAGE=$(BASE_IMAGE) \
-	  --build-arg YOSYS_IMAGE=$(YOSYS_IMAGE) \
-	  --build-arg PRJXRAY_IMAGE=$(PRJXRAY_IMAGE) \
-	  -t $(FPGA_IMAGE) -f $(ROOT)/container/toolchain.Dockerfile $(ROOT)
+tools:
+	$(CONTAINER_ENGINE) build --build-arg JOBS=$(shell nproc) \
+	  -t $(FPGA_IMAGE) -f $(ROOT)/container/Dockerfile $(ROOT)/container
 
 # ---------------------------------------------------------------------------
 # The FPGA flow.  One path, three scripts:
@@ -811,5 +792,4 @@ clean:
 	if [ -d "$$target" ]; then rm -rf -- "$$target"; fi
 
 image-clean:
-	@$(CONTAINER_ENGINE) rmi -f $(FPGA_IMAGE) $(YOSYS_IMAGE) \
-	  $(PRJXRAY_IMAGE) $(BASE_IMAGE) 2>/dev/null || true
+	@$(CONTAINER_ENGINE) rmi -f $(FPGA_IMAGE) 2>/dev/null || true

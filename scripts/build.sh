@@ -47,7 +47,7 @@ rm -f $OUT/synth/$NAME.json $OUT/pnr/$NAME.fasm $OUT/usrp_$NAME.bin $OUT/usrp_$N
 CHP=""; for kv in ${PARAMS:-}; do CHP+="chparam -set ${kv%%=*} ${kv#*=} $DESIGN; "; done
 
 podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -w /work -e HOME=/work/build \
-  "${FPGA_IMAGE:-b210-open-fpga:0.2.0}" bash -c \
+  "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" bash -c \
   "yosys -p 'read_verilog -I src/rtl/control $SRCS; $CHP synth_xilinx -flatten -abc9 -family xc7 -top $DESIGN; write_json $OUT/synth/$NAME.json' > $LOGS/$NAME-synth.log 2>&1" \
   || { tail -20 $LOGS/$NAME-synth.log; exit 1; }
 
@@ -96,7 +96,7 @@ scripts/assemble.sh $OUT/pnr/$NAME.fasm $OUT/usrp_$NAME.bin
   echo "xdc      $XDC"
   echo "source   $(git rev-parse HEAD)$([[ -z "$(git status --porcelain -- src scripts container)" ]] || echo ' + uncommitted changes')"
   echo "nextpnr  $(sha256sum "$NEXTPNR" | cut -c1-16) chipdb $(sha256sum "$CHIPDB" | cut -c1-16)"
-  echo "tools    ${FPGA_IMAGE:-b210-open-fpga:0.2.0}"
+  echo "tools    ${FPGA_IMAGE:-b210-open-fpga:0.3.0} $(podman image inspect -f '{{.Id}}' "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" | cut -c1-16)"
   [[ -z "${PNR_EXTRA:-}" ]] || echo "pnr opts $PNR_EXTRA"
   echo "$TIMING"
   echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"

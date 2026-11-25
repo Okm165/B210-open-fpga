@@ -19,7 +19,7 @@ cd "$ROOT"
 [[ -d "$DB/kintex7/$PART" ]] || { echo "assemble: no prjxray database at $DB" >&2; exit 2; }
 rm -f "$OUT" "$S.frames" "$S.bit" "$S.f2f.log"
 podman run --rm -i --userns=keep-id -v "$ROOT:/work:z" -v "$DB:/opt/fpga/share/prjxray-db:z" \
-  -w /work -e HOME=/work/build "${FPGA_IMAGE:-b210-open-fpga:0.2.0}" bash -euo pipefail -c "
+  -w /work -e HOME=/work/build "${FPGA_IMAGE:-b210-open-fpga:0.3.0}" bash -euo pipefail -c "
   fasm2frames --db-root /opt/fpga/share/prjxray-db/kintex7 --part $PART $IN $S.frames > $S.f2f.log 2>&1 \
     || { tail -5 $S.f2f.log >&2; echo 'assemble: fasm2frames failed' >&2; exit 4; }
   if grep -q 'not found' $S.f2f.log; then grep 'not found' $S.f2f.log | tail -3 >&2; exit 4; fi

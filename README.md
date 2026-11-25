@@ -43,7 +43,7 @@ src/top/           b200.v (top), b200_io.v (AD9361 interface), b200_core.v,
 src/rtl/           radio, DSP, FIFO, GPIF and control RTL (Ettus, LGPL)
 src/constraints/   b210.xdc: pins, clocks, buffer sites, crossing bounds
 scripts/           the flow and the hardware instruments
-container/         container image definitions and upstream patches
+container/         the container image (Dockerfile) and the upstream patches
 tests/             simulation benches (make test)
 build/             generated output, ignored by git
 ```
