@@ -107,6 +107,7 @@ design on the board, and proven before being fixed at the source.
 | 4 | prjxray-db kintex7 | BUFR unroutable in HP banks: the 24 always-on pseudo pips of the `HCLK_IOI` BUFR datapath are missing | `container/patches/prjxray-db-kintex7-hclk-ioi-bufr-ppips.patch` |
 | 5 | nextpnr FASM writer | a BUFR output routed to a BUFG carries no clock (`CLK_HROW_CK_BUFRCLK_*_ACTIVE` and `HCLK_CMT_CK_BUFRCLK*_USED` never written); the radio clock stops in 2R2T mode | `container/patches/nextpnr-bufrclk-enable.patch` |
 | 6 | yosys 0.69 DSP packing (YosysHQ/yosys#6311, open) | a product or sum register with reset or enable that is wider than its value loses its sign bits: negative values come out as large positive ones on hardware while RTL simulation is correct | registers sized to their values in `src/rtl/dsp/hbdec47.v`; `tests/check_dsp_packing.py` and the post-synthesis benches in `make test` detect it |
+| 7 | nextpnr Kintex-7 chip database | no cell timing for DSP48E1, and a cell without timing is left out of timing analysis: no path into or out of the 94 multipliers (two of them with no register at all) was ever checked, and the reported radio-clock Fmax did not cover them | `container/patches/nextpnr-dsp48e1-timing.patch` gives the arcs from each cell's registers with DS182 table 35 (speed grade -1); `scripts/toolchain.sh` installs an engine only if `tests/dsp_timing.v` shows the unregistered multiplier as the failing path (patched: 164 MHz on a 200 MHz clock; unpatched: 1150 MHz, the cell ignored) |
 
 Checked and found correct on the board: a DSP48E1 with one input register
 stage (`AREG = BREG = 1`), for which nextpnr writes none of the three
@@ -191,6 +192,18 @@ bits matches a plain-logic multiplier cycle for cycle.
   enforces on the routed result.
 
 ## Known limitations
+
+- No hold-time analysis has been run on any image: the engine checks
+  minimum delays only when asked to fix them (`-o hold-fix`), which this
+  flow does not do.  The capture registers that matter for hold are in the
+  I/O blocks (FX3 bus) or behind a fixed input delay (AD9361), and both
+  were measured on the board; inside the fabric nothing has been checked.
+- The MMCM is written with `COMPENSATION = INTERNAL` where the source asks
+  for `ZHOLD` (the engine writes the same bit pattern for both); the vendor
+  image has `ZHOLD`.  The bus and forwarded clocks come from the same MMCM,
+  so the measured bus window already contains the effect.
+- The bitstream carries no configuration CRC (Project X-Ray's frame tool
+  writes none); a corrupted load would not be refused by the FPGA itself.
 
 - A sample-rate or channel-count change while a stream is running is
   untested.  UHD allows it and reprograms the AD9361, which stops and
