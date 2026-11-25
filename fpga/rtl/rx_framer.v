@@ -101,18 +101,30 @@ module rx_framer (
   reg [6:0]  nb = 0;              // how many
   assign running = state != IDLE;
 
-  // n and the packet's size for the next packet, from the stream's remainder
-  wire [31:0] want  = endless ? spp_c : (left < spp_c ? left : spp_c);
-  wire [12:0] n_new = want[12:0];
-  wire        last_packet = !endless && left == want || stopping;
-  // L = 16 + n * B bytes, B = tbits / 8 = 3 4 6 8, by shifts and one add
-  // (3 n = 2 n + n, 6 n = 2 (3 n)); words = ceil(L / 4), + 1 if that is a
-  // multiple of 256 below the full 4096
-  wire [15:0] n3    = {n_new, 1'b0} + n_new;
-  wire [15:0] pbytes = sc12 ? (two ? {n3[14:0], 1'b0} : n3) : (two ? {n_new, 3'b0} : {n_new, 2'b0});
-  wire [15:0] len   = 16 + pbytes;
-  wire [12:0] w_raw = (len + 3) >> 2;
-  wire [12:0] w_all = w_raw + (w_raw[7:0] == 0 && w_raw != FULL_WORDS);
+  // n and the packet's size for the next packet, from the stream's remainder,
+  // registered every cycle so that START does not wait for a compare and
+  // three adders. Valid at START: `left` changes only on the stream's start
+  // (ARMED lasts at least one cycle) and at START itself (the next START is
+  // at least two cycles later: HEAD takes 4, DROP at least 1 + the return).
+  //   n = min(left, spp) (spp if endless)
+  //   L = 16 + n * B bytes, B = tbits / 8 = 3 4 6 8, by shifts and one add
+  //       (3 n = 2 n + n, 6 n = 2 (3 n))
+  //   words = ceil(L / 4), + 1 if that is a multiple of 256 below 4096
+  wire [31:0] want_c = endless ? spp_c : (left < spp_c ? left : spp_c);
+  wire [15:0] n3     = {want_c[12:0], 1'b0} + want_c[12:0];
+  wire [15:0] pbytes = sc12 ? (two ? {n3[14:0], 1'b0} : n3) : (two ? {want_c[12:0], 3'b0} : {want_c[12:0], 2'b0});
+  wire [15:0] len_c  = 16 + pbytes;
+  wire [12:0] w_raw  = (len_c + 3) >> 2;
+  reg  [12:0] n_new = 0, w_all = 0;
+  reg  [15:0] len = 0;
+  reg         ends = 0;           // this packet takes the rest of a counted stream
+  always @(posedge clk) begin
+    n_new <= want_c[12:0];
+    len   <= len_c;
+    w_all <= w_raw + (w_raw[7:0] == 0 && w_raw != FULL_WORDS);
+    ends  <= !endless && left == want_c;
+  end
+  wire        last_packet = ends || stopping;
 
   // accumulator: write a word when 32 bits are held or the packet's samples
   // are all in and bits remain; take a sample when it fits
@@ -146,7 +158,7 @@ module rx_framer (
           hw <= 0; state <= EOB_ONLY;
         end else if (s_valid) begin
           n <= n_new; t0 <= s_time; t_end <= s_time + n_new;
-          if (!endless) left <= left - want;
+          if (!endless) left <= left - n_new;
           if (w_room) begin
             words <= w_all; hw <= 0;
             h0 <= {VERSION, 2'd0, channels, format, T_RX, len};

@@ -9,7 +9,9 @@
 # that runs out reports ERROR); exit status 1 if any result differs.
 set -eu
 cd "$(dirname "$0")/../.."
+# each run its own directory, so runs in parallel never mix
 mkdir -p build/sim
+SIM=$(mktemp -d build/sim/run.XXXXXX)
 
 # bench  expect  parameters
 CASES='
@@ -99,23 +101,23 @@ one() {   # bench expect params...
   tag=$(echo "$bench $*" | tr ' =' '_-')
   params=""; for p in "$@"; do params="$params -Ptb_$bench.$p"; done
   # shellcheck disable=SC2046,SC2086
-  iverilog -g2005 -Wall -Wno-timescale -o "build/sim/$tag" -s "tb_$bench" $params $(sources "$bench") \
-    > "build/sim/$tag.log" 2>&1 &&
-  timeout "${LIMIT:-1500}" vvp -n "build/sim/$tag" >> "build/sim/$tag.log" 2>&1 || true
-  got=$(sed -n "s/^RESULT: \([A-Z]*\).*/\1/p" "build/sim/$tag.log")
+  iverilog -g2005 -Wall -Wno-timescale -o "$SIM/$tag" -s "tb_$bench" $params $(sources "$bench") \
+    > "$SIM/$tag.log" 2>&1 &&
+  timeout "${LIMIT:-1500}" vvp -n "$SIM/$tag" >> "$SIM/$tag.log" 2>&1 || true
+  got=$(sed -n "s/^RESULT: \([A-Z]*\).*/\1/p" "$SIM/$tag.log")
   [ -n "$got" ] || got=ERROR
   verdict=ok; [ "$got" = "$expect" ] || verdict=WRONG
   printf '%-5s %-6s %-4s %s %s  (%s)\n' "$verdict" "$bench" "$expect" "$*" \
-    "$(grep -E '^bus:' "build/sim/$tag.log" | cut -d= -f2 | tr -d ' ')" "build/sim/$tag.log"
+    "$(grep -E '^bus:' "$SIM/$tag.log" | cut -d= -f2 | tr -d ' ')" "$SIM/$tag.log"
 }
 
 echo "$CASES" | grep -v '^$' | grep -- "${1:-}" | while read -r line; do
   # shellcheck disable=SC2086
   one $line &
-done | sort > build/sim/results.txt
+done | sort > $SIM/results.txt
 wait
-cat build/sim/results.txt
-n=$(grep -c . build/sim/results.txt)
-bad=$(grep -c '^WRONG' build/sim/results.txt || true)
+cat $SIM/results.txt
+n=$(grep -c . $SIM/results.txt)
+bad=$(grep -c '^WRONG' $SIM/results.txt || true)
 echo "$n cases, $bad wrong"
 [ "$bad" -eq 0 ]

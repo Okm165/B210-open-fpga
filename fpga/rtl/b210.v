@@ -193,7 +193,9 @@ module b210 #(
   end
   // event codes 1 .. 6: OVERFLOW (rx dropped + lost crossing), UNDERFLOW,
   // LATE, SEQ_ERROR, BURST_ACK, BAD_PACKET
-  wire [191:0] counts = {tx_bad + tx_short, acks, tx_seq, lates, underflows, rx_dropped + rx_lost};
+  // registered: the sums would otherwise sit in series with events' compares
+  reg  [191:0] counts = 0;
+  always @(posedge bus_clk) counts <= {tx_bad + tx_short, acks, tx_seq, lates, underflows, rx_dropped + rx_lost};
   events ev (.clk(bus_clk), .rst(rst), .counts(counts), .now(now), .w_room(e_room), .w_valid(e_valid),
     .w_last(e_last), .w_data(e_data));
   packet_fifo #(.AW(7), .MAX(32)) event_fifo (.wclk(bus_clk), .w_rst(rst), .w_room(e_room), .w_valid(e_valid),

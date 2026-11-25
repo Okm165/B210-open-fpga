@@ -29,7 +29,12 @@
 // reg_wdata); the addressed block puts the value on reg_rdata in the next
 // cycle (every block drives 0 when not addressed, the top ORs them).
 //
-// Time: CLK_MHZ cycles per microsecond; WAIT and POLL count cycles of clk.
+// Time: CLK_MHZ cycles per microsecond (CLK_MHZ <= 127). WAIT and POLL count
+// microseconds with a prescaler restarted at the operation's start: no
+// multiplier on the 100 MHz path. A WAIT of b us occupies exactly
+// b * CLK_MHZ cycles (and 2 for b = 0): its load and exit cycles are taken
+// out of the first microsecond (the prescaler starts at 2). POLL's limit,
+// arg ms = arg * 1000 us = arg * 1024 - arg * 16 - arg * 8 us.
 `default_nettype none
 
 module ctrl #(
@@ -69,7 +74,9 @@ module ctrl #(
   reg [7:0]  status = 0;
   reg [31:0] value = 0;          // result data
   reg [15:0] poll_addr = 0;      // the previous READ's address
-  reg [39:0] timer = 0;          // cycles left (WAIT, POLL): 2^40 cycles = 3 h at 100 MHz
+  reg [31:0] us = 0;             // microseconds left (WAIT, POLL)
+  reg [6:0]  pre = 0;            // cycles into the current microsecond
+  wire       tick = pre == CLK_MHZ - 1;
   reg [1:0]  phase = 0;          // within EXEC
 
   wire [15:0] length = h0[15:0];
@@ -137,19 +144,20 @@ module ctrl #(
             default: begin value <= reg_rdata; state <= RESULT_A; end
           endcase
           OP_WAIT: case (phase)   // b * CLK_MHZ cycles in all
-            0: begin timer <= b * CLK_MHZ; phase <= 1; end
-            default: if (timer > 2) timer <= timer - 1; else state <= RESULT_A;
+            0: begin us <= b; pre <= 2; phase <= 1; end
+            default: if (us == 0) state <= RESULT_A;
+                     else begin pre <= tick ? 7'd0 : pre + 1; if (tick) us <= us - 1; end
           endcase
           default: begin          // POLL: read, compare; again until a match or the time is up
-            if (phase != 0 && timer != 0) timer <= timer - 1;
+            if (phase != 0) begin pre <= tick ? 7'd0 : pre + 1; if (tick && us != 0) us <= us - 1; end
             case (phase)
-              0: begin timer <= a[23:16] * 1000 * CLK_MHZ; phase <= 1; end
+              0: begin us <= {a[23:16], 10'd0} - {a[23:16], 4'd0} - {a[23:16], 3'd0}; pre <= 0; phase <= 1; end
               1: begin reg_re <= 1; reg_addr <= poll_addr; phase <= 2; end
               2: phase <= 3;
               default: begin
                 value <= reg_rdata;
                 if ((reg_rdata[15:0] & b[31:16]) == b[15:0]) state <= RESULT_A;
-                else if (timer == 0) begin status <= ST_TIMEOUT; state <= RESULT_A; end
+                else if (us == 0) begin status <= ST_TIMEOUT; state <= RESULT_A; end
                 else phase <= 1;
               end
             endcase
