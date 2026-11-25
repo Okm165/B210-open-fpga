@@ -227,11 +227,13 @@ bits matches a plain-logic multiplier cycle for cycle.
 
 ## Known limitations
 
-- No hold-time analysis has been run on any image: the engine checks
-  minimum delays only when asked to fix them (`-o hold-fix`), which this
-  flow does not do.  The capture registers that matter for hold are in the
-  I/O blocks (FX3 bus) or behind a fixed input delay (AD9361), and both
-  were measured on the board; inside the fabric nothing has been checked.
+- Hold time is checked by the engine's final timing analysis (it reports
+  "Hold/min time violations" when there are any; no routed log of this
+  design has one), but within limits: its model has no clock-tree skew
+  ("no clock delays measured for xc7k325t"), and paths between clocks it
+  treats as unrelated are not checked for hold at all.  The capture
+  registers where hold matters most are in the I/O blocks (FX3 bus) or
+  behind a fixed input delay (AD9361), and both were measured on the board.
 - The MMCM is written with `COMPENSATION = INTERNAL` where the source asks
   for `ZHOLD` (the engine writes the same bit pattern for both); the vendor
   image has `ZHOLD`.  The bus and forwarded clocks come from the same MMCM,
