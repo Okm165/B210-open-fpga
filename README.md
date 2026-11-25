@@ -76,7 +76,7 @@ build/             generated output, ignored by git
 | Script | What it measures |
 | --- | --- |
 | `scripts/hw_gate.sh <bin>` | the full acceptance, in order: build identity, raw FX3 path, stock UHD init and streaming, interface eye, sample content, DSP against RTL, bus margin, throughput. Where a number depends on the board or the host it is measured on the vendor image in the same run |
-| `scripts/fx3_raw_load.py <bin> --peek N` | FX3 reboot, FPGA load, raw control transactions and an 8 MB drain, without UHD |
+| `scripts/fx3_raw_load.py <bin> --regs` | FX3 reboot, FPGA load, then the control path through USB, FPGA registers (written and read back) and the AD9361 (product ID), without UHD; `--peek N` repeats control transactions, the default 8 MB drain moves data |
 | `scripts/eyescan.sh <bin> [rate]` | the AD9361 interface eye: UHD's codec loopback over every clock/data delay, with the margin at UHD's fixed operating point |
 | `scripts/sample_check.py <bin> --prbs` | receive path, bit exact: every sample of the AD9361's pseudo-random test sequence is checked, on both channels and for their alignment |
 | `scripts/sample_check.py <bin> --tone` / `--loopback F` | receive and transmit paths, spectral: level, SFDR, SINAD, DC and channel phase relation of a known tone, optionally against a reference image (`--ref`) |
@@ -87,6 +87,24 @@ build/             generated output, ignored by git
 
 UHD only tests the image named in `fpga=<path>` of its device arguments; a
 plain UHD call loads the vendor image from `UHD_IMAGES_DIR`.
+
+## How the board is controlled
+
+One USB 3 cable carries everything; the layers, from the host down:
+
+| Layer | Carried by | What is set there | Seen and tested by |
+| --- | --- | --- | --- |
+| FX3 | USB control requests to the FX3 firmware (stock Ettus) | firmware load, FPGA load, FX3 reset | `fx3_raw_load.py` (every step) |
+| FPGA local registers | control packets on USB endpoints 4 (out) and 8 (in), local address 0x40 | reference and time source, MIMO mode and AD9361 reset, front-end switches, SPI master | `fx3_raw_load.py --regs`: readback registers and a write read back |
+| AD9361 | the FPGA's SPI master | rates, frequencies, gains, filters, interface delays | `fx3_raw_load.py --regs`: product ID; UHD for everything else |
+| Radio cores (two) | control packets to addresses 0x10 and 0x20, in the radio clock domain | DSP: tuning, decimation and interpolation, scaling; stream commands, packet size, time | UHD's register loopback (gate step `init`), `dsp_exact.py` |
+| Sample streams | USB endpoints 6 (in) and 2 (out), 64-bit VITA packets | — | `benchmark_rate`, `sample_check.py`, `rx_capture.py` |
+| Host side | UHD device arguments | USB buffer pool (`num_recv_frames`, `recv_frame_size`, ...), wire format (`sc16`, `sc12`, `sc8`) | gate step `throughput` |
+
+The FPGA side of every register UHD 3.15 writes is implemented and none is
+ignored on the streaming path (an audit of every address against
+`b200_impl.cpp` and the RTL); the radio cores answer only once UHD has
+started the AD9361, whose data clock is their clock.
 
 ## Where the measurements are
 

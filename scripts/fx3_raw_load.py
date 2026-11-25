@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """fx3_raw_load.py - load and exercise an FPGA image with no UHD involved.
 
-  fx3_raw_load.py <fpga.bin> [--peek N] [--drain BYTES] [--echo N] [--fw usrp_b200_fw.hex]
+  fx3_raw_load.py <fpga.bin> [--regs] [--peek N] [--drain BYTES] [--echo N] [--fw usrp_b200_fw.hex]
 
 1. reboot the FX3 into its USB bootloader (vendor request 0x99) and download
    the stock firmware, so every image starts from the same FX3 state;
 2. configure the FPGA through the stock firmware's vendor requests;
-3. --peek N: N control transactions on EP4 OUT / EP8 IN against the design's
+3. --regs: the control path through every layer it has, printed as it is
+   read: the USB link and the FX3's view of the FPGA; the FPGA's readback
+   registers (signature, compatibility number, radio count, reference lock);
+   a write and read-back of an FPGA setting register; and the AD9361's
+   product ID, read through the FPGA's SPI master exactly as UHD reads it;
+   --peek N: N control transactions on EP4 OUT / EP8 IN against the design's
    local register block; each must come back with its own sequence number and
    the 0xACE0BA5E signature (default 0: diagnostic designs have no registers);
 4. --drain BYTES: write that much to the data endpoint EP2 OUT (default 8 MB).
@@ -127,6 +132,65 @@ def load_fpga(dev, path):
     print(f'loaded {path} ({len(data)} bytes)')
 
 
+def control(dev, seq, addr, data):
+    """One register write to the design's local block (SID 0x40); returns the
+    64-bit readback word the answer carries, or None without an answer.
+    The answer to a write of SR_READBACK carries the readback word selected."""
+    header = 0x80000000 | ((seq & 0xFFF) << 16) | 16
+    dev.write(CTRL_OUT_EP, struct.pack('<4I', header, SID_LOCAL, addr, data), 1000)
+    try:
+        raw = bytes(dev.read(CTRL_IN_EP, 512, 500))
+    except usb.core.USBError:
+        return None
+    words = struct.unpack('<%dI' % (len(raw) // 4), raw[:len(raw) // 4 * 4])
+    if len(words) != 6 or (words[0] >> 16) & 0xFFF != seq & 0xFFF:
+        return None
+    return (words[4] << 32) | words[5]
+
+
+# The local registers of b200_core.v and UHD's b200_regs.hpp
+SR_SPI_DIV, SR_SPI_CTRL, SR_SPI_DATA, SR_GPSDO_ST = 8, 9, 10, 40
+RB_COMPAT, RB_SPI, RB_STATUS, RB_LOCK = 0, 1, 2, 3
+
+
+def regs(dev):
+    """Print the control surface layer by layer; True if every check held."""
+    speed = {1: '1.5 Mb/s', 2: '12 Mb/s', 3: '480 Mb/s', 4: '5 Gb/s (USB 3)', 5: '10 Gb/s'}
+    print(f'USB     link {speed.get(dev.speed, dev.speed)}, product "{product(dev)}", '
+          f'FX3 reports the FPGA running: {dev.ctrl_transfer(VIN, GET_STATUS, 0, 0, 1)[0] == RUNNING}')
+    seq = iter(range(1, 4096))
+    rb = lambda k: control(dev, next(seq), SR_READBACK, k)
+    ok = True
+    compat = rb(RB_COMPAT)
+    status = rb(RB_STATUS)
+    lock = rb(RB_LOCK)
+    if None in (compat, status, lock):
+        print('FPGA    no answer on the control endpoint')
+        return False
+    signature_ok = compat >> 32 == SIGNATURE
+    radios = (status >> 40) & 0xFF
+    print(f'FPGA    signature {compat >> 32:08x} ({"right" if signature_ok else "WRONG"}), '
+          f'compatibility {(compat >> 16) & 0xFFFF}.{compat & 0xFFFF}, {radios} radio(s), '
+          f'reference PLL lock {status & 1}, AD9361 lock pins {lock & 3:02b}')
+    ok &= signature_ok and radios == 2
+    for value in (0xA5, 0x5A, 0x00):
+        control(dev, next(seq), SR_GPSDO_ST, value)
+        back = (rb(RB_STATUS) or 0) >> 32 & 0xFF
+        ok &= back == value
+        print(f'FPGA    setting register {SR_GPSDO_ST} <- {value:#04x}, reads back {back:#04x}')
+    # AD9361 product ID (register 0x037, upper five bits 00001 for the AD9361),
+    # read as UHD does: 1 MHz SPI, slave 0, 24 bits, data out on the falling edge
+    control(dev, next(seq), SR_SPI_DIV, 49)
+    control(dev, next(seq), SR_SPI_CTRL, 0x80000000 | (24 << 24) | 1)
+    control(dev, next(seq), SR_SPI_DATA, (0x037 << 8) << 8)
+    product_id = (rb(RB_SPI) or 0) & 0xFF
+    id_ok = product_id & 0xF8 == 0x08
+    ok &= id_ok
+    print(f'AD9361  product ID {product_id:#04x} through the FPGA SPI master '
+          f'({"an AD9361" if id_ok else "NOT an AD9361"})')
+    return ok
+
+
 def peek(dev, count):
     """count readback transactions; returns how many answered correctly."""
     try:
@@ -236,6 +300,7 @@ def main():
     ap.add_argument('fpga')
     ap.add_argument('--fw', default=os.path.join(os.environ.get('UHD_IMAGES_DIR', '/usr/share/uhd/images'),
                                                  'usrp_b200_fw.hex'))
+    ap.add_argument('--regs', action='store_true')
     ap.add_argument('--peek', type=int, default=0)
     ap.add_argument('--drain', type=int, default=None, help='default 8 MB, or none with --echo')
     ap.add_argument('--echo', type=int, default=0)
@@ -249,6 +314,8 @@ def main():
         usb.util.claim_interface(dev, interface)
     load_fpga(dev, a.fpga)
     ok = True
+    if a.regs:
+        ok &= regs(dev)
     if a.peek:
         ok &= peek(dev, a.peek) == a.peek
     if a.echo:

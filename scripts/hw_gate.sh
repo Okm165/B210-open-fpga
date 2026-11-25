@@ -11,8 +11,11 @@
 #               exactly these bytes: the full design, the board constraints,
 #               all three clocks and every clock-domain crossing meeting
 #               their constraints.  It is not the vendor image.
-#   raw         FX3 reboot, FPGA load, 64 control transactions, 8 MB drain,
-#               with no UHD involved (scripts/fx3_raw_load.py)
+#   raw         FX3 reboot, FPGA load, the control path through every layer
+#               (FPGA readback registers, a register written and read back,
+#               the AD9361's product ID over the FPGA's SPI master), 64
+#               control transactions and an 8 MB drain, with no UHD involved
+#               (scripts/fx3_raw_load.py)
 #   init        stock UHD loads THIS image and initialises both radio cores
 #               (register loopback on each; UHD's codec loopback test raises
 #               an error when it fails), then streams both channels at
@@ -125,7 +128,7 @@ N_CROSS=$(grep -c "^timing   crossing .*PASS" "$RECORD" || true)
 ! grep -q "uncommitted" "$RECORD" || fail identity "built from uncommitted sources: commit them and rebuild"
 
 echo "== raw control and data path, no UHD =="
-python3 scripts/fx3_raw_load.py "$IMG" --peek 64 > "$OUT/01-raw.txt" 2>&1 \
+python3 scripts/fx3_raw_load.py "$IMG" --regs --peek 64 > "$OUT/01-raw.txt" 2>&1 \
   || { cat "$OUT/01-raw.txt"; fail raw "see $OUT/01-raw.txt"; }
 cat "$OUT/01-raw.txt"
 
