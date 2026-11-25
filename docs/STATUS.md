@@ -20,29 +20,59 @@ image on the same board and host by `scripts/hw_gate.sh`:
 
 ## Measured on our image
 
-Build of 24 Nov (stock DSP chain, receive input delay, registered FIFO
-output; before the receive hand-over and the bus I/O registers below).
+Image `0479bb71` (25 Nov, source `1b4bd44`: stock DSP chains, receive input
+delay and hand-over, bus registers in the I/O blocks, Gray-code FIFO flags,
+PPS inputs wired as UHD expects, multipliers timed), gate run
+`build/hw-gate-20261125T*` on board 31B92DD.
 
 | Item | Our image | Vendor image |
 | --- | --- | --- |
-| Routed timing, bus clock (required 100 MHz) | 120.6 MHz | not reported by its tools here |
-| Routed timing, radio clock (required 61.44 MHz) | 72.7 MHz | |
+| Routed timing, bus clock (required 100 MHz) | 107.5 MHz | not reported by its tools here |
+| Routed timing, radio clock (required 61.44 MHz), multipliers included | 75.6 MHz | |
+| Clock-domain crossings (bounds 5 / 6 / 8 / 8 ns) | 1.8 / 3.0 / 3.8 / 4.0 ns | declared exclusive, unchecked |
+| Control path without UHD: FPGA registers written and read back, AD9361 product ID over SPI | right | same answers |
 | Stock UHD 4.9 init | image loaded, register loopback on both radio cores, codec loopback | same |
-| Receive eye margin at UHD's operating point (AD9361 delay steps of 0.24 ns) | 12 | 2 to 3 |
+| Receive eye margin at UHD's operating point (AD9361 delay steps of 0.24 ns) | 11 | 2 to 3 |
 | Transmit eye margin | 14 | 14 |
 | Receive test tone, 2 x 30.72 and 1 x 61.44 MS/s | -3.7 dBFS, SFDR 73.4 dB, SINAD 62.5 dB | identical |
-| Receive test tone through the x4 decimation | SFDR 81.7 / 81.2 dB | 81.4 / 81.2 dB |
-| Transmit tone through the AD9361 loopback, x4 | SFDR 83.8 / 82.4 dB, SINAD 73.6 / 73.0 dB | 84.4 / 81.0 dB, SINAD 62.8 / 62.6 dB |
-| Transmit tone, 2R2T x 30.72 MS/s, 12-bit wire format | SFDR 70.1 / 70.5 dB, SINAD 58.9 / 58.6 dB | 71.4 / 71.4 dB, SINAD 56.5 / 53.4 dB |
-| 2 RX x 30.72 MS/s for 10 s, quiet host | 614.4 M samples, none lost | same |
+| Transmit tone, 2R2T x 30.72 MS/s, 12-bit wire format | SFDR 69.8 / 70.3 dB, SINAD 59.0 / 58.6 dB | 71.4 / 71.4 dB, SINAD 56.5 / 53.4 dB |
+| Pseudo-random sequence, 8 sessions x 2 channels x 2.1 M samples | no error, channels aligned | bit errors, channels skewed in some sessions (below) |
+| DSP on the board against the RTL: decimation 1, 2, 3, 4, 8, 16; loopback x1, x4 | bit exact | bit exact apart from its bit errors |
+| FX3 bus with the forwarded clock 2.1 ns earlier and later | works at both | fails at 0 degree offset in our measurement |
 
 The transmit SINAD is better than the vendor's because the last transmit
 stage rounds to the 12-bit DAC word where the original truncates (a DC term
-of -67 dBFS in the vendor image).
+of about -67 dBFS in the vendor image).
 
-Not yet measured on a quiet host: the other three throughput points. The
-host is shared; while other jobs load it, the vendor image itself loses
-samples and the gate reports "inconclusive".
+### Throughput
+
+On a quiet host both images stream every point without loss: our r2 image
+did 2R2T x 30.72 MS/s in the 12-bit format and 2 RX x 30.72 MS/s for 10 s
+with nothing dropped, between clean vendor runs, and with the CPU pressure
+under 1 % neither image lost anything at 245 MB/s.
+
+This host is shared, and under load both images lose samples at the same
+rate: in 12 alternating runs of each at 2 RX x 30.72 MS/s (245 MB/s, deep
+USB buffers, CPU pressure 1 to 65 %) each image lost samples in 6.  In the
+gate run of image `0479bb71` our image was clean in 4 of 5 runs and the
+vendor's in 6 of 10; the only run in which ours lost samples had vendor
+losses on both sides.  The gate's rule (two runs of ours, each between two
+clean vendor runs) was met once of the two times needed, so its verdict is
+"inconclusive", not a pass.  Nothing in the FPGA limits this: the bus logic
+is cycle-for-cycle the vendor's, the FIFOs are as deep, and the loss tracks
+the host's load on both images.  What remains is host-side and needs root:
+all USB completions are handled on one CPU, which any other job can
+delay.
+
+### Board indicators
+
+`src/top/b200_leds.v` (built after the image above, simulated in eleven
+situations, not yet seen on the board): on the RF port LEDs green is a
+receive flow and amber a transmit flow, both shimmering at the sample rate,
+red only an overflow, underflow or late packet on that port; CLK green with
+the AD9361 clock running and a blink at each PPS, red with the FPGA's clocks
+unlocked; USR green per host control packet, red for 2 s after any data
+loss; STATUS blue heartbeat.
 
 ## What the reference image gets wrong
 
