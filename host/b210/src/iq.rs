@@ -8,9 +8,47 @@
 //! them) can read one channel without knowing the stream's channel mask.
 //! The file name, not the length, identifies the channel.
 
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+
+/// Full scale of the codes: 12-bit two's complement, -2048 ..= 2047. Both
+/// wire formats carry 12-bit codes (sc16 has them in its top 12 bits), so a
+/// capture file always holds codes in this range.
+pub const FULL_SCALE: f64 = 2048.0;
+
+/// What a capture file holds, kept beside it as `<file stem>.toml` so a
+/// tool reading the file needs no flags to interpret it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Meta {
+    /// sample times per second
+    pub rate_hz: f64,
+    /// channel number on the board
+    pub channel: usize,
+    /// rx source register setting the capture was taken with
+    pub source: String,
+}
+
+/// The sidecar of a capture file: same path, extension `.toml`.
+pub fn meta_path(file: &Path) -> PathBuf {
+    file.with_extension("toml")
+}
+
+pub fn write_meta(file: &Path, m: &Meta) -> io::Result<()> {
+    let text = toml::to_string(m).map_err(io::Error::other)?;
+    std::fs::write(meta_path(file), text)
+}
+
+/// The sidecar, or None when there is none (a file from elsewhere).
+pub fn read_meta(file: &Path) -> io::Result<Option<Meta>> {
+    match std::fs::read_to_string(meta_path(file)) {
+        Ok(t) => toml::from_str(&t).map(Some).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
 
 /// The file of channel `c` for a capture prefix `prefix`: `prefix_ch<c>.raw`
 /// with a trailing `.raw` of the prefix replaced, so `cap.raw` gives
@@ -72,10 +110,10 @@ impl Stats {
         // interleaved I and Q: two values per sample time
         Stats { min, max, rms: (sum / samples.len() as f64).sqrt() }
     }
-    /// Fraction of the codes at or beyond `full_scale * 0.999`, i.e. a
-    /// clipped capture. Zero for a capture that fits.
-    pub fn clipped(&self, full_scale: f64) -> bool {
-        self.min as f64 <= -full_scale * 0.999 || self.max as f64 >= full_scale * 0.999
+    /// Some I or Q value reached a code limit (-2048 or 2047): the
+    /// converter may have saturated.
+    pub fn at_full_scale(&self) -> bool {
+        self.min <= -2048 || self.max >= 2047
     }
 }
 
@@ -98,8 +136,8 @@ mod tests {
         let st = Stats::of(&s);
         assert_eq!((st.min, st.max), (-4, 3));
         assert!((st.rms - 2.5).abs() < 1e-12);
-        assert!(!st.clipped(2048.0));
-        assert!(Stats::of(&[2047, -2048]).clipped(2048.0));
+        assert!(!st.at_full_scale());
+        assert!(Stats::of(&[2047, 0]).at_full_scale() && Stats::of(&[0, -2048]).at_full_scale());
     }
 
     #[test]
@@ -111,6 +149,12 @@ mod tests {
         assert_eq!(read(&p).unwrap(), vec![1, -2, 300, -4000]);
         std::fs::write(&p, [0u8; 6]).unwrap();
         assert!(read(&p).is_err(), "6 bytes is not whole I/Q pairs");
+        let m = Meta { rate_hz: 30.72e6, channel: 1, source: "pattern".into() };
+        write_meta(&p, &m).unwrap();
+        assert_eq!(read_meta(&p).unwrap(), Some(m));
+        assert_eq!(read_meta(&dir.join("none.raw")).unwrap(), None);
+        std::fs::write(meta_path(&p), "rate_hz = 1\nbogus = 2\n").unwrap();
+        assert!(read_meta(&p).is_err(), "unknown keys are rejected");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

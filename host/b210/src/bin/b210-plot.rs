@@ -1,276 +1,352 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// b210-plot - one capture file, one channel, in the terminal.
+// b210-plot - one channel of a capture, analysed and drawn in the terminal.
 //
-//   b210-plot cap_ch0.raw --rate 30.77e6                  # spectrum + I/Q
-//   b210-plot cap_ch0.raw --view spectrum --fft 65536     # zoom FFT: finer bins
-//   b210-plot cap_ch0.raw --lo 1e5 --hi 1e6               # zoom in frequency
-//   b210-plot cap_ch0.raw --t0 0.1 --t1 0.2 --view time   # zoom in time
+//   b210-plot cap_ch0.raw                          # every view
+//   b210-plot cap_ch0.raw --view report            # the numbers and findings
+//   b210-plot cap_ch0.raw --view spectrum --lo -1e6 --hi 1e6   # zoom: the FFT
+//                                                  # grows so the band has bins
+//   b210-plot cap_ch1.raw --view time,iq --t0 0.5  # waveform at 0.5 s
 //
-// Two views of the same file, both in physical units:
+// The file is one channel of interleaved i16 I, Q (12-bit codes) as written
+// by `b210 capture`; its sidecar `<stem>.toml` gives the rate (--rate
+// overrides it, and is needed for a file without one). All levels are dBFS:
+// 0 dBFS is a full-scale complex tone, |I + jQ| = 2048 (b210::dsp).
 //
-//   spectrum  Welch-averaged power of interleaved I/Q, Hann window, one
-//             segment of --fft points (a power of two). A bin is
-//             rate/--fft Hz wide; --lo/--hi select the bins shown, so
-//             "zoom FFT" = more points (finer bins) plus the band you want.
-//             The vertical axis is dB relative to the strongest bin, which
-//             is 0 dB by construction; --range-db sets the floor.
-//   time      I and Q against time, min/max per terminal column over the
-//             --t0/--t1 seconds (the peak envelope, so no sample is hidden
-//             by decimation).
+// Views (--view takes a comma list):
+//   report     level, DC, I/Q balance, tone SNR/SINAD/SFDR/ENOB, noise floor,
+//              spurs, and findings with causes (b210::quality)
+//   spectrum   two-sided power spectrum, -rate/2 .. +rate/2, dBFS per bin,
+//              peak hold per column so a narrow tone is never lost
+//   waterfall  the spectrum against time, one row per slice of the interval
+//   time       I and Q against time over --span seconds, per-column min..max
+//   hist       distribution of the I and Q codes: clipping, DC, missing codes
+//   iq         I against Q (constellation): circle, ellipse, line or blob
 //
-// The drawing is braille (2x4 dots per cell), so no graphics library, no
-// display and no file: stdout is the plot. --width/--height are in cells.
+// The drawing is braille (2 x 4 dots per character cell) with labelled
+// axes; --width/--height are in cells.
 
 use anyhow::{bail, Context, Result};
-use b210::{dsp, iq};
-use clap::Parser;
+use b210::{dsp, iq, quality};
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
+const FS: f64 = iq::FULL_SCALE;
+
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+enum View { All, Report, Spectrum, Waterfall, Time, Hist, Iq }
+
 #[derive(Parser)]
+#[command(about = "Analyse and draw one channel of a b210 capture")]
 struct Cli {
-    /// one channel, as written by `b210 capture` (interleaved i16 I, Q)
+    /// one channel, interleaved i16 I, Q (`b210 capture` writes <prefix>_chN.raw)
     file: PathBuf,
-    /// sample rate of the capture, Hz
-    #[arg(long, default_value_t = 30.72e6)]
-    rate: f64,
-    /// spectrum, time or both
-    #[arg(long, default_value = "both")]
-    view: String,
-    /// spectrum points per segment: a power of two. Resolution = rate / fft.
-    #[arg(long, default_value_t = 4096)]
-    fft: usize,
-    /// lowest frequency shown, Hz (default 0)
+    /// sample rate, Hz (default: from the capture's .toml sidecar)
     #[arg(long)]
+    rate: Option<f64>,
+    /// views to show, comma separated
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "all")]
+    view: Vec<View>,
+    /// FFT points per segment, a power of two (default: 4096, or what a
+    /// --lo/--hi zoom needs for 4 bins per plotted dot)
+    #[arg(long)]
+    fft: Option<usize>,
+    /// lowest frequency shown, Hz (may be negative; default -rate/2)
+    #[arg(long, allow_hyphen_values = true)]
     lo: Option<f64>,
-    /// highest frequency shown, Hz (default rate / 2)
-    #[arg(long)]
+    /// highest frequency shown, Hz (default +rate/2)
+    #[arg(long, allow_hyphen_values = true)]
     hi: Option<f64>,
-    /// dB below the strongest bin at the bottom of the plot
-    #[arg(long, default_value_t = 80.0)]
+    /// top of the dB axis, dBFS
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    top_db: f64,
+    /// dB from the top of the axis to its bottom
+    #[arg(long, default_value_t = 110.0)]
     range_db: f64,
-    /// start of the analysed interval, seconds
+    /// start of the analysed interval, s
     #[arg(long, default_value_t = 0.0)]
     t0: f64,
-    /// end of the analysed interval, seconds (default: end of file)
+    /// end of the analysed interval, s (default: end of file)
     #[arg(long)]
     t1: Option<f64>,
-    /// width of the I/Q plot in seconds (spectrum uses t0..t1)
-    #[arg(long, default_value_t = 2e-3)]
-    time_span: f64,
-    /// plot width in cells (2 dots each)
+    /// window of the time view, s, from --t0
+    #[arg(long, default_value_t = 100e-6)]
+    span: f64,
+    /// plot width in character cells
     #[arg(long, default_value_t = 100)]
     width: usize,
-    /// plot height in cells (4 dots each)
-    #[arg(long, default_value_t = 18)]
+    /// plot height in character cells
+    #[arg(long, default_value_t = 14)]
     height: usize,
 }
 
 fn main() -> Result<()> {
     let a = Cli::parse();
-    let s = iq::read(&a.file).with_context(|| format!("{}", a.file.display()))?;
-    if s.len() < 64 {
-        bail!("{}: {} samples is too short to plot", a.file.display(), s.len() / 2);
-    }
-    if !a.rate.is_finite() || a.rate <= 0.0 {
-        bail!("--rate must be positive");
-    }
-    if a.width < 10 || a.height < 4 {
-        bail!("--width >= 10, --height >= 4");
+    let s = iq::read(&a.file).with_context(|| a.file.display().to_string())?;
+    let meta = iq::read_meta(&a.file).with_context(|| iq::meta_path(&a.file).display().to_string())?;
+    let rate = match (a.rate, &meta) {
+        (Some(r), _) => r,
+        (None, Some(m)) => m.rate_hz,
+        (None, None) => bail!("{}: no sidecar {} - give --rate", a.file.display(), iq::meta_path(&a.file).display()),
+    };
+    if !(rate.is_finite() && rate > 0.0) || a.width < 20 || a.height < 4 || a.range_db <= 0.0 {
+        bail!("--rate > 0, --width >= 20, --height >= 4, --range-db > 0");
     }
     let frames = s.len() / 2;
-    let seconds = frames as f64 / a.rate;
-    let st = iq::Stats::of(&s);
-    // a capture of 12-bit codes never leaves +-2048; sc16 can use the full
-    // 16-bit range. Clipping is judged against whichever applies.
-    let fs = if st.min >= -2048 && st.max <= 2048 { 2048.0 } else { 32768.0 };
-    println!(
-        "{}: {} sample times, {:.6} s at {:.3} MS/s; I/Q min {} max {} rms {:.1}{}",
-        a.file.display(),
-        frames,
-        seconds,
-        a.rate / 1e6,
-        st.min,
-        st.max,
-        st.rms,
-        if st.clipped(fs) { " (CLIPPED)" } else { "" }
-    );
-
-    let i0 = ((a.t0 * a.rate) as usize).min(frames.saturating_sub(64));
-    let i1 = a.t1.map(|t| (t * a.rate) as usize).unwrap_or(frames).min(frames);
-    if i1 <= i0 + 16 {
-        bail!("--t0/--t1 select {} samples: need at least 16", i1.saturating_sub(i0));
+    let i0 = (a.t0 * rate) as usize;
+    let i1 = a.t1.map_or(frames, |t| (t * rate) as usize).min(frames);
+    if i1 < i0 + 64 {
+        bail!("--t0/--t1 select {} sample times of {frames}: need at least 64", i1.saturating_sub(i0));
     }
-
-    match a.view.as_str() {
-        "spectrum" => spectrum(&s[2 * i0..2 * i1], &a)?,
-        "time" => {
-            // --time-span is the window when --t1 is not given
-            let n = ((a.time_span * a.rate) as usize).max(16);
-            let end = a.t1.map(|_| i1).unwrap_or((i0 + n).min(i1));
-            time(&s[2 * i0..2 * end], &a)?
+    let x = &s[2 * i0..2 * i1];
+    let (lo, hi) = (a.lo.unwrap_or(-rate / 2.0).max(-rate / 2.0), a.hi.unwrap_or(rate / 2.0).min(rate / 2.0));
+    if hi <= lo {
+        bail!("--lo {lo} must be below --hi {hi}, both within +-rate/2");
+    }
+    let n = fft_size(a.fft, lo, hi, rate, a.width, i1 - i0)?;
+    println!("{}: {} sample times = {:.6} s at {:.6} MS/s{}; analysing {:.6} .. {:.6} s",
+             a.file.display(), frames, frames as f64 / rate, rate / 1e6,
+             meta.as_ref().map_or(String::new(), |m| format!(", channel {}, source {}", m.channel, m.source)),
+             i0 as f64 / rate, i1 as f64 / rate);
+    let views: Vec<View> = if a.view.contains(&View::All) {
+        vec![View::Report, View::Spectrum, View::Waterfall, View::Time, View::Hist, View::Iq]
+    } else { a.view.clone() };
+    let g = Geometry { width: a.width, height: a.height, lo, hi, top: a.top_db, bottom: a.top_db - a.range_db };
+    for v in views {
+        println!();
+        match v {
+            View::Report => report(x, rate, n)?,
+            View::Spectrum => spectrum(x, rate, n, &g)?,
+            View::Waterfall => waterfall(x, rate, n, &g),
+            View::Time => time(&x[..2 * ((a.span * rate) as usize).clamp(16, i1 - i0)], rate, &g),
+            View::Hist => hist(x, &g),
+            View::Iq => constellation(x, &g),
+            View::All => unreachable!(),
         }
-        "both" => {
-            spectrum(&s[2 * i0..2 * i1], &a)?;
-            // the waveform needs far less time than the spectrum: the first
-            // --time-span of the same interval, so both describe one moment
-            let n = ((a.time_span * a.rate) as usize).max(16).min(i1 - i0);
-            println!();
-            time(&s[2 * i0..2 * (i0 + n)], &a)?;
-        }
-        v => bail!("--view: spectrum, time or both, not {v}"),
     }
     Ok(())
 }
 
-/// Welch power, dB relative to the peak, over [lo, hi], peak-hold per column.
-fn spectrum(samples: &[i16], a: &Cli) -> Result<()> {
-    let n = a.fft.next_power_of_two();
-    if n != a.fft {
-        bail!("--fft {} is not a power of two (use {n})", a.fft);
+/// The FFT size: given, or 4096, or for a zoom the power of two that puts 4
+/// bins under each plotted dot column (2 per cell): n = rate / (span / (8 w)).
+/// Never more than the interval holds, never more than 2^20.
+fn fft_size(given: Option<usize>, lo: f64, hi: f64, rate: f64, width: usize, frames: usize) -> Result<usize> {
+    let fit = 1usize << (usize::BITS - 1 - frames.leading_zeros());
+    let n = match given {
+        Some(n) if !n.is_power_of_two() || n < 16 => bail!("--fft {n}: a power of two >= 16"),
+        Some(n) => n,
+        None if hi - lo < rate * 0.999 => ((rate / ((hi - lo) / (8 * width) as f64)) as usize).next_power_of_two().clamp(4096, 1 << 20),
+        None => 4096,
+    };
+    Ok(n.min(fit))
+}
+
+struct Geometry { width: usize, height: usize, lo: f64, hi: f64, top: f64, bottom: f64 }
+
+fn mhz(f: f64) -> String { format!("{:+.4} MHz", f / 1e6) }
+
+// -- report --------------------------------------------------------------------------------
+
+fn report(x: &[i16], rate: f64, n: usize) -> Result<()> {
+    let r = quality::analyze(x, rate, n).context("too short to analyse")?;
+    let l = &r.level;
+    let b = &r.balance;
+    println!("REPORT  ({} sample times, {}-point spectrum)", r.frames, r.fft);
+    println!("  level     rms {:.1} dBFS, peak {:.1} dBFS, crest factor {:.1} dB, clipped {:.4}% of values",
+             l.rms_dbfs, l.peak_dbfs, l.crest_db, 100.0 * l.clipped);
+    println!("  DC        I {:+.2}, Q {:+.2} codes = {:.1} dBFS", l.dc_i, l.dc_q, l.dc_dbfs);
+    if b.circular {
+        println!("  balance   gain {:+.3} dB, phase {:+.3} deg -> image rejection {:.1} dB (I/Q correlation {:+.3})",
+                 b.gain_db, b.phase_deg, b.irr_db, b.rho);
+    } else {
+        println!("  balance   not measurable: I and Q correlation {:+.3} (a real-valued signal)", b.rho);
     }
-    // cap the work: 64 segments is plenty for a smooth floor and keeps a
-    // multi-second capture to 64 FFTs
-    let p = dsp::welch(samples, n, 64);
-    if p.iter().all(|v| *v == 0.0) {
-        bail!("capture is all zero or shorter than one --fft segment");
+    match &r.tone {
+        Some(t) => println!("  tone      {} at {:.2} dBFS: SNR {:.1} dB, SINAD {:.1} dB, SFDR {:.1} dBc, ENOB {:.2}, image {:.1} dBc",
+                            mhz(t.freq), t.dbfs, t.snr_db, t.sinad_db, t.sfdr_dbc, t.enob, t.image_dbc),
+        None => println!("  tone      none ({} dB above the floor needed)", 30),
     }
-    let db = dsp::relative_db(&p, -a.range_db);
-    let df = a.rate / n as f64;
-    let lo = a.lo.unwrap_or(0.0).max(0.0);
-    let hi = a.hi.unwrap_or(a.rate / 2.0).min(a.rate / 2.0);
-    if hi <= lo || !hi.is_finite() || !lo.is_finite() {
-        bail!("--lo {lo} Hz and --hi {hi} Hz: hi must be above lo and below rate/2");
+    println!("  floor     {:.1} dBFS per bin ({:.0} Hz) = {:.1} dBFS/Hz", r.floor_dbfs_bin, rate / r.fft as f64, r.floor_dbfs_hz);
+    for s in &r.spurs {
+        let unit = if r.tone.is_some() { "dBc" } else { "dBFS/bin" };
+        println!("  spur      {} {:7.1} {unit}  {:?}", mhz(s.freq), s.db, s.kind);
     }
-    let k0 = ((lo / df).floor() as usize).min(p.len() - 1);
-    let k1 = ((hi / df).ceil() as usize).clamp(k0 + 1, p.len());
-    let (peak_k, peak_db) = db.iter().enumerate().max_by(|x, y| x.1.total_cmp(y.1)).unwrap();
-    let peak_f = peak_k as f64 * df;
-    println!(
-        "spectrum: {} points/bin {:.3} Hz, {} bins in {:.6} .. {:.6} MHz, Welch over {} segments, Hann",
-        n, df, k1 - k0, lo / 1e6, hi / 1e6, (samples.len() / 2 / n).min(64)
-    );
-    println!("peak {:.6} MHz at {:.2} dB (0 dB = strongest bin), floor -{} dB", peak_f / 1e6, peak_db, a.range_db);
-    // peak-hold: the strongest bin in each column, so a narrow tone is not
-    // lost between columns
-    let cols = 2 * a.width;
-    let mut val = vec![-a.range_db; cols];
-    for (c, v) in val.iter_mut().enumerate() {
-        let k = k0 + ((k1 - k0) * c / cols);
-        let e = k0 + ((k1 - k0) * (c + 1) / cols);
-        *v = db[k..e.max(k + 1)].iter().cloned().fold(-a.range_db, f64::max);
+    println!("FINDINGS");
+    for (k, f) in quality::findings(&r).iter().enumerate() {
+        println!("  {}. {f}", k + 1);
     }
-    let mut cv = Canvas::new(a.width, a.height);
+    Ok(())
+}
+
+// -- spectrum, waterfall ------------------------------------------------------------------------
+
+/// The strongest bin's dBFS under each of `cols` equal frequency slices of
+/// [lo, hi]: peak hold, so a tone narrower than a column still shows.
+fn columns(sp: &dsp::Spectrum, lo: f64, hi: f64, cols: usize) -> Vec<f64> {
+    (0..cols).map(|c| {
+        let f0 = lo + (hi - lo) * c as f64 / cols as f64;
+        let f1 = lo + (hi - lo) * (c + 1) as f64 / cols as f64;
+        let (k0, k1) = (sp.bin(f0).min(sp.n() - 1), sp.bin(f1).min(sp.n() - 1));
+        let p = (k0..=k1.max(k0)).map(|k| sp.power[k]).fold(0.0, f64::max);
+        dsp::dbfs(p, FS)
+    }).collect()
+}
+
+fn spectrum(x: &[i16], rate: f64, n: usize, g: &Geometry) -> Result<()> {
+    let sp = dsp::welch(x, n, rate, 64).context("too short for a spectrum")?;
+    let mut cv = Canvas::new(g.width, g.height);
+    let val = columns(&sp, g.lo, g.hi, cv.dot_cols());
     for (c, v) in val.iter().enumerate() {
-        let y = db_to_row(*v, -a.range_db, 0.0, cv.dot_rows());
-        cv.dot(c, y);
+        let y = cv.row(*v, g.bottom, g.top);
+        cv.vline(c, y, cv.dot_rows() - 1);
     }
-    println!("0 dB = strongest bin (top); -{} dB floor (bottom)", a.range_db);
-    print!("{}", cv.render());
-    println!(
-        "  {:.6} MHz{:^width$}{:.6} MHz   ({:.3} MHz/div)",
-        lo / 1e6,
-        "",
-        hi / 1e6,
-        (hi - lo) / 1e6 / a.width as f64,
-        width = a.width.saturating_sub(20)
-    );
+    println!("SPECTRUM  {}-point Blackman-Harris, {} averages, bin {:.1} Hz, {} .. {}", sp.n(), sp.segments, sp.df(), mhz(g.lo), mhz(g.hi));
+    cv.print(&format!("{:.0} dBFS", g.top), &format!("{:.0}", (g.top + g.bottom) / 2.0), &format!("{:.0} dBFS", g.bottom),
+             &mhz(g.lo), &mhz(g.hi), "frequency");
+    let (k, v) = val.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+    let mut sorted = val.clone();
+    sorted.sort_by(f64::total_cmp);
+    println!("  peak {} at {:.1} dBFS/bin; median column {:.1} dBFS/bin",
+             mhz(g.lo + (g.hi - g.lo) * (k as f64 + 0.5) / val.len() as f64), v, sorted[sorted.len() / 2]);
+    println!("  read: height = power in one bin. A tone's power spreads over its main lobe, so a full-scale tone");
+    println!("  peaks at {:.1} dBFS/bin; noise spreads over all {} bins, so its floor sits {:.0} dB under its total",
+             dsp::peak_bin_db(), sp.n(), 10.0 * (sp.n() as f64).log10());
+    println!("  power (more points: lower floor, same tone). DC is the middle of a centred view; an I/Q image of");
+    println!("  a tone at +f appears at -f.");
     Ok(())
 }
 
-/// I and Q against time: min/max per column, the peak envelope.
-fn time(samples: &[i16], a: &Cli) -> Result<()> {
-    let frames = samples.len() / 2;
-    let span = frames as f64 / a.rate;
-    println!("time: {:.6} s, {} samples, {:.3} MS/s, peak envelope", span, frames, a.rate / 1e6);
-    let mut cv = Canvas::new(a.width, a.height);
-    let full = samples.iter().map(|v| (*v as i32).unsigned_abs()).max().unwrap_or(1).max(1) as f64;
-    for (name, q) in [("I", 0usize), ("Q", 1usize)] {
+fn waterfall(x: &[i16], rate: f64, n: usize, g: &Geometry) {
+    const SHADES: &[u8] = b" .:-=+*#%@";
+    let frames = x.len() / 2;
+    let rows = g.height;
+    let slice = frames / rows;
+    let nw = n.min(1 << (usize::BITS - 1 - slice.max(16).leading_zeros()));
+    println!("WATERFALL  {rows} slices of {:.3} ms, {nw}-point spectra, {} .. {}; shade {:.0} (' ') .. {:.0} dBFS ('@')",
+             slice as f64 / rate * 1e3, mhz(g.lo), mhz(g.hi), g.bottom, g.top);
+    for r in 0..rows {
+        let part = &x[2 * r * slice..2 * (r + 1) * slice];
+        let line: String = match dsp::welch(part, nw, rate, 8) {
+            Some(sp) => columns(&sp, g.lo, g.hi, g.width).iter().map(|d| {
+                let f = ((d - g.bottom) / (g.top - g.bottom)).clamp(0.0, 1.0);
+                SHADES[(f * (SHADES.len() - 1) as f64).round() as usize] as char
+            }).collect(),
+            None => String::new(),
+        };
+        println!("{:>8.3} ms |{line}|", r as f64 * slice as f64 / rate * 1e3);
+    }
+    println!("  read: time runs down. A steady tone is a vertical line; a line that comes and goes is an");
+    println!("  intermittent signal or a gap in the stream; a line that leans is a drifting frequency.");
+}
+
+// -- time, histogram, constellation ------------------------------------------------------------
+
+/// The axis half-range for codes: the next power of two above the peak, at
+/// most full scale, so small signals are visible and the label is exact.
+fn code_scale(x: &[i16]) -> f64 {
+    let peak = x.iter().map(|v| (*v as i32).unsigned_abs()).max().unwrap_or(1).max(1);
+    (peak as f64).log2().ceil().exp2().clamp(16.0, FS)
+}
+
+fn time(x: &[i16], rate: f64, g: &Geometry) {
+    let frames = x.len() / 2;
+    let full = code_scale(x);
+    println!("TIME  {:.3} us = {frames} sample times, scale +-{full:.0} codes (full scale +-2048)", frames as f64 / rate * 1e6);
+    for (name, q) in [("I", 0usize), ("Q", 1)] {
+        let mut cv = Canvas::new(g.width, g.height / 2 + 2);
         let cols = cv.dot_cols();
-        // min and max of the column, both drawn: the trace fills its range
         for c in 0..cols {
-            let i0 = frames * c / cols;
-            let i1 = (frames * (c + 1) / cols).max(i0 + 1);
-            let (mut lo, mut hi) = (i32::MAX, i32::MIN);
-            for k in i0..i1 {
-                let v = samples[2 * k + q] as i32;
-                lo = lo.min(v);
-                hi = hi.max(v);
-            }
-            let yl = value_to_row(lo as f64, -full, full, cv.dot_rows());
-            let yh = value_to_row(hi as f64, -full, full, cv.dot_rows());
-            for y in yl.min(yh)..=yl.max(yh) {
-                cv.dot(c, y);
+            let (a, b) = (frames * c / cols, (frames * (c + 1) / cols).max(frames * c / cols + 1));
+            let (lo, hi) = (a..b).map(|k| x[2 * k + q]).fold((i16::MAX, i16::MIN), |(l, h), v| (l.min(v), h.max(v)));
+            cv.vline(c, cv.row(hi as f64, -full, full), cv.row(lo as f64, -full, full));
+        }
+        cv.print(&format!("{name} +{full:.0}"), "0", &format!("-{full:.0}"), "0 us",
+                 &format!("{:.2} us", frames as f64 / rate * 1e6), "time");
+    }
+    println!("  read: each column is the min..max of the samples under it, so nothing is lost to decimation.");
+    println!("  A tone is a sine in both, Q a quarter period behind I for +f; flat tops at +-2048 are clipping.");
+}
+
+fn hist(x: &[i16], g: &Geometry) {
+    println!("HISTOGRAM  codes -2048 .. 2047, height log10(count)");
+    for (name, q) in [("I", 0usize), ("Q", 1)] {
+        let mut count = vec![0u64; 4096];
+        for p in x.as_chunks::<2>().0 { count[(p[q] as i32 + 2048) as usize] += 1; }
+        let mut cv = Canvas::new(g.width, g.height / 2 + 1);
+        let cols = cv.dot_cols();
+        let top = (count.iter().copied().max().unwrap_or(1) as f64 + 1.0).log10();
+        for c in 0..cols {
+            let n: u64 = count[4096 * c / cols..4096 * (c + 1) / cols].iter().sum();
+            if n > 0 {
+                cv.vline(c, cv.row((n as f64 + 1.0).log10(), 0.0, top), cv.dot_rows() - 1);
             }
         }
-        println!("{name}: +{full:.0}");
-        print!("{}", cv.render());
-        println!("{name}: -{full:.0}    (0 at the middle line, dot = column's min..max)");
-        cv.clear();
+        cv.print(&format!("{name} 10^{top:.1}"), "", "1", "-2048", "2047", "code");
+        let (first, last) = (count.iter().position(|c| *c > 0).unwrap_or(0), count.iter().rposition(|c| *c > 0).unwrap_or(0));
+        let missing = count[first..=last].iter().filter(|c| **c == 0).count();
+        let per_code = (x.len() / 2) as f64 / (last - first + 1) as f64;
+        println!("  {name}: codes {} .. {}, {} at -2048, {} at 2047{}", first as i32 - 2048, last as i32 - 2048,
+                 count[0], count[4095],
+                 if per_code >= 16.0 { format!(", {missing} codes never hit inside that range") } else { String::new() });
     }
-    Ok(())
+    println!("  read: a tone gives a bowl (most time near its peaks), noise a bell; a shifted centre is DC; spikes");
+    println!("  at the ends are clipping; codes never hit (with many samples per code) point at a converter fault.");
 }
 
-/// Map a dB value to a dot row: 0 dB at the top, `floor` dB at the bottom.
-fn db_to_row(db: f64, floor: f64, top: f64, rows: usize) -> usize {
-    let f = ((top - db) / (top - floor)).clamp(0.0, 1.0);
-    ((f * (rows.saturating_sub(1)) as f64).round() as usize).min(rows - 1)
+fn constellation(x: &[i16], g: &Geometry) {
+    let full = code_scale(x);
+    // a square in dots: height h cells = 4h dots, so width 2h cells = 4h dots
+    let h = g.height.max(6);
+    let mut cv = Canvas::new(2 * h, h);
+    let d = cv.dot_rows();
+    let stride = (x.len() / 2 / 200_000).max(1);
+    for p in x.as_chunks::<2>().0.iter().step_by(stride) {
+        let cx = ((p[0] as f64 + full) / (2.0 * full) * (d - 1) as f64).round() as usize;
+        cv.dot(cx, cv.row(p[1] as f64, -full, full));
+    }
+    for k in (0..d).step_by(4) { cv.dot(d / 2, k); cv.dot(k, d / 2); }
+    println!("I/Q  constellation, both axes +-{full:.0} codes, {} points", x.len() / 2 / stride);
+    cv.print(&format!("Q +{full:.0}"), "0", &format!("-{full:.0}"), &format!("I -{full:.0}"), &format!("+{full:.0}"), "I");
+    println!("  read: a clean tone is a circle centred on the cross; an ellipse or a tilted one is I/Q gain or phase");
+    println!("  imbalance; an off-centre circle is DC; a line through the centre is a real-valued signal; a fuzzy");
+    println!("  ring is noise, its thickness against the radius the SNR.");
 }
 
-/// Map a signed value to a dot row, `-full` at the bottom, `+full` at the top.
-fn value_to_row(v: f64, neg: f64, pos: f64, rows: usize) -> usize {
-    let f = ((v - neg) / (pos - neg)).clamp(0.0, 1.0);
-    (((1.0 - f) * (rows.saturating_sub(1)) as f64).round() as usize).min(rows - 1)
-}
+// -- braille canvas ---------------------------------------------------------------------------
 
-/// A braille canvas: each cell is 2 dots wide and 4 dots tall.
-struct Canvas {
-    cols: usize,
-    rows: usize,
-    bits: Vec<u8>,
-}
+struct Canvas { cols: usize, rows: usize, bits: Vec<u8> }
 
 impl Canvas {
-    fn new(cols: usize, rows: usize) -> Canvas {
-        Canvas { cols, rows, bits: vec![0; cols * rows] }
+    fn new(cols: usize, rows: usize) -> Canvas { Canvas { cols, rows, bits: vec![0; cols * rows] } }
+    fn dot_rows(&self) -> usize { 4 * self.rows }
+    fn dot_cols(&self) -> usize { 2 * self.cols }
+    /// The dot row of value v on an axis from `bottom` (last row) to `top`
+    /// (row 0), clamped.
+    fn row(&self, v: f64, bottom: f64, top: f64) -> usize {
+        let f = ((top - v) / (top - bottom)).clamp(0.0, 1.0);
+        (f * (self.dot_rows() - 1) as f64).round() as usize
     }
-    fn dot_rows(&self) -> usize {
-        self.rows * 4
-    }
-    fn dot_cols(&self) -> usize {
-        self.cols * 2
-    }
-    fn clear(&mut self) {
-        self.bits.fill(0);
-    }
-    /// Set one dot; x in dot columns, y in dot rows, y down.
     fn dot(&mut self, x: usize, y: usize) {
-        if x >= self.dot_cols() || y >= self.dot_rows() {
-            return;
-        }
-        // braille's 8 dots: left column 1,2,3,7; right column 4,5,6,8
-        let bit = match (y % 4, x % 2) {
-            (0, 0) => 0x01,
-            (1, 0) => 0x02,
-            (2, 0) => 0x04,
-            (3, 0) => 0x40,
-            (0, 1) => 0x08,
-            (1, 1) => 0x10,
-            (2, 1) => 0x20,
-            _ => 0x80,
-        };
-        self.bits[(y / 4) * self.cols + x / 2] |= bit;
+        if x >= self.dot_cols() || y >= self.dot_rows() { return; }
+        // braille dots: left column 1 2 3 7, right column 4 5 6 8
+        const BIT: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+        self.bits[(y / 4) * self.cols + x / 2] |= BIT[y % 4][x % 2];
     }
-    fn render(&self) -> String {
-        let mut out = String::with_capacity(self.rows * (self.cols * 3 + 1));
-        for r in 0..self.rows {
-            for c in 0..self.cols {
-                let b = self.bits[r * self.cols + c];
-                out.push(char::from_u32(0x2800 + b as u32).unwrap_or(' '));
-            }
-            out.push('\n');
+    fn vline(&mut self, x: usize, y0: usize, y1: usize) {
+        for y in y0.min(y1)..=y0.max(y1) { self.dot(x, y); }
+    }
+    fn render(&self) -> Vec<String> {
+        (0..self.rows).map(|r| (0..self.cols).map(|c| char::from_u32(0x2800 + self.bits[r * self.cols + c] as u32).unwrap()).collect()).collect()
+    }
+    /// The canvas with a labelled frame: y labels at the top, middle and
+    /// bottom rows, x labels under the left and right ends.
+    fn print(&self, ytop: &str, ymid: &str, ybot: &str, xl: &str, xr: &str, xname: &str) {
+        for (r, line) in self.render().iter().enumerate() {
+            let label = if r == 0 { ytop } else if r == self.rows / 2 { ymid } else if r == self.rows - 1 { ybot } else { "" };
+            println!("{label:>11} |{line}|");
         }
-        out
+        let gap = self.cols.saturating_sub(xl.len() + xr.len() + xname.len()) / 2;
+        println!("{:>11}  {xl}{:gap$}{xname}{:gap$}{xr}", "", "", "");
     }
 }
 
@@ -279,24 +355,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn braille_dots_and_rows_map_as_documented() {
+    fn braille_dots_map_as_documented() {
         let mut c = Canvas::new(1, 1);
         c.dot(0, 0);
-        assert_eq!(c.render(), "\u{2801}\n");
-        c.clear();
         c.dot(1, 3);
-        assert_eq!(c.render(), "\u{2880}\n");
-        // out of range is ignored, not a panic
-        c.dot(99, 99);
+        assert_eq!(c.render(), vec!["\u{2881}".to_string()]);
+        c.dot(9, 9); // outside: ignored
     }
 
     #[test]
-    fn db_and_value_rows_are_clamped_and_ordered() {
-        assert_eq!(db_to_row(0.0, -80.0, 0.0, 8), 0);
-        assert_eq!(db_to_row(-80.0, -80.0, 0.0, 8), 7);
-        assert_eq!(db_to_row(-200.0, -80.0, 0.0, 8), 7);
-        assert_eq!(value_to_row(2048.0, -2048.0, 2048.0, 8), 0);
-        assert_eq!(value_to_row(-2048.0, -2048.0, 2048.0, 8), 7);
-        assert_eq!(value_to_row(0.0, -2048.0, 2048.0, 8), 4);
+    fn rows_run_top_to_bottom_and_clamp() {
+        let c = Canvas::new(4, 2); // 8 dot rows
+        assert_eq!((c.row(0.0, -100.0, 0.0), c.row(-100.0, -100.0, 0.0), c.row(-500.0, -100.0, 0.0)), (0, 7, 7));
+        assert_eq!(c.row(5.0, -100.0, 0.0), 0);
+    }
+
+    #[test]
+    fn zoom_chooses_enough_bins_and_respects_limits() {
+        // 30.72 MHz over a 1 MHz zoom at 100 cells: 800 dot... 4 bins per dot
+        // column -> rate / (1e6 / 800) = 24576 -> 32768
+        assert_eq!(fft_size(None, -0.5e6, 0.5e6, 30.72e6, 100, 1 << 22).unwrap(), 32768);
+        assert_eq!(fft_size(None, -15.36e6, 15.36e6, 30.72e6, 100, 1 << 22).unwrap(), 4096);
+        assert_eq!(fft_size(None, 0.0, 10.0, 30.72e6, 100, 1 << 30).unwrap(), 1 << 20);
+        assert_eq!(fft_size(Some(65536), 0.0, 1.0, 1e6, 100, 5000).unwrap(), 4096, "never more than the interval");
+        assert!(fft_size(Some(1000), 0.0, 1.0, 1e6, 100, 1 << 20).is_err());
+    }
+
+    #[test]
+    fn peak_hold_keeps_a_one_bin_tone_in_a_wide_column() {
+        let mut p = vec![1.0; 1024];
+        p[700] = 1e6;
+        let sp = dsp::Spectrum { power: p, rate: 1024.0, segments: 1 };
+        let col = columns(&sp, -512.0, 512.0, 16);
+        assert_eq!(col.iter().filter(|d| **d > dsp::dbfs(1e5, FS)).count(), 1);
+    }
+
+    #[test]
+    fn code_scale_is_a_power_of_two_above_the_peak() {
+        assert_eq!(code_scale(&[100, -3]), 128.0);
+        assert_eq!(code_scale(&[2047, -2048]), 2048.0);
+        assert_eq!(code_scale(&[0, 0]), 16.0);
     }
 }

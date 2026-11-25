@@ -1,0 +1,455 @@
+//! Signal quality of one captured channel: the numbers an RF engineer
+//! reads off a receiver, each with its derivation, and plain-language
+//! findings with what to do about them.
+//!
+//! Everything is relative to a full-scale complex tone (0 dBFS: |x| = 2048
+//! codes, `iq::FULL_SCALE`), see `dsp`.
+//!
+//! Level (time domain, all samples):
+//!   DC        mean of I and of Q; `dc_dbfs` = power of the mean.
+//!   rms, peak `rms_dbfs` = mean |x|^2 after removing DC; `peak_dbfs` from
+//!             the largest |x|; crest factor = peak / rms (a tone: 0 dB,
+//!             Gaussian noise: about 10-12 dB). Headroom for a signal of
+//!             crest C is about -C dBFS.
+//!   clipped   fraction of I/Q values at the code limits (-2048 or 2047).
+//!
+//! I/Q balance (time domain, DC removed). With Pi = E[I^2], Pq = E[Q^2],
+//! Piq = E[I Q]:
+//!   gain imbalance  g = sqrt(Pi / Pq), reported as 20 log10 g dB
+//!   phase skew      phi = asin(Piq / sqrt(Pi Pq))
+//!   image rejection IRR = (1 + 2 g cos phi + g^2) / (1 - 2 g cos phi + g^2)
+//! valid for a circular signal (one whose I and Q are uncorrelated with
+//! equal power when the receiver is perfect: a tone off DC, noise, any
+//! modulated carrier). A real-valued signal (|rho| = |Piq| / sqrt(Pi Pq)
+//! near 1, e.g. the FPGA's test pattern I = t, Q = ~t) has no meaningful
+//! balance; `circular` says which case applies. The spectrum gives an
+//! independent IRR when a tone is present: the image bin at -f.
+//!
+//! Tone (frequency domain, when one bin stands 30 dB above the median bin):
+//!   power     the main lobe, +-`dsp::LOBE` bins
+//!   SNR       tone / noise, noise = every bin except the tone, DC (+-3
+//!             bins), harmonics 2..5 and the image (+-LOBE bins each), scaled
+//!             up to the whole band by the fraction of bins excluded
+//!   SINAD     tone / everything else except DC
+//!             (every sum is over a bin mask, so a tone close to DC, whose
+//!             lobe overlaps the DC bins, is never counted twice)
+//!   SFDR      tone's peak bin / the largest other bin outside DC, dBc
+//!             (peak bin to peak bin; a tone between bins loses a fraction
+//!             of a dB to the window's scalloping)
+//!   ENOB      (SINAD - 1.76 dB - tone dBFS) / 6.02: the bits of an ideal
+//!             converter with the same SINAD at full scale. A perfect 12-bit
+//!             capture of a full-scale tone gives 12.
+//!   floor     the median bin, turned into the mean: a bin averaged over K
+//!             segments is Gamma(K) distributed, whose median is the mean
+//!             times about (1 - 1/(9K))^3 (Wilson-Hilferty; K = 1 gives
+//!             0.70, the exponential's ln 2 = 0.69). Density = mean bin /
+//!             bin width, dBFS/Hz.
+
+use crate::dsp::{self, Spectrum};
+use crate::iq::FULL_SCALE;
+
+#[derive(Clone, Debug)]
+pub struct Level {
+    pub dc_i: f64,
+    pub dc_q: f64,
+    pub dc_dbfs: f64,
+    pub rms_dbfs: f64,
+    pub peak_dbfs: f64,
+    pub crest_db: f64,
+    pub clipped: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Balance {
+    pub gain_db: f64,
+    pub phase_deg: f64,
+    pub irr_db: f64,
+    /// correlation of I and Q, -1 ..= 1
+    pub rho: f64,
+    /// |rho| < 0.9: the balance numbers mean something
+    pub circular: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpurKind {
+    Harmonic(u32),
+    Image,
+    Other,
+}
+
+#[derive(Clone, Debug)]
+pub struct Spur {
+    pub freq: f64,
+    /// relative to the tone (dBc) when there is one, else dBFS per bin
+    pub db: f64,
+    pub kind: SpurKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct Tone {
+    pub freq: f64,
+    pub dbfs: f64,
+    /// fraction of the signal's power (DC excluded) in the tone: near 1 for
+    /// a single tone; the SNR/SINAD/ENOB of a signal with several strong
+    /// components describe its largest one only
+    pub share: f64,
+    pub snr_db: f64,
+    pub sinad_db: f64,
+    pub sfdr_dbc: f64,
+    pub enob: f64,
+    pub image_dbc: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Report {
+    pub frames: usize,
+    pub rate: f64,
+    pub level: Level,
+    pub balance: Balance,
+    pub tone: Option<Tone>,
+    pub spurs: Vec<Spur>,
+    /// median bin, dBFS per bin, and the same as a density, dBFS/Hz
+    pub floor_dbfs_bin: f64,
+    pub floor_dbfs_hz: f64,
+    pub fft: usize,
+}
+
+use crate::dsp::LOBE;
+/// A tone must stand this far above the median bin to be analysed as one.
+const TONE_DB: f64 = 30.0;
+
+pub fn level(s: &[i16]) -> Level {
+    let n = (s.len() / 2).max(1) as f64;
+    let (mut si, mut sq, mut clip) = (0.0, 0.0, 0usize);
+    for p in s.as_chunks::<2>().0 {
+        si += p[0] as f64;
+        sq += p[1] as f64;
+        clip += (p[0] <= -2048 || p[0] >= 2047) as usize + (p[1] <= -2048 || p[1] >= 2047) as usize;
+    }
+    let (dc_i, dc_q) = (si / n, sq / n);
+    let (mut pow, mut peak) = (0.0f64, 0.0f64);
+    for p in s.as_chunks::<2>().0 {
+        let (i, q) = (p[0] as f64 - dc_i, p[1] as f64 - dc_q);
+        let m = i * i + q * q;
+        pow += m;
+        peak = peak.max(m);
+    }
+    pow /= n;
+    let fs = FULL_SCALE;
+    Level {
+        dc_i, dc_q,
+        dc_dbfs: dsp::dbfs(dc_i * dc_i + dc_q * dc_q, fs),
+        rms_dbfs: dsp::dbfs(pow, fs),
+        peak_dbfs: dsp::dbfs(peak, fs),
+        crest_db: if pow > 0.0 { 10.0 * (peak / pow).log10() } else { 0.0 },
+        clipped: clip as f64 / (2.0 * n),
+    }
+}
+
+pub fn balance(s: &[i16], dc_i: f64, dc_q: f64) -> Balance {
+    let (mut pi, mut pq, mut piq) = (0.0, 0.0, 0.0);
+    for p in s.as_chunks::<2>().0 {
+        let (i, q) = (p[0] as f64 - dc_i, p[1] as f64 - dc_q);
+        pi += i * i;
+        pq += q * q;
+        piq += i * q;
+    }
+    if pi <= 0.0 || pq <= 0.0 {
+        return Balance { gain_db: 0.0, phase_deg: 0.0, irr_db: 0.0, rho: 0.0, circular: false };
+    }
+    let g = (pi / pq).sqrt();
+    let rho = piq / (pi * pq).sqrt();
+    let phi = rho.clamp(-1.0, 1.0).asin();
+    let c = 2.0 * g * phi.cos();
+    let irr = (1.0 + c + g * g) / (1.0 - c + g * g).max(1e-30);
+    Balance { gain_db: 20.0 * g.log10(), phase_deg: phi.to_degrees(), irr_db: 10.0 * irr.log10(), rho, circular: rho.abs() < 0.9 }
+}
+
+pub fn analyze(s: &[i16], rate: f64, fft: usize) -> Option<Report> {
+    let sp = dsp::welch(s, fft, rate, 64)?;
+    let level = level(s);
+    let balance = balance(s, level.dc_i, level.dc_q);
+    let n = sp.n();
+    let mut sorted = sp.power.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = sorted[n / 2].max(1e-30);
+    let fs = FULL_SCALE;
+    let k = sp.segments as f64;
+    let floor_bin = median / (1.0 - 1.0 / (9.0 * k)).powi(3);
+    let dc = n / 2;
+    let near = |a: usize, b: usize| { let d = a.abs_diff(b); d.min(n - d) <= LOBE };
+    let peak = (0..n).filter(|&k| !near(k, dc)).max_by(|a, b| sp.power[*a].total_cmp(&sp.power[*b]))?;
+    let has_tone = sp.power[peak] > median * 10f64.powf(TONE_DB / 10.0);
+    let (tone, spurs) = if has_tone { tone(&sp, peak, fs) } else { (None, spurs_of(&sp, None, fs)) };
+    Some(Report {
+        frames: s.len() / 2, rate, level, balance, tone, spurs,
+        floor_dbfs_bin: dsp::dbfs(floor_bin, fs),
+        floor_dbfs_hz: dsp::dbfs(floor_bin / sp.df(), fs),
+        fft: n,
+    })
+}
+
+fn tone(sp: &Spectrum, k0: usize, fs: f64) -> (Option<Tone>, Vec<Spur>) {
+    let n = sp.n();
+    // frequency: power-weighted centroid of the main lobe
+    let (mut wsum, mut fsum) = (0.0, 0.0);
+    for d in 0..=2 * LOBE {
+        let k = (k0 + n + d - LOBE) % n;
+        let off = d as f64 - LOBE as f64;
+        wsum += sp.power[k];
+        fsum += sp.power[k] * (sp.freq(k0) + off * sp.df());
+    }
+    let f = fsum / wsum;
+    let p_tone = sp.band(k0, LOBE);
+    let mut mask = vec![false; n];
+    let cover = |k: usize, mask: &mut Vec<bool>| for d in 0..=2 * LOBE { mask[(k + n + d - LOBE) % n] = true; };
+    cover(k0, &mut mask);
+    cover(n / 2, &mut mask);
+    let total: f64 = sp.power.iter().sum();
+    let p_dc_only: f64 = (0..n).filter(|k| { let d = k.abs_diff(n / 2); d.min(n - d) <= LOBE } )
+        .filter(|k| !{ let d = k.abs_diff(k0); d.min(n - d) <= LOBE }).map(|k| sp.power[k]).sum();
+    // everything outside the tone and DC: one pass over the mask
+    let sinad_noise = (0..n).filter(|k| !mask[*k]).map(|k| sp.power[k]).sum::<f64>().max(1e-30);
+    let p_image = sp.band(sp.bin(-f), LOBE);
+    // the largest bin outside the tone and DC: the SFDR spur
+    let spur_peak = (0..n).filter(|k| !mask[*k]).map(|k| sp.power[k]).fold(1e-30, f64::max);
+    let mut nmask = mask.clone();
+    for h in 2..=5 { cover(sp.bin(h as f64 * f), &mut nmask); }
+    cover(sp.bin(-f), &mut nmask);
+    let (mut noise, mut m) = (0.0, 0usize);
+    for (p, masked) in sp.power.iter().zip(&nmask) { if !masked { noise += p; m += 1; } }
+    let noise_band = (noise * n as f64 / m.max(1) as f64).max(1e-30);
+    let dbfs = dsp::dbfs(p_tone, fs);
+    let sinad = 10.0 * (p_tone / sinad_noise).log10();
+    let t = Tone {
+        freq: f, dbfs,
+        share: p_tone / (total - p_dc_only).max(1e-30),
+        snr_db: 10.0 * (p_tone / noise_band).log10(),
+        sinad_db: sinad,
+        sfdr_dbc: 10.0 * (sp.power[k0] / spur_peak).log10(),
+        enob: (sinad - 1.76 - dbfs) / 6.02,
+        image_dbc: 10.0 * (p_image / p_tone).log10(),
+    };
+    let spurs = spurs_of(sp, Some((k0, f, p_tone)), fs);
+    (Some(t), spurs)
+}
+
+/// The strongest local maxima outside DC and the tone, classified.
+fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, fs: f64) -> Vec<Spur> {
+    let n = sp.n();
+    let near = |a: usize, b: usize, r: usize| { let d = a.abs_diff(b); d.min(n - d) <= r };
+    let p = &sp.power;
+    let mut peaks: Vec<usize> = (0..n).filter(|&k| {
+        p[k] > p[(k + n - 1) % n] && p[k] >= p[(k + 1) % n]
+            && !near(k, n / 2, LOBE) && tone.is_none_or(|(k0, _, _)| !near(k, k0, LOBE))
+    }).collect();
+    peaks.sort_by(|a, b| p[*b].total_cmp(&p[*a]));
+    peaks.truncate(6);
+    peaks.into_iter().map(|k| {
+        let (db, kind) = match tone {
+            Some((k0, f, _)) => {
+                let kind = if near(k, sp.bin(-f), LOBE) { SpurKind::Image }
+                    else if let Some(h) = (2..=5).find(|h| near(k, sp.bin(*h as f64 * f), LOBE)) { SpurKind::Harmonic(h) }
+                    else { SpurKind::Other };
+                (10.0 * (p[k] / p[k0]).log10(), kind)
+            }
+            None => (dsp::dbfs(p[k], fs), SpurKind::Other),
+        };
+        Spur { freq: sp.freq(k), db, kind }
+    }).collect()
+}
+
+/// What the numbers say, most serious first, each with its cause and fix.
+pub fn findings(r: &Report) -> Vec<String> {
+    let mut out = Vec::new();
+    let l = &r.level;
+    if l.clipped > 0.0 {
+        out.push(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
+            spectral number below is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom).",
+            100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)));
+    } else if l.peak_dbfs < -40.0 {
+        out.push(format!("LOW LEVEL: the peak is {:.1} dBFS, {:.0} dB of the converter's range unused; \
+            raise the rx gain (aim for a peak near {:.0} dBFS).", l.peak_dbfs, -l.peak_dbfs, -l.crest_db.max(3.0) - 3.0));
+    }
+    let dc_dbc = l.dc_dbfs - l.rms_dbfs;
+    if l.dc_dbfs > -60.0 && dc_dbc > -40.0 {
+        out.push(format!("DC OFFSET: I {:+.1}, Q {:+.1} codes ({:.1} dBFS, {:.1} dB relative to the signal) - \
+            LO leakage or baseband offset; the AD9361's BB and RF DC tracking remove it.", l.dc_i, l.dc_q, l.dc_dbfs, dc_dbc));
+    }
+    let b = &r.balance;
+    if !b.circular {
+        out.push(format!("REAL-VALUED SIGNAL: I and Q are locked together (correlation {:+.3}), so the signal has a \
+            mirror image of itself at -f and I/Q balance cannot be judged from it. Expected for the FPGA test pattern \
+            (I = t, Q = ~t = -t - 1).", b.rho));
+    } else if b.irr_db < 40.0 {
+        out.push(format!("I/Q IMBALANCE: gain {:+.2} dB, phase {:+.2} deg -> image rejection {:.1} dB; anything at +f \
+            appears at -f only {:.1} dB down. The AD9361 RX quadrature tracking corrects it.", b.gain_db, b.phase_deg, b.irr_db, b.irr_db));
+    }
+    if let Some(t) = r.tone.as_ref().filter(|t| t.share < 0.9) {
+        out.push(format!("SEVERAL COMPONENTS: the strongest one ({:.3} kHz) holds only {:.0}% of the power, so the \
+            signal is not a single tone and SNR/SINAD/ENOB below describe that component, not the receiver.",
+            t.freq / 1e3, 100.0 * t.share));
+    }
+    if let Some(t) = &r.tone {
+        // the quantisation limit of a 12-bit converter for a tone at this level
+        let limit = 6.02 * 12.0 + 1.76 + t.dbfs;
+        out.push(format!("TONE {:.3} kHz at {:.1} dBFS: SNR {:.1} dB, SINAD {:.1} dB, SFDR {:.1} dBc, ENOB {:.2} bits \
+            (an ideal 12-bit converter gives SNR {:.1} dB at this level).",
+            t.freq / 1e3, t.dbfs, t.snr_db, t.sinad_db, t.sfdr_dbc, t.enob, limit));
+        if b.circular && t.image_dbc > -40.0 {
+            out.push(format!("IMAGE at {:.3} kHz, {:.1} dBc: I/Q imbalance seen in the spectrum (the time-domain \
+                estimate says {:.1} dB).", -t.freq / 1e3, t.image_dbc, b.irr_db));
+        }
+        let harmonic = r.spurs.iter().find(|s| matches!(s.kind, SpurKind::Harmonic(_)) && s.db > -60.0);
+        if let Some(s) = harmonic {
+            out.push(format!("HARMONIC {:?} at {:.3} kHz, {:.1} dBc: nonlinearity - an overdriven stage (too much \
+                gain before the ADC) or a test signal that is itself not a sine.", s.kind, s.freq / 1e3, s.db));
+        }
+        if let Some(s) = r.spurs.iter().find(|s| s.kind == SpurKind::Other && s.db > -60.0) {
+            out.push(format!("SPUR at {:.3} kHz, {:.1} dBc, not a harmonic or the image: an interferer, a clock \
+                product, or a second signal in the band.", s.freq / 1e3, s.db));
+        }
+    } else {
+        out.push(format!("NO TONE: no bin stands {TONE_DB:.0} dB above the floor ({:.1} dBFS/Hz); a noise-like or \
+            wideband signal - read the level, the floor and the spectrum's shape.", r.floor_dbfs_hz));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Complex tone at `f` cycles/sample, amplitude `a`, with I scaled by
+    /// `g` and Q given a phase error `phi` (radians), a DC offset, and
+    /// Gaussian noise of `sigma` codes per component; rounded to codes and
+    /// clipped to 12 bits as an ADC would.
+    fn signal(n: usize, f: f64, a: f64, g: f64, phi: f64, dc: (f64, f64), sigma: f64) -> Vec<i16> {
+        let mut seed = 12345u64;
+        let mut u = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                         ((seed >> 11) as f64 + 0.5) / (1u64 << 53) as f64 };
+        let mut gauss = || (-2.0 * u().ln()).sqrt() * (2.0 * std::f64::consts::PI * u()).cos();
+        let clip = |v: f64| v.round().clamp(-2048.0, 2047.0) as i16;
+        (0..n).flat_map(|t| {
+            let p = 2.0 * std::f64::consts::PI * f * t as f64;
+            let i = g * a * p.cos() + dc.0 + sigma * gauss();
+            let q = a * (p + phi).sin() + dc.1 + sigma * gauss();
+            [clip(i), clip(q)]
+        }).collect()
+    }
+
+    #[test]
+    fn an_ideal_12_bit_tone_measures_at_the_quantisation_limit() {
+        // -1 dBFS, off-bin: SNR = 6.02*12 + 1.76 - 1 = 73.0 dB
+        let a = 2048.0 * 10f64.powf(-1.0 / 20.0);
+        let s = signal(1 << 18, 0.1234567, a, 1.0, 0.0, (0.0, 0.0), 0.0);
+        let r = analyze(&s, 1e6, 8192).unwrap();
+        let t = r.tone.as_ref().unwrap();
+        assert!((t.dbfs + 1.0).abs() < 0.05, "level {}", t.dbfs);
+        assert!((t.freq - 123456.7).abs() < r.rate / 8192.0 / 10.0, "freq {}", t.freq);
+        // rounding noise: 2/12 code^2 -> SNR 10 log10(a^2 * 6) = 73.0 dB
+        let want = 10.0 * (a * a * 6.0).log10();
+        assert!((t.snr_db - want).abs() < 1.5, "snr {} want {want}", t.snr_db);
+        assert!((t.enob - 12.0).abs() < 0.3, "enob {}", t.enob);
+        assert!(r.balance.irr_db > 60.0 && r.level.clipped == 0.0);
+    }
+
+    #[test]
+    fn snr_follows_added_noise() {
+        // a = 1000 codes, sigma = 10 per component: SNR = a^2 / (2 sigma^2) = 37.0 dB
+        let s = signal(1 << 17, -0.2, 1000.0, 1.0, 0.0, (0.0, 0.0), 10.0);
+        let t = analyze(&s, 1e6, 4096).unwrap().tone.unwrap();
+        assert!((t.snr_db - 36.99).abs() < 0.5, "snr {}", t.snr_db);
+        assert!((t.freq + 200e3).abs() < 30.0, "negative frequency kept: {}", t.freq);
+    }
+
+    #[test]
+    fn dc_offset_is_measured_and_reported() {
+        let s = signal(1 << 16, 0.05, 800.0, 1.0, 0.0, (30.0, -40.0), 2.0);
+        let r = analyze(&s, 1e6, 4096).unwrap();
+        assert!((r.level.dc_i - 30.0).abs() < 0.2 && (r.level.dc_q + 40.0).abs() < 0.2);
+        // |dc| = 50 codes: 20 log10(50 / 2048) = -32.2 dBFS
+        assert!((r.level.dc_dbfs + 32.25).abs() < 0.1, "{}", r.level.dc_dbfs);
+        assert!(findings(&r).iter().any(|f| f.starts_with("DC OFFSET")));
+        // negative control: no offset, no finding
+        let r0 = analyze(&signal(1 << 16, 0.05, 800.0, 1.0, 0.0, (0.0, 0.0), 2.0), 1e6, 4096).unwrap();
+        assert!(!findings(&r0).iter().any(|f| f.starts_with("DC OFFSET")));
+    }
+
+    #[test]
+    fn iq_imbalance_two_independent_estimates_agree_with_the_formula() {
+        // g = 1.1 (0.83 dB), phi = 3 deg: IRR = 10 log10((1+2g cos+g^2)/(1-2g cos+g^2))
+        let (g, phi) = (1.1f64, 3f64.to_radians());
+        let c = 2.0 * g * phi.cos();
+        let want = 10.0 * ((1.0 + c + g * g) / (1.0 - c + g * g)).log10();
+        let s = signal(1 << 17, 0.0731, 1200.0, g, phi, (0.0, 0.0), 1.0);
+        let r = analyze(&s, 1e6, 8192).unwrap();
+        assert!((r.balance.gain_db - 20.0 * g.log10()).abs() < 0.02, "gain {}", r.balance.gain_db);
+        assert!((r.balance.phase_deg - 3.0).abs() < 0.05, "phase {}", r.balance.phase_deg);
+        assert!((r.balance.irr_db - want).abs() < 0.2, "irr {} want {want}", r.balance.irr_db);
+        // the spectrum's image bin, measured independently, says the same
+        let t = r.tone.as_ref().unwrap();
+        assert!((t.image_dbc + want).abs() < 0.5, "image {} dBc, want {}", t.image_dbc, -want);
+        assert!(r.spurs.first().is_some_and(|s| s.kind == SpurKind::Image));
+        assert!(findings(&r).iter().any(|f| f.starts_with("I/Q IMBALANCE")));
+    }
+
+    #[test]
+    fn clipping_is_found_and_a_harmonic_classified() {
+        // 6 dB over full scale: hard clipping, odd harmonics of the complex tone
+        let s = signal(1 << 16, 0.03, 4096.0, 1.0, 0.0, (0.0, 0.0), 0.0);
+        let r = analyze(&s, 1e6, 4096).unwrap();
+        assert!(r.level.clipped > 0.1);
+        let f = findings(&r);
+        assert!(f[0].starts_with("CLIPPING"), "{f:?}");
+        assert!(r.tone.as_ref().unwrap().sfdr_dbc < 40.0);
+    }
+
+    #[test]
+    fn a_real_valued_signal_is_recognised_not_misread_as_imbalance() {
+        // the FPGA pattern: I = t, Q = ~t (a sawtooth and its negative)
+        let s: Vec<i16> = (0..1u32 << 16).flat_map(|t| {
+            let i = (t & 0xFFF) as i16; let q = (!t & 0xFFF) as i16;
+            [(i << 4) >> 4, (q << 4) >> 4]
+        }).collect();
+        let r = analyze(&s, 30.72e6, 4096).unwrap();
+        assert!(!r.balance.circular && r.balance.rho < -0.99);
+        let f = findings(&r);
+        assert!(f.iter().any(|x| x.starts_with("REAL-VALUED")) && !f.iter().any(|x| x.starts_with("I/Q IMBALANCE")));
+    }
+
+    #[test]
+    fn a_tone_next_to_dc_is_never_counted_twice() {
+        // 4 bins from DC with a strong DC offset: the lobes overlap; SINAD
+        // must stay finite and at the quantisation level, never absurd
+        let n = 4096;
+        let s = signal(1 << 16, 4.3 / n as f64, 1500.0, 1.0, 0.0, (300.0, -200.0), 0.0);
+        let t = analyze(&s, 1e6, n).unwrap().tone.unwrap();
+        assert!(t.enob < 13.0 && t.enob > 8.0, "enob {}", t.enob);
+        assert!(t.share > 0.0 && t.share <= 1.0 + 1e-9, "share {}", t.share);
+    }
+
+    #[test]
+    fn a_sawtooth_is_reported_as_several_components() {
+        let s: Vec<i16> = (0..1u32 << 16).flat_map(|t| { let v = ((t & 0xFFF) as i16) << 4 >> 4; [v, v / 2] }).collect();
+        let r = analyze(&s, 30.72e6, 16384).unwrap();
+        let t = r.tone.as_ref().unwrap();
+        assert!(t.share < 0.9, "share {}", t.share);
+        assert!(t.enob.is_finite() && t.enob < 13.0, "enob {}", t.enob);
+        assert!(findings(&r).iter().any(|f| f.starts_with("SEVERAL COMPONENTS")));
+        // negative control: a clean tone is one component
+        let r1 = analyze(&signal(1 << 16, 0.1, 1500.0, 1.0, 0.0, (0.0, 0.0), 1.0), 1e6, 4096).unwrap();
+        assert!(r1.tone.unwrap().share > 0.99);
+    }
+
+    #[test]
+    fn noise_alone_has_no_tone_and_its_density_is_right() {
+        // sigma = 100 per component: power 2e4 codes^2 over 1 MHz
+        let s = signal(1 << 17, 0.0, 0.0, 1.0, 0.0, (0.0, 0.0), 100.0);
+        let r = analyze(&s, 1e6, 2048).unwrap();
+        assert!(r.tone.is_none());
+        let want = dsp::dbfs(2e4 / 1e6, 2048.0);
+        assert!((r.floor_dbfs_hz - want).abs() < 0.5, "floor {} want {want}", r.floor_dbfs_hz);
+        assert!((r.level.crest_db - 12.0).abs() < 3.0, "gaussian crest {}", r.level.crest_db);
+    }
+}
