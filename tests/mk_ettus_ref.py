@@ -13,13 +13,11 @@ means.
 Before anything is written, every file is checked against its git blob id in
 the manifest.  A reference that has been edited is not a reference.
 
-    mk_ettus_ref.py OUTDIR [--netlists DIR]
+    mk_ettus_ref.py OUTDIR
 
---netlists DIR adds the two Xilinx FIR Compiler netlists of the stock B200
-image, DIR/hbdec1.v and DIR/hbdec2.v (fpga/usrp3/top/b200/coregen_dsp/ in a
-UHD checkout), renamed the same way.  The reference chain then uses the vendor
-filters instead of this repository's replacements.  Those two files are
-Xilinx's and are not kept in this repository.
+The two halfband decimators of the original are Xilinx FIR Compiler netlists
+that are not in this repository; the reference chain uses this repository's
+hbdec1/hbdec2, which tests/tb_hbdec.v holds to their 47-tap definition.
 """
 import hashlib
 import os
@@ -29,7 +27,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, "ref", "ettus_dsp")
 PREFIX = "ettus_"
-NETLISTS = ("hbdec1.v", "hbdec2.v")
 
 
 def blob_id(data):
@@ -48,10 +45,9 @@ def manifest():
 
 
 def main(argv):
-    if len(argv) not in (2, 4) or (len(argv) == 4 and argv[2] != "--netlists"):
+    if len(argv) != 2:
         sys.exit(__doc__)
     outdir = argv[1]
-    netdir = argv[3] if len(argv) == 4 else None
 
     sources = {}
     for digest, name in manifest():
@@ -61,17 +57,10 @@ def main(argv):
             sys.exit("ERROR: tests/ref/ettus_dsp/%s is not the upstream file "
                      "(blob %s, manifest %s)" % (name, blob_id(data), digest))
         sources[name] = data.decode("ascii")
-    if netdir:
-        for name in NETLISTS:
-            with open(os.path.join(netdir, name), "rb") as f:
-                sources[name] = f.read().decode("latin-1")
 
     modules = set()
     for text in sources.values():
         modules.update(re.findall(r"^\s*module\s+([A-Za-z_]\w*)", text, re.M))
-    # `glbl` is the netlists' own copy of the Xilinx global-reset stub, guarded
-    # by an `ifndef; it is not part of the design and keeps its name.
-    modules.discard("glbl")
 
     rename = re.compile(r"(?<![\w$])(%s)(?![\w$])"
                         % "|".join(sorted(map(re.escape, modules), key=len, reverse=True)))
@@ -86,9 +75,7 @@ def main(argv):
             f.write(rename.sub(lambda m: PREFIX + m.group(1), text))
 
     print("ettus reference: %d files verified against the manifest, %d modules "
-          "prefixed%s -> %s"
-          % (len(manifest()), len(modules),
-             ", vendor halfband netlists included" if netdir else "", outdir))
+          "prefixed -> %s" % (len(manifest()), len(modules), outdir))
 
 
 if __name__ == "__main__":
