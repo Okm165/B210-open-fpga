@@ -352,7 +352,8 @@ fn flush_rx(rx: &mut Endpoint<Bulk, In>) {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() { break; }
-        let Some(c) = rx.wait_next_complete(left) else { break };
+        // the completion is discarded: flushing only cares that bytes left
+        if rx.wait_next_complete(left).is_none() { break; }
         rx.submit(zero_copy(rx.allocate(proto::DATA_BUFFER)));
     }
     rx.cancel_all();
