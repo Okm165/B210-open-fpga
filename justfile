@@ -87,6 +87,11 @@ check img=bin:
 gate img=bin:
     scripts/hw_gate.sh {{ img }}
 
+# v2 FPGA benches (fpga/tests/run.sh): every case with the result it must give; filter by text
+[group('test')]
+bench filter='':
+    fpga/tests/run.sh '{{ filter }}'
+
 # Simulation benches, all in parallel or some of: elab yosys-read constraints clk-gen fifo io leds gpif usb-rate e2e dac-slice tx rx-saturate atr golden postsyn
 [group('test')]
 test *names:

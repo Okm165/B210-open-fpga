@@ -1,0 +1,69 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# fpga/tests/run.sh [FILTER] - run the FPGA benches; each case states the
+# result it must give. An expected FAIL is a negative control: an injected
+# fault, or an FX3 latency one cycle beyond the design's margin, that the
+# bench has to catch. An unexpected PASS is as wrong as an unexpected FAIL.
+# Cases run in parallel; exit status 1 if any result differs.
+set -eu
+cd "$(dirname "$0")/../.."
+mkdir -p build/sim
+
+# bench  expect  parameters
+CASES='
+fx3_master PASS MODE=0 N=25 SEED=1
+fx3_master PASS MODE=0 N=25 SEED=7
+fx3_master PASS MODE=0 N=25 SEED=99
+fx3_master PASS MODE=0 N=25 SWITCH=1
+fx3_master PASS MODE=3 N=10 SWITCH=1
+fx3_master FAIL MODE=0 N=25 SWITCH=0
+fx3_master PASS MODE=0 N=25 SWITCH=500
+fx3_master PASS MODE=1 N=20
+fx3_master PASS MODE=2 N=20
+fx3_master PASS MODE=3 N=20
+fx3_master FAIL MODE=0 N=6 FAULT=1
+fx3_master FAIL MODE=0 N=6 FAULT=2
+fx3_master FAIL MODE=0 N=6 FAULT=3
+fx3_master PASS MODE=0 N=25 RD_LAT=4
+fx3_master FAIL MODE=3 N=10 RD_LAT=5
+fx3_master PASS MODE=2 N=10 WR_LAT=5
+fx3_master FAIL MODE=2 N=10 WR_LAT=6
+fx3_master PASS MODE=0 N=25 ADDR_LAT=5
+fx3_master FAIL MODE=0 N=25 ADDR_LAT=6
+fx3_master PASS MODE=3 N=10 WM_LAT=2
+fx3_master FAIL MODE=3 N=10 WM_LAT=3
+'
+
+sources() {
+  case $1 in
+    fx3_master) echo fpga/tests/tb_fx3_master.v fpga/tests/fx3_model.v fpga/rtl/fx3_master.v fpga/rtl/fx3_pads.v ;;
+  esac
+  echo fpga/tests/prims.v
+}
+
+one() {   # bench expect params...
+  bench=$1 expect=$2; shift 2
+  tag=$(echo "$bench $*" | tr ' =' '_-')
+  params=""; for p in "$@"; do params="$params -Ptb_$bench.$p"; done
+  # shellcheck disable=SC2046,SC2086
+  iverilog -g2005 -Wall -Wno-timescale -o "build/sim/$tag" -s "tb_$bench" $params $(sources "$bench") \
+    > "build/sim/$tag.log" 2>&1 &&
+  vvp -n "build/sim/$tag" >> "build/sim/$tag.log" 2>&1 || true
+  got=$(sed -n 's/^RESULT: //p' "build/sim/$tag.log")
+  [ -n "$got" ] || got=ERROR
+  verdict=ok; [ "$got" = "$expect" ] || verdict=WRONG
+  printf '%-5s %-6s %-4s %s %s  (%s)\n' "$verdict" "$bench" "$expect" "$*" \
+    "$(grep -E '^bus:' "build/sim/$tag.log" | cut -d= -f2 | tr -d ' ')" "build/sim/$tag.log"
+}
+
+echo "$CASES" | grep -v '^$' | grep -- "${1:-}" | while read -r line; do
+  # shellcheck disable=SC2086
+  one $line &
+done | sort > build/sim/results.txt
+wait
+cat build/sim/results.txt
+n=$(grep -c . build/sim/results.txt)
+bad=$(grep -c '^WRONG' build/sim/results.txt || true)
+echo "$n cases, $bad wrong"
+[ "$bad" -eq 0 ]
