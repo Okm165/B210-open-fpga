@@ -21,8 +21,10 @@
 #               steps below use the measuring UHD 3.15 of scripts/toolchain.sh.
 #   eye         at 61.44 MHz, the AD9361 interface is clean at UHD's
 #               operating point with at least EYE_MIN_STEPS (8) delay steps
-#               to the nearest data transition in both directions
-#               (scripts/eyescan.sh; the vendor image has 2 on receive)
+#               to the nearest data transition, on the receive and on the
+#               transmit side (scripts/eyescan.sh; the vendor image has 2 on
+#               receive).  UHD's point is the AD9361's largest delay setting,
+#               so there is a transition on one side of it only.
 #   samples     known signals through both directions
 #               (scripts/sample_check.py), each compared with the vendor
 #               image: the AD9361 test tone on both channels, on one channel
@@ -56,12 +58,19 @@
 #               the host never stays quiet long enough the gate stops as
 #               inconclusive (exit 3), which is not a pass.  WAIT_QUIET=<s>
 #               waits up to that long for the host to be quiet before this
-#               step starts: quiet means the kernel's pressure stall
-#               information for CPU (/proc/pressure/cpu, "some") is below
-#               QUIET_PSI (10) percent of the time over the last 10 s, which
-#               is what a real-time USB reader is exposed to; with no PSI in
-#               the kernel it falls back to a load average below QUIET_LOAD
-#               (4), which is scale-dependent and counts blocked I/O.
+#               step starts: quiet means the kernel's CPU pressure
+#               (/proc/pressure/cpu, "some", last 10 s) is below QUIET_PSI
+#               (1) percent.  Measured here with the vendor image: nothing
+#               lost at 0.24 %, five overflows in 10 s at 2 to 6 %.
+#
+#               A run is clean when UHD counted no dropped sample, overflow,
+#               underflow or sequence error.  The number of samples is no
+#               loss measure: benchmark_rate streams for about 10 s by the
+#               host's clock and clean runs differ by tens of thousands of
+#               samples either way, so it is only required to be within 1 %
+#               of the nominal count, which catches a stream that died.  A
+#               sample lost inside a stream without a counter noticing is
+#               what the bit-exact steps above exist for.
 #
 #               Every run, the vendor's included, uses UHD's deep USB buffer
 #               pool (num_recv_frames / num_send_frames, see BUF16/BUF12):
@@ -151,16 +160,12 @@ echo "== AD9361 interface eye at 61.44 MHz =="
 scripts/eyescan.sh "$IMG" 61.44e6 > "$OUT/03-eye.txt" 2>&1 || true
 tail -5 "$OUT/03-eye.txt"
 grep -q '^RESULT: PASS' "$OUT/03-eye.txt" || fail eye "operating point is not clean, see $OUT/03-eye.txt"
+# UHD's operating point is the AD9361's largest delay setting, so the scan
+# has points on one side of it only: the margin is the distance to the data
+# transition on that side.
 for side in rx tx; do
-  LINE=$(grep "^  $side margin:" "$OUT/03-eye.txt" || true)
-  BELOW=$(sed -n 's/.*: \([0-9]*\) steps below.*/\1/p' <<<"$LINE")
-  ABOVE=$(sed -n 's/.*, \([0-9]*\) steps above.*/\1/p' <<<"$LINE")
-  [[ "${BELOW:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${BELOW:-0} steps below, need $EYE_MIN_STEPS"
-  # "above" may legitimately run past the end of the scan range, which the log
-  # says; anything short of it inside the range is a real margin.
-  if [[ "$LINE" != *"scan range ends there"* ]]; then
-    [[ "${ABOVE:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${ABOVE:-0} steps above, need $EYE_MIN_STEPS"
-  fi
+  BELOW=$(sed -n "s/^  $side margin: \([0-9]*\) steps below.*/\1/p" "$OUT/03-eye.txt")
+  [[ "${BELOW:-0}" -ge "$EYE_MIN_STEPS" ]] || fail eye "$side margin ${BELOW:-0} steps, need $EYE_MIN_STEPS"
 done
 
 echo "== known signals through the sample paths =="
@@ -227,16 +232,10 @@ sed 's/^/  /' "$OUT/06-bus-margin.txt"
 
 echo "== throughput, each run between two runs of the vendor image =="
 [[ -x $BENCH ]] || fail throughput "no $BENCH (run scripts/toolchain.sh uhd)"
-quiet() {
-  if [[ -r /proc/pressure/cpu ]]; then
-    awk -v max="${QUIET_PSI:-10}" '/^some/ {split($2,a,"="); exit !(a[2] < max)}' /proc/pressure/cpu
-  else
-    awk -v max="${QUIET_LOAD:-4}" '{exit !($1 < max)}' /proc/loadavg
-  fi
-}
+quiet() { awk -v max="${QUIET_PSI:-1}" '/^some/ {split($2,a,"="); exit !(a[2] < max)}' /proc/pressure/cpu; }
 DEADLINE=$((SECONDS + ${WAIT_QUIET:-0}))
 until quiet || (( SECONDS >= DEADLINE )); do sleep 20; done
-echo "  host load average $(cut -d' ' -f1 /proc/loadavg), CPU pressure $(sed -n 's/^some avg10=\([0-9.]*\) .*/\1 %/p' /proc/pressure/cpu 2>/dev/null || echo unknown)"
+echo "  host CPU pressure $(sed -n 's/^some avg10=\([0-9.]*\) .*/\1 %/p' /proc/pressure/cpu)"
 # 512 x 16360 B = 8.4 MB receive and 256 x 16360 B = 4.2 MB transmit of
 # queued USB buffers (UHD's limit is 16360 B per frame; usbfs allows 16 MB).
 # 16360 / 4 = 4090 samples per packet for 16-bit data and 12264 / 3 = 4088 for
@@ -260,8 +259,8 @@ run() {   # run <image> <log> <rx samples due> <tx samples due> <benchmark args.
     /Num (late commands|timeouts \(Tx\)|timeouts \(Rx\))/ {meta += $2}
     END { if (counters != 5)          print "no result"
           else if (loss)              print "lost " loss
-          else if (rx + 0 < rx_due || tx + 0 < tx_due)
-            printf "short: %d received of %d due, %d sent of %d due", rx + 0, rx_due, tx + 0, tx_due
+          else if (rx + 0 < 0.99 * rx_due || tx + 0 < 0.99 * tx_due)
+            printf "stream died: %d received of %d, %d sent of %d", rx + 0, rx_due, tx + 0, tx_due
           else if (meta)              printf "ok (metadata events: %d)", meta
           else                        print "ok" }' "$log"
 }
