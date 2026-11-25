@@ -46,7 +46,9 @@
 // is always replaced in time.
 //
 // Reset: w_rst and r_rst must be asserted together (each synchronous to its
-// clock) and released only after both clocks have seen them.
+// clock) and held for at least 4 cycles of the slower clock, so that the
+// pointers' synchronised copies (2 registers + 1 conversion register) are
+// 0 when it ends.
 `default_nettype none
 
 module packet_fifo #(
@@ -81,11 +83,15 @@ module packet_fifo #(
   (* ASYNC_REG = "TRUE" *) reg [AW:0] rp_g1 = 0, rp_g2 = 0;
   reg [AW:0] rp_g = 0;                      // rp in Gray, read side
   wire [AW:0] wp_n = wp + w_valid;
-  wire [AW:0] used = wp_n - bin(rp_g2);      // words in memory once w_data is written
+  // the reader's pointer, converted to binary one cycle after it is
+  // synchronised (a register between the XOR tree and the subtraction:
+  // 100 MHz); it lags one cycle more, which only understates the room
+  reg  [AW:0] rp_seen = 0;
+  wire [AW:0] used = wp_n - rp_seen;         // words in memory once w_data is written
   wire [AW:0] used_next = used + w_valid;    // ... and once the next word is too
   always @(posedge wclk) begin
     if (w_valid) mem[wp[AW-1:0]] <= {w_last, w_data};
-    rp_g1 <= rp_g; rp_g2 <= rp_g1;
+    rp_g1 <= rp_g; rp_g2 <= rp_g1; rp_seen <= bin(rp_g2);
     if (w_rst) begin
       wp <= 0; wc <= 0; wc_g <= 0; w_room <= 0;
     end else begin
@@ -104,7 +110,8 @@ module packet_fifo #(
   reg        v1 = 0, v2 = 0;                // they hold a word in flight
   reg [32:0] q [0:3];                       // queue, q[0] is the head
   reg [2:0]  qn = 0;                        // words in the queue
-  wire [AW:0] ready = bin(wc_g2) - rp;
+  reg  [AW:0] wc_seen = 0;                  // as rp_seen: one more cycle, understates `ready`
+  wire [AW:0] ready = wc_seen - rp;
   // issue a read if a committed word is left and the queue will have room
   // for it: queue + in flight + this read <= 4, counting the one taken now
   wire       take  = r_take && qn != 0;
@@ -113,7 +120,7 @@ module packet_fifo #(
   assign {r_last, r_data} = q[0];
   integer i;
   always @(posedge rclk) begin
-    wc_g1 <= wc_g; wc_g2 <= wc_g1;
+    wc_g1 <= wc_g; wc_g2 <= wc_g1; wc_seen <= bin(wc_g2);
     m1 <= mem[rp[AW-1:0]]; m2 <= m1;
     if (r_rst) begin
       rp <= 0; rp_g <= 0; v1 <= 0; v2 <= 0; qn <= 0;

@@ -7,6 +7,9 @@
 // 30.72 on 2) behind a 16-entry queue: it never waits, a sample lost to a
 // full queue is an error. The sample of time t is known to the checker:
 //   I0 = t, Q0 = ~t, I1 = 7 t, Q1 = 13 t + 5   (12 bits each)
+// While a stream runs, the framer's configuration inputs (format, channels,
+// spp, start_at, start_time) are scrambled at random: a stream must keep
+// what it started with (the host's stop write rewrites rx_ctrl's bits).
 // Each run plays STREAMS streams with random format, channels, spp (1 ..
 // beyond a full packet), count (0 = until stopped), start now or at a time,
 // stop in mid-stream. For every packet: version, type, format, channels,
@@ -37,6 +40,12 @@ module tb_rx_framer;
   reg  [12:0] spp = 100;
   reg         start = 0, stop = 0, start_at = 0;
   reg  [63:0] start_time = 0;
+  // the stream's configuration, as it was at start; the inputs above are
+  // scrambled while it runs
+  reg  [3:0]  sf = 1;
+  reg  [1:0]  sc = 1;
+  reg  [63:0] s_at = 0;
+  reg         scramble = 0;
   reg  [31:0] count = 0;
 
   // -- source: the radio --------------------------------------------------------------------
@@ -64,7 +73,7 @@ module tb_rx_framer;
       st <= st + 1;
     end
     // phase advances by the rate in units of 1/10000 sample per cycle
-    phase = phase + (channels == 3 ? 3072 : 6144);
+    phase = phase + (sc == 3 ? 3072 : 6144);
     if (phase >= 10000) begin
       phase = phase - 10000;
       if (tail - st - s_take >= 16) begin
@@ -111,8 +120,8 @@ module tb_rx_framer;
   // the stream's first sample: the head when the framer first reaches START
   always @(posedge clk) if (!t0_seen && dut.state == 2) begin
     t0_seen = 1; next_t = st;
-    if (start_at_s && st != start_time) begin
-      errors = errors + 1; $display("%0t stream starts at %0d, start time %0d", $time, st, start_time);
+    if (start_at_s && st != s_at) begin
+      errors = errors + 1; $display("%0t stream starts at %0d, start time %0d", $time, st, s_at);
     end
   end
 
@@ -128,12 +137,12 @@ module tb_rx_framer;
       L = pkt[0][15:0];
       flags = pkt[1][31:16];
       t = {pkt[3], pkt[2]};
-      vb = format == 2 ? 12 : 16;
-      nv = channels == 3 ? 4 : 2;
+      vb = sf == 2 ? 12 : 16;
+      nv = sc == 3 ? 4 : 2;
       B = nv * vb / 8;
       n = (L - 16) / B;
       expw = (L + 3) / 4; if (expw % 256 == 0 && expw != 4096) expw = expw + 1;
-      if (pkt[0][31:16] !== {4'd1, 2'd0, channels, format, 4'd0} || (L - 16) % B != 0 || words != expw) begin
+      if (pkt[0][31:16] !== {4'd1, 2'd0, sc, sf, 4'd0} || (L - 16) % B != 0 || words != expw) begin
         bad = 1; $display("%0t packet %0d: header %h, %0d words for L = %0d", $time, npackets, pkt[0], words, L);
       end
       if (pkt[1][15:0] !== seq_next[15:0] || flags[15:4] != 0 || !flags[0]) begin
@@ -153,7 +162,7 @@ module tb_rx_framer;
           raw = 0;
           for (j = 0; j < vb; j = j + 1) raw[j] = pkt[(bit0 + j) / 32][(bit0 + j) % 32];
           got = vb == 16 ? raw[15:4] : raw[11:0];
-          exp = val(t + k, channels == 3 ? v : (channels == 2 ? v + 2 : v));
+          exp = val(t + k, sc == 3 ? v : (sc == 2 ? v + 2 : v));
           if (got !== exp || (vb == 16 && raw[3:0] != 0)) begin
             bad = 1; $display("%0t packet %0d sample %0d value %0d: %h, expected %h", $time, npackets, k, v, raw, exp);
           end
@@ -183,14 +192,17 @@ module tb_rx_framer;
       start_at = rnd(2);
       start_time = st + rnd(3000);
       start_at_s = start_at; t0_seen = 0;
+      sf = format; sc = channels; s_at = start_time;
       seq_next = 0; expect_first = 1; ended = 0; sent = 0; gaps = 0; dropped0 = dropped;
       start <= 1; @(posedge clk); start <= 0;
+      scramble = 1;
       life = count == 0 || rnd(4) == 0 ? 2000 + rnd(40000) : -1;     // stop after `life` cycles
       while (!ended && (life != 0)) begin @(posedge clk); if (life > 0) life = life - 1; end
       if (!ended) begin stop <= 1; @(posedge clk); stop <= 0; end
       while (!ended && running) @(posedge clk);
       // drained: the framer idle and every packet it wrote checked
       while (running || npackets != written) @(posedge clk);
+      scramble = 0;
       // a stream stopped while waiting for its start time sends nothing
       if (!ended && (seq_next != 0 || t0_seen)) begin errors = errors + 1; $display("stream %0d: no END_OF_BURST", s_i); end
       if (gaps != dropped - dropped0) begin
@@ -205,6 +217,12 @@ module tb_rx_framer;
     $display("%0d streams, %0d packets, %0d samples dropped", STREAMS, npackets, dropped);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");
     $finish;
+  end
+
+  // the configuration inputs change at random while a stream runs
+  always @(posedge clk) if (scramble && rnd(50) == 0) begin
+    format <= rnd(4); channels <= rnd(4); spp <= rnd(8192);
+    start_at <= rnd(2); start_time <= {$random(seed), $random(seed)};
   end
 
   // a broken design floods: stop at 20 errors

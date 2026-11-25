@@ -16,7 +16,10 @@
 // little-endian bit stream: sc16 puts each code c as the 16 bits c << 4,
 // sc12 as its 12 bits. The bits after the last value up to S(L) are zero.
 //
-// Stream control (one stream at a time, config static while it runs):
+// Stream control (one stream at a time). format, channels, spp, start_at
+// and start_time are latched when the stream starts (run_*): the stream
+// keeps them to its END_OF_BURST whatever the registers do meanwhile (the
+// host's stop write itself rewrites rx_ctrl's configuration bits).
 //   start          begin with the first sample at time >= start_time if
 //                  start_at, else with the next sample
 //   count          sample times in the stream, 0 = until stopped
@@ -67,14 +70,20 @@ module rx_framer (
   localparam F_TIME = 0, F_SOB = 1, F_EOB = 2, F_OVERFLOW = 3;
 
   // -- bits per sample time and per value ---------------------------------------
-  wire       sc12  = format == 4'd2;
-  wire       two   = channels == 2'b11;
+  // the running stream's configuration, latched at start
+  reg  [3:0]  run_format = 1;
+  reg  [1:0]  run_channels = 1;
+  reg  [12:0] run_spp = 16;
+  reg         run_at = 0;
+  reg  [63:0] run_time = 0;
+  wire       sc12  = run_format == 4'd2;
+  wire       two   = run_channels == 2'b11;
   wire [6:0] vbits = sc12 ? 7'd12 : 7'd16;             // bits per value
   wire [6:0] tbits = two ? vbits << 2 : vbits << 1;    // bits per sample time: 24 32 48 64
   // the selected values of one sample time, low first, packed; bits above
   // tbits are zero
   wire [11:0] i0 = s_data[11:0], q0 = s_data[23:12], i1 = s_data[35:24], q1 = s_data[47:36];
-  wire [11:0] ia = channels[0] ? i0 : i1, qa = channels[0] ? q0 : q1;   // the first (or only) channel
+  wire [11:0] ia = run_channels[0] ? i0 : i1, qa = run_channels[0] ? q0 : q1;   // the first (or only) channel
   wire [63:0] packed = sc12 ? (two ? {16'd0, q1, i1, q0, i0} : {40'd0, qa, ia})
                             : (two ? {q1, 4'd0, i1, 4'd0, q0, 4'd0, i0, 4'd0} : {32'd0, qa, 4'd0, ia, 4'd0});
   // sample times in a full packet: 16368 payload bytes / bytes per sample time
@@ -112,7 +121,7 @@ module rx_framer (
   // current `left`. On the normal path HEAD alone takes 4 cycles, so this
   // only delays the rare quick returns (stream start, a short DROP).
   reg  [12:0] spp_c = 16;
-  always @(posedge clk) spp_c <= spp < 16 ? 13'd16 : spp > full ? full : spp;
+  always @(posedge clk) spp_c <= run_spp < 16 ? 13'd16 : run_spp > full ? full : run_spp;
   reg  [12:0] n_new = 0, w_raw = 0, w_all = 0;
   reg  [15:0] len = 0;
   reg         ends = 0;           // this packet takes the rest of a counted stream
@@ -137,7 +146,7 @@ module rx_framer (
   // samples consumed outside a packet: discarded (idle, before the start
   // time, dropped for lack of room)
   wire take_skip = s_valid && (state == IDLE || state == EOB_ONLY ||
-                               (state == ARMED && start_at && s_time < start_time) ||
+                               (state == ARMED && run_at && s_time < run_time) ||
                                (state == DROP && n != 0));
   assign s_take = take_body || take_skip;
 
@@ -152,9 +161,11 @@ module rx_framer (
         IDLE: if (start) begin
           first <= 1; overflow <= 0; stopping <= 0; seq <= 0;
           endless <= count == 0; left <= count; age <= 0; state <= ARMED;
+          run_format <= format; run_channels <= channels; run_spp <= spp;
+          run_at <= start_at; run_time <= start_time;
         end
         ARMED: if (stopping) state <= IDLE;
-          else if (s_valid && !(start_at && s_time < start_time)) state <= START;
+          else if (s_valid && !(run_at && s_time < run_time)) state <= START;
         // a packet begins at the sample now at the head
         // (left == 0 here: the last packet was dropped, its EOB still owed)
         START: if (age != 4) ;                     // the size pipeline is catching up
@@ -166,7 +177,7 @@ module rx_framer (
           age <= 0;
           if (w_room) begin
             words <= w_all; hw <= 0;
-            h0 <= {VERSION, 2'd0, channels, format, T_RX, len};
+            h0 <= {VERSION, 2'd0, run_channels, run_format, T_RX, len};
             h1 <= {11'd0, 1'b0, overflow, last_packet, first, 1'b1, seq};
             first <= 0; overflow <= 0; seq <= seq + 1;
             state <= HEAD;
@@ -195,7 +206,7 @@ module rx_framer (
         EOB_ONLY: if (hw != 0 || w_room) begin   // header-only packet ending the stream
           w_valid <= 1; hw <= hw + 1;
           case (hw)
-            0: w_data <= {VERSION, 2'd0, channels, format, T_RX, 16'd16};
+            0: w_data <= {VERSION, 2'd0, run_channels, run_format, T_RX, 16'd16};
             1: w_data <= {11'd0, 1'b0, overflow, 1'b1, first, 1'b1, seq};
             2: w_data <= t_end[31:0];
             default: begin w_data <= t_end[63:32]; w_last <= 1; state <= IDLE; end
