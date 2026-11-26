@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Driver for the B210 board running this repository's FPGA image.
 //! The wire format is defined in docs/PROTOCOL.md; `proto` implements it,
 //! `usb` carries it, `regs` names the registers.

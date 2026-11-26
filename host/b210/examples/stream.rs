@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! A minimal end-to-end client: open the board, bring the AD9361 up, apply
 //! a configuration, stream the antenna for N seconds, and print the level
 //! and the stream's audit. It makes the same calls as the `b210` binary,

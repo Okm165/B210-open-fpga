@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The spectral arithmetic every view and every quality metric shares.
 //!
 //! Units. Samples are 12-bit codes (`capture::FULL_SCALE` = 2048), I and Q of one

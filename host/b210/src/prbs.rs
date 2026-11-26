@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The AD9361's BIST pseudo-random sequence, checked against what the chip
 //! must have sent (register 0x3F4, Tone/PRBS bit clear, injected at the rx
 //! data port; ADI "AD936x Built-In Self-Test (BIST)" FAQ).

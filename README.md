@@ -111,6 +111,7 @@ at each rx gain - the TX RF path, which the digital loopback never reaches.
 
 ## Licence
 
-GPL-3.0-or-later (see `LICENSE`); every source file carries the SPDX header.
+GPL-3.0-or-later (see `LICENSE`); every source file's first line is its
+SPDX header.
 The Ettus FX3 firmware and UHD sources this flow downloads for the bring-up
 keep their own licences and are pinned by hash, not committed.

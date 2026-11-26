@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 #!/usr/bin/env bash
 # assemble.sh - FASM -> frames -> .bit -> FX3-loadable .bin (one place for it).
 #

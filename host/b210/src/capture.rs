@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! One channel of I/Q samples on disk, and the arithmetic every view of it
 //! needs.
 //!

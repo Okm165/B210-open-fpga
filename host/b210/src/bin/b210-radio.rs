@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The AD9361 from a configuration file: reset and identify it, or bring it
 //! up and apply a configuration (host/b210/examples/config.toml), step by
 //! step with each step's time, the driver's polls and the PLL lock bits.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The wire format of docs/PROTOCOL.md, both directions.
 //!
 //! Units throughout: lengths in bytes; `time` in ticks (sample periods at

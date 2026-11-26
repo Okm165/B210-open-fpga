@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! b210 - board access and the streaming measurements: the FPGA image's
 //! registers, the rx sources with every sample checked, and captures.
 //!

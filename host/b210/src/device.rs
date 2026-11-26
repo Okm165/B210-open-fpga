@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The AD9361 on the board: the driver's [`Bus`] carried by the FPGA's
 //! command operations (docs/PROTOCOL.md section 4), the bring-up from the
 //! RESETB pin, and [`Device::apply`], which takes the chip from the

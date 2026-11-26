@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The board on USB: the stock FX3 firmware's vendor requests (FPGA load,
 //! GPIF reset) and the four bulk endpoints of docs/PROTOCOL.md section 1.
 //!

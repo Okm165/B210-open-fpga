@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Streams on the data endpoints (docs/PROTOCOL.md sections 1 to 3): the rx
 //! loop every streaming command runs, the checker it applies to every
 //! packet that arrives, and tx bursts.

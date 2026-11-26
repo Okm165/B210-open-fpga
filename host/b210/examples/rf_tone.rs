@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Transmit a complex tone through the RF TX port and measure what the RX
 //! antenna receives, at each rx gain: the one stage the digital loopback
 //! (`b210 loop-test`) does not reach.

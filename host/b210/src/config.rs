@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The radio's configuration: one declarative TOML file holding the whole
 //! radio state (docs/DESIGN.md: applied whole, only differences written),
 //! its validation against the hardware's limits, and the minimal ordered

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 #!/usr/bin/env python3
 """Extract the raw configuration payload from a Xilinx .bit file.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 #!/usr/bin/env bash
 # toolchain.sh - build the place-and-route engine of this flow from pinned
 # sources.  Output (used by scripts/build.sh):

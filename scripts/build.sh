@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 #!/usr/bin/env bash
 # build.sh - the v2 FPGA (fpga/rtl, fpga/b210.xdc) -> FX3-loadable .bin.
 #

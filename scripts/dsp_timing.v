@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // dsp_timing.v - does the place-and-route engine time DSP48E1 paths?
 //
 // Three DSP48E1 register configurations between fabric flip-flops, on a 5 ns

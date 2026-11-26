@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Signal quality of one captured channel: the numbers an RF engineer
 //! reads off a receiver, each with its derivation, and plain-language
 //! findings with what to do about them.

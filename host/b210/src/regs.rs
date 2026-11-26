@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Register addresses (docs/PROTOCOL.md section 6, fpga/rtl/regs.v).
 //!
 //! The map is complete, not just the part the commands drive: SCRATCH is
