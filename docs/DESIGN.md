@@ -167,11 +167,17 @@ examples/config.toml     every configuration key
      at 60 dB, no clipping, no tone.
    - 1.575 GHz (GPS L1, nominally quiet): input-referred level close to the
      ISM band's, and 17.6 dB of a 20 dB gain cut follows it, so it is ~88%
-     external broadband energy, not the converter floor. Channel asymmetry
-     reverses between bands (ISM: ch0 6.4 dB hotter; 1.575 GHz: ch1 14.4 dB
-     hotter), so the two rx ports do not see the same RF: consistent with a
-     single antenna on one port and the other port's input effectively open.
-     Terminating or connecting the second port would settle it.
+     external broadband energy, not the converter floor.
+   - Port asymmetry, resolved: on the FM band both ports receive the same
+     99.4 MHz station, ch1 about 8 dB stronger (tone -40.7 vs -49.0 dBFS
+     at 30 dB gain, -50.9 vs -59.4 at 20; ch0's falls below the detector
+     at 10). The first sweep's ch1 looked gain-independent and clipped at
+     14.7% for 45, 55 and 70 dB - that is a station far past full scale at
+     all three, not a gain-stage fault; the 0 .. 30 dB sweep is clean and
+     follows 1:1. So an earlier reading of "one antenna and the other port
+     open" is rejected: both ports are live, they differ by band (ch1 is
+     8 dB hotter at 100 MHz, ch0 6.4 dB hotter at 2.45 GHz), which is
+     coupling/orientation, not a data-path fault.
    The +/-1.31 MHz "pair" first reported as an internal spur was the
    spectrum's own noise maxima: with 64 averaged segments the largest noise
    bin sits 4-5 dB over the median (measured), and the plotter listed the
