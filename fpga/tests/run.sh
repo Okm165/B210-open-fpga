@@ -110,6 +110,11 @@ ad9361_io FAIL SEED=1 FAULT=3
 cdc_fifo PASS SEED=1
 cdc_fifo PASS SEED=2 WCLK=5000 RCLK=8138
 cdc_fifo FAIL SEED=1 FAULT=1
+gray_sync PASS W=64 N=600
+gray_sync PASS W=16 N=400
+gray_sync PASS W=32 N=500 SRC=5000 DST=8138
+gray_sync PASS W=64 N=600 SKEW=2000
+gray_sync FAIL W=64 N=600 FAULT=1 SKEW=2000
 b210 PASS
 b210 FAIL FAULT=1
 '
@@ -118,6 +123,7 @@ sources() {
   case $1 in
     fx3_master) echo fpga/tests/tb_fx3_master.v fpga/tests/fx3_model.v fpga/rtl/fx3_master.v fpga/rtl/fx3_pads.v ;;
     cdc_fifo) echo fpga/tests/tb_cdc_fifo.v fpga/rtl/cdc_fifo.v ;;
+    gray_sync) echo fpga/tests/tb_gray_sync.v fpga/rtl/gray_sync.v ;;
     packet_fifo) echo fpga/tests/tb_packet_fifo.v fpga/rtl/packet_fifo.v ;;
     command) echo fpga/tests/tb_command.v fpga/tests/spi_model.v fpga/rtl/command.v fpga/rtl/spi_master.v fpga/rtl/packet_fifo.v ;;
     rx_framer) echo -I fpga/rtl fpga/tests/tb_rx_framer.v fpga/rtl/rx_framer.v fpga/rtl/packet_fifo.v ;;

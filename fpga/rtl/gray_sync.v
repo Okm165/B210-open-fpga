@@ -23,20 +23,21 @@ module gray_sync #(
 );
   localparam C = W / 16;
   (* ASYNC_REG = "TRUE" *) reg [W-1:0] g1 = 0, g2 = 0;
-  reg [W-1:0] local = 0;      // per chunk: XOR of the chunk's bits from the top down to i
+  reg [W-1:0] prefix = 0;     // per chunk: XOR of the chunk's bits from the top down to i
+                              // (`local` would be a SystemVerilog keyword)
   integer c, i;
   reg p;
   always @(posedge clk) begin
     g1 <= g_in; g2 <= g1;
     for (c = 0; c < C; c = c + 1) begin
       p = 0;
-      for (i = 15; i >= 0; i = i - 1) begin p = p ^ g2[16*c + i]; local[16*c + i] <= p; end
+      for (i = 15; i >= 0; i = i - 1) begin p = p ^ g2[16*c + i]; prefix[16*c + i] <= p; end
     end
     for (c = C - 1; c >= 0; c = c - 1) begin
-      // parity of the chunks above c: the lowest bit of each one's local XOR
+      // parity of the chunks above c: the lowest bit of each one's prefix XOR
       p = 0;
-      for (i = c + 1; i < C; i = i + 1) p = p ^ local[16*i];
-      b[16*c +: 16] <= local[16*c +: 16] ^ {16{p}};
+      for (i = c + 1; i < C; i = i + 1) p = p ^ prefix[16*i];
+      b[16*c +: 16] <= prefix[16*c +: 16] ^ {16{p}};
     end
   end
 endmodule

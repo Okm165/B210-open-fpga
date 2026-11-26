@@ -48,6 +48,23 @@ no Ettus RTL, no Python.
   their time or at once; 0 to the DAC when idle and in an underflow gap.
 - **command**: executes a command packet's operations (WRITE, READ, SPI,
   WAIT, POLL), one result per operation.
+- **Benches**: one file per module in fpga/tests, each case stating the
+  result it must give (`fpga/tests/run.sh`, 97 cases). A bench that cannot
+  fail is not a test: gray_sync's case sends the *binary* counter through a
+  2 ns skew between its low bits - the mix the Gray code exists to prevent -
+  and the bench must catch it (874 errors: values ahead of the source,
+  backwards moves, a wrong final value after 600 steps); the same skew on
+  the Gray code passes, which is the property the timestamp rests on.
+  `scripts/mutate.sh` measures how far the benches reach: 96.8% of 378
+  mutants killed, counted before the gray_sync bench was added, so it is a
+  floor.
+- **The build's record** is build/fpga/usrp_NAME.txt: the image hash, the
+  commit it was built from (a dirty tree is marked), the tool and chipdb
+  hashes, and the timing sign-off - Fmax per clock against its constraint
+  and the two crossing bounds. build/fpga/logs/ is scratch: a log left
+  there by an earlier attempt can name a different result (one such said
+  76.72 MHz for bus_clk while the deployed manifest says 108.67 MHz), so a
+  timing claim cites the manifest, never a leftover log.
 - **regs**: the register map, all on the always-running bus clock.
 - **events**: counter increases into event packets.
 

@@ -112,11 +112,11 @@ module rx_framer (
   wire       cfg_ok = (format == 4'd1 || format == 4'd2) && channels != 2'b00;
   wire [6:0] vbits = sc12 ? 7'd12 : 7'd16;             // bits per value
   wire [6:0] tbits = two ? vbits << 2 : vbits << 1;    // bits per sample time: 24 32 48 64
-  // the selected values of one sample time, low first, packed; bits above
+  // the selected values of one sample time, low first; bits above
   // tbits are zero
   wire [11:0] i0 = s_data[11:0], q0 = s_data[23:12], i1 = s_data[35:24], q1 = s_data[47:36];
   wire [11:0] ia = run_channels[0] ? i0 : i1, qa = run_channels[0] ? q0 : q1;   // the first (or only) channel
-  wire [63:0] packed = sc12 ? (two ? {16'd0, q1, i1, q0, i0} : {40'd0, qa, ia})
+  wire [63:0] sample_word = sc12 ? (two ? {16'd0, q1, i1, q0, i0} : {40'd0, qa, ia})
                             : (two ? {q1, 4'd0, i1, 4'd0, q0, 4'd0, i0, 4'd0} : {32'd0, qa, 4'd0, ia, 4'd0});
   // sample times in a full packet: 16368 payload bytes / bytes per sample time
   wire [12:0] full  = sc12 ? (two ? 13'd2728 : 13'd5456) : (two ? 13'd2046 : 13'd4092);
@@ -260,7 +260,7 @@ module rx_framer (
       if (state == START) acc <= 0;
       if (take_body || (state == DROP && take_skip)) n <= n - 1;
       if (in_body) begin
-        acc <= (emit_data ? acc >> 32 : acc) | (take_body ? {32'd0, packed} << nb1 : 96'd0);
+        acc <= (emit_data ? acc >> 32 : acc) | (take_body ? {32'd0, sample_word} << nb1 : 96'd0);
         nb  <= nb1 + (take_body ? tbits : 7'd0);
       end else nb <= 0;
     end
