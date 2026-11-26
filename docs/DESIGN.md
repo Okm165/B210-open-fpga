@@ -11,6 +11,11 @@ full duplex, lossless; every setting over USB through one configuration;
 clocks with measured margin; LEDs; stock FX3 firmware unchanged; no UHD,
 no Ettus RTL, no Python.
 
+This file is the record of *why* - decisions and the measurements that
+back them. It is not a manual: the code's module headers state each
+unit's contract, `--help` is the command reference, and README.md is the
+way in.
+
 ## Decisions
 
 | Question | Decision |

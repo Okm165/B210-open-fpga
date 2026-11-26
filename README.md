@@ -1,18 +1,26 @@
 # B210 open FPGA
 
-Our own FPGA design and host software for the OpenSourceSDRLab B210
-(Kintex-7 `xc7k325t-ffg676`, AD9361, Cypress FX3 running its stock
-firmware). The FPGA is built from Verilog with open tools only (Yosys,
-nextpnr-himbaechel, Project X-Ray), every tool from pinned sources. The host
-side is a Rust crate talking to the board over USB, with no UHD.
+An independent, fully open FPGA image and Rust host for the
+[OpenSourceSDRLab B210-Kintex-7](https://opensourcesdrlab.com/products/b210-kintex-7)
+software-defined radio - a USRP B210-compatible board pairing the Analog
+Devices AD9361 RF transceiver (70 MHz .. 6 GHz, 2 x 2 full duplex) with a
+Xilinx Kintex-7 `xc7k325t-ffg676` and a Cypress FX3 USB 3.0 controller.
 
-- `fpga/rtl/`, `fpga/b210.xdc`: the FPGA; `fpga/tests/`: its benches
-- `host/b210/`: the Rust crate, binaries `b210`, `b210-radio` and `b210-plot`
-- `scripts/`: the build flow (`build.sh`, `assemble.sh`, `toolchain.sh`) and
-  the mutation campaign (`mutate.sh`, `mutate.py`: one small RTL change per
-  mutant, the benches must notice; survivors are listed for classification)
-- `container/`: the Yosys / Project X-Ray image and the tool patches
-- `docs/PROTOCOL.md`: the USB protocol and register map; `docs/DESIGN.md`: the design
+The board ships with a Vivado-based, UHD-compatible FPGA image
+([OpenSourceSDRLab/B210-Kintex-7](https://github.com/OpenSourceSDRLab/B210-Kintex-7)
+holds its schematic, mechanical files and that image). This repository is a
+different route to the same hardware:
+
+- **The FPGA is built with open tools only** - Yosys, nextpnr-himbaechel and
+  Project X-Ray, every tool from pinned sources. No Vivado, no vendor IP.
+- **We own the protocol end to end.** The USB wire format, the register map
+  and the host are designed here from scratch (`docs/PROTOCOL.md`); the host
+  is one small Rust crate (`b210`), no UHD. The vendor's UHD image and this
+  image are alternatives for the same board, not interchangeable software:
+  each speaks its own protocol.
+- **Everything claimed is measured.** `docs/DESIGN.md` records the decisions
+  with the board measurements that back them; `just check` runs the FPGA
+  benches and the host tests, including fault-injection cases that must fail.
 
 ## Quick start
 
@@ -30,45 +38,32 @@ then first loads Ettus's stock FX3 firmware from `.tools/uhd315/images`
 (`--firmware FILE.hex` for another path; the file must match the SHA-256
 `scripts/toolchain.sh` pins), waits for 2500:0020 and loads the image.
 
-`scripts/build.sh` takes `NAME`, `PARAMS` (`BUILD_COMMIT` defaults to HEAD),
-`SRCS`, `XDC`, `ALLOW_TIMING_FAIL`, `PNR_EXTRA`; see its header. The build
-record `build/fpga/usrp_<NAME>.txt` holds the image hash, sources, tools and timing.
-
 ## Command line
 
 ```sh
 b210 load <IMAGE> [--firmware FILE.hex]  # FX3 firmware if needed, then the FPGA image; start the bus
-b210 state                 # FX3 firmware state (1 ready, 2 configuring, 4 running)
-b210 read <ADDR>           # read a register (hex 0x.. or decimal)
-b210 write <ADDR> <VALUE>  # write a register
-b210 monitor [--interval-ms 500]       # live status, event counters, USB events
-b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
-b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
-b210 capture [STREAM] [--out capture.raw] [--source radio|loopback|pattern] [--prbs]
-b210-radio id|apply CONFIG.toml|peek REGS...|reset|test CONFIG.toml MODE|scan CONFIG.toml
-b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [--hi HZ]
+b210 state | monitor                     # FX3 state; live status, event counters, USB events
+b210 read <ADDR> | write <ADDR> <VALUE>  # registers (hex 0x..)
+b210 rx-test [STREAM]                    # stream the FPGA's pattern; every sample checked
+b210 loop-test [STREAM]                  # a timed tx burst through the FPGA loopback, back on rx
+b210 capture [STREAM] [--out F] [--source radio|loopback|pattern] [--prbs]
+b210-radio id | apply CONFIG.toml | peek REGS | reset | test CONFIG.toml MODE | scan CONFIG.toml
+b210-plot FILE [--view ...] [--fft N] [--lo HZ] [--hi HZ] [--png PREFIX [--sheet]]
 ```
 
-`STREAM` options: `--seconds`, `--format sc16|sc12`, `--channels 1|2`,
-`--depth-ms`. The sample clock is the AD9361's, so any stream needs the
-chip running: `b210-radio apply host/b210/examples/config.toml` first, or
-the stream stops with "no sample clock". `capture` writes interleaved i16
-I/Q, one file per channel (`--prbs` with `--source radio` checks the AD9361's
-BIST sequence instead, after `b210-radio test CONFIG prbs`); `capture` refuses a
-radio stream whose ADC saturated (it prints the per-channel fraction and
-exits 1), refuses to analyse a stream that lost sample times (the file is a
-splice), and analyses the file in bounded memory. `b210-radio test` selects the
-AD9361's digital test mode at its data port (`tone`, `prbs`, `loopback`,
-`none`); `b210-radio scan` sweeps its rx clock/data delays with the PRBS and
-prints the eye. `b210-plot` writes a report (level, DC, I/Q
-balance, tone, floor, spurs, findings) and draws the spectrum, waterfall,
-time, histogram and constellation in the terminal; `--png PREFIX` writes the
-same image views as grayscale PNG files (`PREFIX_spectrum.png`,
-`PREFIX_waterfall.png`, `PREFIX_time.png`, `PREFIX_hist.png`,
-`PREFIX_iq.png`) for browsing, and `--png PREFIX --sheet` also composes them
-into one `PREFIX_sheet.png` (two per row, no labels: the fixed layout is the
-caption) so a whole receive state is one image. `--help` on any command
-gives the full list and defaults.
+`--help` on any command gives the full options. The essentials:
+
+- The sample clock is the AD9361's: apply a configuration first
+  (`b210-radio apply host/b210/examples/config.toml`, a TOML of radio state:
+  rate, LO, bandwidth, gains), or a stream stops with "no sample clock".
+- `capture` writes interleaved i16 I/Q, one file per channel plus a `.toml`
+  sidecar any tool can read. It refuses a radio stream whose ADC saturated
+  and refuses to analyse a stream that lost sample times (a splice); a
+  digital source (`pattern`, `loopback`) is checked bit for bit instead.
+- `b210-plot` prints a report (level, DC, I/Q balance, tone, floor, spurs,
+  findings with causes) and draws the spectrum, waterfall, time, histogram
+  and constellation in the terminal; `--png PREFIX [--sheet]` writes the
+  same views as grayscale PNG files, `--sheet` composing them into one image.
 
 The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
 p. 15), whatever the gain: no setting protects the receiver from a stronger
@@ -84,7 +79,6 @@ the LO test: move the LO by 100 kHz and capture again; a station moves by
 b210-radio apply host/b210/examples/config.toml     # 2.45 GHz ISM, 2 x 2
 b210 capture --seconds 2 --out /tmp/cap.raw
 b210-plot /tmp/cap_ch0.raw --view report
-b210-plot /tmp/cap_ch0.raw --view spectrum
 b210-plot /tmp/cap_ch0.raw --png /tmp/cap_ch0 --sheet   # images to browse, plus one sheet
 ```
 
@@ -101,19 +95,22 @@ headers; it exits 1 if the stream was not clean.
 `host/b210/examples/rf_tone.rs` is the duplex one: it transmits a +1 MHz tone
 through the RF TX port while receiving, and prints the level the antenna sees
 at each rx gain - the TX RF path, which the digital loopback never reaches.
-It needs a config with one rx channel (ch0) and one tx channel (ch0), and its
-tone is only above the receiver's floor with the tx gain near 89.75 dB
-(0 dB attenuation): `cargo run --release --example rf_tone -- rf.toml`.
 
-`capture` exits 1 when the ADC saturates (lower the gain in the config's
-`gain_db`), only for `--source radio` (the default): `--source pattern` and
-`--source loopback` reach the code rails by construction and are reported,
-not refused. A crowded
-band such as FM overloads at 70 dB and is clean from 55 dB down, so a strong
-band needs a lower gain than a weak one (`docs/DESIGN.md`, "antenna").
+## Repository layout
 
-## v1
+- `fpga/rtl/`, `fpga/b210.xdc`: the FPGA; `fpga/tests/`: its benches, one
+  file per module, each case stating the result it must give
+- `host/b210/`: the Rust crate and the three binaries; `host/b210/examples/`:
+  the client examples above
+- `scripts/`: the build flow (`build.sh` writes the build record:
+  image hash, sources, tools, timing) and the mutation campaign
+  (`mutate.sh`, `mutate.py`)
+- `container/`: the Yosys / Project X-Ray image and the tool patches
+- `docs/PROTOCOL.md`: the USB protocol and register map
+- `docs/DESIGN.md`: the design decisions and the measurements behind them
 
-The first version (Ettus's UHD-compatible image built with open tools, plus
-Python helpers) is tagged `v1-ettus-uhd`: `git checkout v1-ettus-uhd`, or
-`git show v1-ettus-uhd:<path>` for a single file.
+## Licence
+
+GPL-3.0-or-later (see `LICENSE`); every source file carries the SPDX header.
+The Ettus FX3 firmware and UHD sources this flow downloads for the bring-up
+keep their own licences and are pinned by hash, not committed.
