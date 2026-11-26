@@ -233,13 +233,16 @@ impl Tone {
         m * rate / Self::L as f64
     }
 
-    /// Value v (I0 Q0 I1 Q1) of sample time i.
+    /// Value v (I0 Q0 I1 Q1) of sample time i, always a 12-bit code:
+    /// channel 1 is the conjugate, and the conjugate of -2048 is +2047,
+    /// the nearest code to +2048 (which does not exist and would wrap to
+    /// -2048 on the wire).
     pub fn value(&self, i: u64, v: usize) -> i16 {
         let [c, s] = self.table[(i.wrapping_mul(self.m) % Self::L) as usize];
         match v {
             0 | 2 => c,
             1 => s,
-            _ => s.saturating_neg(),
+            _ => (-(s as i32)).clamp(-2048, 2047) as i16,
         }
     }
 }
@@ -301,6 +304,27 @@ mod tests {
         fft(&mut xr, &mut xi);
         let freq: f64 = xr.iter().chain(&xi).map(|v| (*v as f64).powi(2)).sum::<f64>() / n as f64;
         assert!((time - freq).abs() < 1e-4 * time);
+    }
+
+    #[test]
+    fn the_conjugate_channel_stays_inside_the_12_bit_codes() {
+        // at 0 dBFS the table holds -2048, whose mathematical conjugate is
+        // +2048; the wire has no such code, so the nearest one (+2047) is
+        // sent and must be what value() reports
+        let t = Tone::new(1e6, 30.72e6, 0.0);
+        let mut saw_min = false;
+        for i in 0..Tone::L {
+            let s = t.value(i, 1);
+            let c = t.value(i, 3);
+            assert!((-2048..=2047).contains(&c), "i {i}: {c} outside the 12-bit codes");
+            if s == -2048 {
+                assert_eq!(c, 2047, "i {i}: the conjugate of -2048");
+                saw_min = true;
+            } else {
+                assert_eq!(c, -s, "i {i}");
+            }
+        }
+        assert!(saw_min, "the most negative code was exercised");
     }
 
     #[test]

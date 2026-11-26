@@ -138,7 +138,14 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    config applied from the TOML with every poll ok; pattern
    lossless at 2 x 30.72 MS/s (sc12 and sc16) and 1 x 61.44 MS/s; full
    duplex loopback 307.2 M samples back at exactly their ticks in 10 s
-   (2 channels) and 5 s (1 channel at 61.44 MS/s); a 3 s radio capture
+   (2 channels) and 5 s (1 channel at 61.44 MS/s). A 0 dBFS tone exposed a
+   bug in the test tone's conjugate channel: -(-2048) is +2048, outside the
+   12-bit codes, and the wire wraps it to -2048, so 216,090 values
+   mismatched and the capture failed as "stream not clean". value() now
+   clamps the conjugate to +2047 (the nearest code); measured after: 0
+   dBFS is bit exact (0 bad values) and is then refused for saturation
+   with the intended message, while -1 dBFS is unchanged (SNR 73.0 dB,
+   ENOB 12.01, 0 bad values). A 3 s radio capture
    kept 89.0 M sample times per channel with nothing lost. Clocks
    104.24 / 104.11 MHz, both crossings 2.14 and 1.78 ns against the
    8.00 ns bound. First real RF (2.45 GHz, 40 / 35 dB gain, no antenna):
