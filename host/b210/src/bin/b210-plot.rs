@@ -517,18 +517,7 @@ fn png_views(x: &[i16], rate: f64, n: usize, g: &Geometry, views: &[View], prefi
                     count[0][(p[0] as i32 + 2048) as usize] += 1;
                     count[1][(p[1] as i32 + 2048) as usize] += 1;
                 }
-                let top = count.iter().flatten().copied().max().unwrap_or(1) as f64;
-                let mut im = png::Gray::new(w, h);
-                for (q, val) in [(1usize, 110u8), (0, 255)] {
-                    for c in 0..w {
-                        let a = 4096 * c as usize / w as usize;
-                        let b = (4096 * (c + 1) as usize / w as usize).max(a + 1);
-                        let k: u64 = count[q][a..b].iter().sum();
-                        let y = (((k as f64 + 1.0).log10() / (top + 1.0).log10()).clamp(0.0, 1.0) * (h - 1) as f64).round() as u32;
-                        im.band(c, y, h - 1, val);
-                    }
-                }
-                ("hist", im)
+                ("hist", hist_image(&count, w, h))
             }
             View::Iq => {
                 let full = code_scale(x);
@@ -547,6 +536,32 @@ fn png_views(x: &[i16], rate: f64, n: usize, g: &Geometry, views: &[View], prefi
         println!("png {} ({} x {})", path.display(), im.w, im.h);
     }
     Ok(())
+}
+
+/// The code histogram as an image: each channel's count per code as a
+/// trace over the codes that were hit (the axis spans just that range, so a
+/// distribution over a few dozen codes is a shape, not a spike on a
+/// 4096-code axis), high count toward the top, log scale. I is bright, Q
+/// dimmer; a bell is noise, a bowl a sinusoid's arcsine distribution.
+fn hist_image(count: &[Vec<u64>], w: u32, h: u32) -> png::Gray {
+    let top = count.iter().flatten().copied().max().unwrap_or(1) as f64;
+    let first = count.iter().flat_map(|c| c.iter().position(|v| *v > 0)).min().unwrap_or(0);
+    let last = count.iter().flat_map(|c| c.iter().rposition(|v| *v > 0)).max().unwrap_or(4095);
+    let span = (last - first + 1).max(1);
+    let mut im = png::Gray::new(w, h);
+    for (q, val) in [(1usize, 110u8), (0, 255)] {
+        let mut prev: Option<u32> = None;
+        for c in 0..w {
+            let a = first + span * c as usize / w as usize;
+            let b = (first + span * (c as usize + 1) / w as usize).max(a + 1).min(4096);
+            let k: u64 = count[q][a..b].iter().sum();
+            let frac = ((k as f64 + 1.0).log10() / (top + 1.0).log10()).clamp(0.0, 1.0);
+            let y = ((1.0 - frac) * (h - 1) as f64).round() as u32;
+            if let Some(p) = prev { im.band(c, p, y, val); } else { im.set(c, y, val); }
+            prev = Some(y);
+        }
+    }
+    im
 }
 
 /// A minimal 8-bit grayscale PNG writer: signature, one IHDR, one IDAT
@@ -746,6 +761,21 @@ mod tests {
                 assert_eq!(raw[y * (w as usize + 1) + 1 + x], g.px[y * w as usize + x]);
             }
         }
+    }
+
+    #[test]
+    fn the_histogram_zooms_to_the_hit_codes_and_puts_high_counts_on_top() {
+        let mut count = vec![vec![0u64; 4096], vec![0u64; 4096]];
+        let bell = [1u64, 3, 10, 30, 100, 300, 1000, 1000, 300, 100, 30, 10, 3, 1];
+        for (k, v) in bell.iter().enumerate() { count[0][2100 + k] = *v; }
+        let (w, h) = (80u32, 40u32);
+        let im = hist_image(&count, w, h);
+        let first_y = |x: u32| (0..h).find(|&y| im.px[(y * w + x) as usize] > 0);
+        let centre = first_y(w / 2).expect("the peak is drawn");
+        let tail = first_y(1).expect("the first occupied code is drawn");
+        assert!(centre < tail, "the peak is above the tail: {centre} vs {tail}");
+        // the 14 hit codes span the whole width: the axis zoomed to them
+        assert!(first_y(w - 3).is_some(), "no trace at the right edge");
     }
 
     #[test]
