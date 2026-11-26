@@ -1,0 +1,184 @@
+# Scenarios of the golden traces. Each [name] block is one session from
+# reset: harness.cpp runs it on UHD's ad9361_device.cpp (generate.sh writes
+# name.trace), tests/ad9361_golden.rs runs it on the Rust driver and compares.
+# Commands: see harness.cpp. After editing, run generate.sh.
+
+[init]
+init
+
+# v1's usual configuration: 2 x 2 channels at 30.72 MS/s
+[b210_30m72_2r2t]
+init
+rate 30.72e6
+channels 3 3
+freq rx 2.4e9
+freq tx 2.4e9
+gain rx 0 30
+gain rx 1 45.5
+gain tx 0 60
+gain tx 1 89.75
+bandwidth rx 20e6
+bandwidth tx 20e6
+
+# one channel at the top rate
+[b210_61m44_1r1t]
+init
+rate 61.44e6
+channels 1 1
+freq rx 5.8e9
+freq tx 5.8e9
+bandwidth rx 56e6
+bandwidth tx 56e6
+gain rx 0 76
+gain tx 0 0.25
+
+[b210_1m]
+init
+rate 1e6
+channels 1 1
+freq rx 100e6
+freq tx 100e6
+bandwidth rx 1e6
+bandwidth tx 1e6
+gain rx 0 0
+gain tx 0 10
+
+# UHD's B210 open order (ad936x_manager::init_codec per channel, then the
+# default tick rate 16 MHz), without the three calls this driver does not
+# have (set_dc_offset_auto(true), set_iq_balance_auto(true), set_agc(false)
+# rewrite 0x18B = 0xAD, 0x169 = 0xCF, 0x0FA = 0xE0: values already there);
+# then a 2 x 2 stream at 30.72 MS/s on 433.92 MHz
+[uhd_open_order]
+init
+gain rx 0 0
+bandwidth rx 56e6
+freq rx 100e6
+gain rx 1 0
+bandwidth rx 56e6
+freq rx 100e6
+gain tx 0 0
+bandwidth tx 56e6
+freq tx 100e6
+gain tx 1 0
+bandwidth tx 56e6
+freq tx 100e6
+rate 16e6
+rate 30.72e6
+channels 3 3
+freq rx 433.92e6
+freq tx 433.92e6
+gain rx 0 40
+gain rx 1 40
+
+# every rate band, at and next to its edges, every BBPLL divider 2^1 .. 2^6;
+# a repeat within 1 Hz writes nothing
+[rates]
+init
+rate 220e3
+rate 0.33e6
+rate 0.5e6
+rate 0.66e6
+rate 2e6
+rate 4e6
+rate 7.68e6
+rate 20e6
+rate 21e6
+rate 23e6
+rate 30.72e6
+rate 30720000.5
+rate 41e6
+rate 50e6
+rate 58e6
+rate 60e6
+rate 61.44e6
+channels 1 1
+rate 0.25e6
+channels 3 3
+rate 30.72e6
+
+# LO bands: rx ports C/B/A at 2.2 and 4 GHz, gain tables at 1.3 and 4 GHz,
+# tx ports at 2.5 GHz; moves under 100 MHz skip the calibrations; a repeat
+# within 1 Hz writes nothing
+[tune]
+init
+rate 30.72e6
+channels 3 3
+freq rx 70e6
+freq rx 100e6
+freq rx 100000000.5
+freq rx 1.2999e9
+freq rx 1.3e9
+freq rx 2.1999e9
+freq rx 2.2e9
+freq rx 3.9999e9
+freq rx 4e9
+freq rx 5.8e9
+freq rx 6e9
+freq tx 70e6
+freq tx 2.4999e9
+freq tx 2.5e9
+freq tx 6e9
+freq tx 5.95e9
+gain rx 1 12.9
+gain tx 1 33.3
+
+# the analog filters over their branches; then limited by a low rate
+[bandwidths]
+init
+rate 61.44e6
+bandwidth rx 200e3
+bandwidth rx 1e6
+bandwidth rx 4e6
+bandwidth rx 12e6
+bandwidth rx 20e6
+bandwidth rx 40e6
+bandwidth rx 56e6
+bandwidth tx 200e3
+bandwidth tx 1.2e6
+bandwidth tx 3e6
+bandwidth tx 5e6
+bandwidth tx 10e6
+bandwidth tx 20e6
+bandwidth tx 30e6
+bandwidth tx 56e6
+rate 1e6
+bandwidth rx 56e6
+bandwidth tx 56e6
+
+# gains: index truncation, tx steps of 0.25 dB, both channels, the gain
+# table changing under set gains
+[gains]
+init
+rate 7.68e6
+channels 3 3
+gain rx 0 0
+gain rx 1 76
+gain rx 0 37.9
+gain tx 0 0
+gain tx 1 0.1
+gain tx 0 89.75
+gain tx 1 45.3
+freq rx 2.4e9
+freq rx 5e9
+freq tx 3e9
+
+[test_tone]
+init
+rate 30.72e6
+channels 3 3
+test tone
+
+[test_prbs]
+init
+channels 1 1
+test prbs
+
+[test_loopback]
+init
+rate 30.72e6
+channels 3 3
+test loopback
+test none
+test loopback
+delays 0x3F 0x0A
+delays 0x0F 0x0F

@@ -1,0 +1,53 @@
+--- a/himbaechel/uarch/xilinx/fasm.cc	2026-11-24 09:54:43.760532819 -0500
++++ b/himbaechel/uarch/xilinx/fasm.cc	2026-11-24 09:54:43.762532847 -0500
+@@ -2252,6 +2252,10 @@
+ 
+         std::set<std::string> all_gclk;
+         dict<int, std::set<std::string>> hclk_by_row;
++        // BUFR outputs entering a clock row: {from the right, "BUFRCLK<n>"},
++        // and the column of that row's CLK_HROW tile.
++        dict<int, std::set<std::pair<bool, std::string>>> bufrclk_by_row;
++        dict<int, int> hrow_column;
+ 
+         for (auto &cell : ctx->cells) {
+             CellInfo *ci = cell.second.get();
+@@ -2325,6 +2329,21 @@
+                         continue;
+                     write_bit(s + "_ACTIVE");
+                 }
++                // A BUFR output reaches the clock row on CK_BUFRCLK_<L|R><n>.
++                // The row buffers that line (<wire>_ACTIVE) and so does the CMT
++                // column on that side (HCLK_CMT_CK_BUFRCLK<n>_USED, below).
++                // Vivado sets both; with neither, the routed BUFR -> BUFG
++                // connection is a dead input and a clock mux switched to it
++                // stops (measured on xc7k325t, HP bank 34).
++                const std::string bufrclk_prefix = "CLK_HROW_CK_BUFRCLK_";
++                auto used_bufrclk = used_wires_starting_with(tile, bufrclk_prefix, true);
++                for (auto &s : std::set<std::string>(used_bufrclk.begin(), used_bufrclk.end())) {
++                    write_bit(s + "_ACTIVE");
++                    const bool from_right = s[bufrclk_prefix.size()] == 'R';
++                    const int row = tile / ctx->chip_info->width;
++                    bufrclk_by_row[row].insert({from_right, "BUFRCLK" + s.substr(bufrclk_prefix.size() + 1)});
++                    hrow_column[row] = tile % ctx->chip_info->width;
++                }
+             } else if (boost::starts_with(type, "HCLK_CMT")) {
+                 auto used_ccio = used_wires_starting_with(tile, "HCLK_CMT_CCIO", true);
+                 for (auto s : used_ccio) {
+@@ -2355,9 +2374,16 @@
+                     write_bit(gclk + "_ENABLE_BELOW");
+                 }
+             } else if (boost::starts_with(type, "HCLK_CMT")) {
+-                for (auto &hclk : hclk_by_row[tile / ctx->chip_info->width]) {
++                const int row = tile / ctx->chip_info->width;
++                for (auto &hclk : hclk_by_row[row]) {
+                     write_bit("HCLK_CMT_CK_" + hclk + "_USED");
+                 }
++                if (bufrclk_by_row.count(row)) {
++                    const bool tile_is_right_of_hrow = (tile % ctx->chip_info->width) > hrow_column.at(row);
++                    for (auto &bufrclk : bufrclk_by_row.at(row))
++                        if (bufrclk.first == tile_is_right_of_hrow)
++                            write_bit("HCLK_CMT_CK_" + bufrclk.second + "_USED");
++                }
+             }
+             pop();
+             blank();

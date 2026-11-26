@@ -1,0 +1,516 @@
+diff --git a/himbaechel/uarch/xilinx/CMakeLists.txt b/himbaechel/uarch/xilinx/CMakeLists.txt
+index 4a3cafa..b13f6c3 100644
+--- a/himbaechel/uarch/xilinx/CMakeLists.txt
++++ b/himbaechel/uarch/xilinx/CMakeLists.txt
+@@ -4,6 +4,7 @@ set(SOURCES
+     clock_tree.cc
+     constids.inc
+     delay_matrix.cc
++    dsp_timing.cc
+     extra_data.h
+     fasm.cc
+     hold_fix.cc
+diff --git a/himbaechel/uarch/xilinx/dsp_timing.cc b/himbaechel/uarch/xilinx/dsp_timing.cc
+new file mode 100644
+index 0000000..7cf5b94
+--- /dev/null
++++ b/himbaechel/uarch/xilinx/dsp_timing.cc
+@@ -0,0 +1,442 @@
++/*
++ *  nextpnr -- Next Generation Place and Route
++ *
++ *  DSP48E1 timing where the chipdb has none.
++ *
++ *  Permission to use, copy, modify, and/or distribute this software for any
++ *  purpose with or without fee is hereby granted, provided that the above
++ *  copyright notice and this permission notice appear in all copies.
++ *
++ *  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ *  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ *  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ *  ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ *  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ *  ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ *  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ *
++ */
++
++// A chipdb generated without a timing directory carries cell timing for the
++// slice, the carry chain and the block RAM only.  A cell without timing is
++// ignored by the timing analysis: every path into or out of a DSP48E1 went
++// unchecked, and the reported Fmax did not cover the multipliers at all.
++//
++// What a DSP48E1 pin is to the timing analysis depends on which of the cell's
++// registers are in use, so the arcs are worked out here from the cell's own
++// parameters instead of being stored once per parameter combination:
++//
++//   - an input has a setup and hold against CLK when a register follows it:
++//     its own (AREG, BREG, CREG, DREG, the control registers), or the first
++//     one further in (ADREG, MREG, PREG) with the logic before it counted in;
++//   - an input with no register before the outputs has a combinational arc to
++//     them;
++//   - an output is clocked out of the last register before it: PREG, or with
++//     PREG = 0 whichever earlier register feeds it, with the logic behind that
++//     register counted in.
++//
++// Data paths: Kintex-7 data sheet DS182 (v2.19), table 35, speed grade -1,
++// the slowest commercial grade, in picoseconds.  The table has no rows for the
++// OPMODE, ALUMODE, INMODE, CARRYIN and CARRYINSEL pins; theirs are the
++// Artix-7 figures of Project X-Ray's DSP_L.sdf, which is slower silicon and so
++// an upper bound here, as it is for the carry chain and the block RAM in the
++// same chipdb.  Where the table has no row for a path, the row of a longer
++// path through the same logic stands in for it and the comment says so.
++// Minimum delays are not characterised in either source: every delay is
++// given as its maximum, which is what setup analysis needs.
++
++#include "log.h"
++#include "nextpnr.h"
++#include "util.h"
++
++#include "xilinx.h"
++
++#define HIMBAECHEL_CONSTIDS "uarch/xilinx/constids.inc"
++#include "himbaechel_constids.h"
++
++NEXTPNR_NAMESPACE_BEGIN
++
++namespace {
++
++enum DspPin
++{
++    DP_NONE,
++    DP_CLK,
++    // inputs
++    DP_A,
++    DP_B,
++    DP_C,
++    DP_D,
++    DP_ACIN,
++    DP_BCIN,
++    DP_PCIN, // PCIN, CARRYCASCIN, MULTSIGNIN: into the post-adder
++    DP_OPMODE,
++    DP_ALUMODE,
++    DP_INMODE,
++    DP_CARRYIN,
++    DP_CARRYINSEL,
++    DP_CE,
++    DP_RST,
++    // outputs
++    DP_P,     // P, CARRYOUT, PATTERNDETECT, PATTERNBDETECT, OVERFLOW, UNDERFLOW
++    DP_PCOUT, // PCOUT, CARRYCASCOUT, MULTSIGNOUT
++    DP_ACOUT,
++    DP_BCOUT,
++};
++
++DspPin classify(const std::string &name)
++{
++    if (name == "CLK")
++        return DP_CLK;
++    // CEA1, CEA2, CEB1 and CEB2 end in a digit that is no bus index
++    if (name.compare(0, 2, "CE") == 0)
++        return DP_CE;
++    if (name.compare(0, 3, "RST") == 0)
++        return DP_RST;
++    size_t end = name.size();
++    while (end > 0 && name[end - 1] >= '0' && name[end - 1] <= '9')
++        end--;
++    const std::string bus = name.substr(0, end);
++    static const std::pair<const char *, DspPin> buses[] = {
++            {"A", DP_A},
++            {"B", DP_B},
++            {"C", DP_C},
++            {"D", DP_D},
++            {"ACIN", DP_ACIN},
++            {"BCIN", DP_BCIN},
++            {"PCIN", DP_PCIN},
++            {"CARRYCASCIN", DP_PCIN},
++            {"MULTSIGNIN", DP_PCIN},
++            {"OPMODE", DP_OPMODE},
++            {"ALUMODE", DP_ALUMODE},
++            {"INMODE", DP_INMODE},
++            {"CARRYIN", DP_CARRYIN},
++            {"CARRYINSEL", DP_CARRYINSEL},
++            {"P", DP_P},
++            {"CARRYOUT", DP_P},
++            {"PATTERNDETECT", DP_P},
++            {"PATTERNBDETECT", DP_P},
++            {"OVERFLOW", DP_P},
++            {"UNDERFLOW", DP_P},
++            {"PCOUT", DP_PCOUT},
++            {"CARRYCASCOUT", DP_PCOUT},
++            {"MULTSIGNOUT", DP_PCOUT},
++            {"ACOUT", DP_ACOUT},
++            {"BCOUT", DP_BCOUT},
++    };
++    for (const auto &b : buses)
++        if (bus == b.first)
++            return b.second;
++    return DP_NONE;
++}
++
++// The registers in use, with the primitive's defaults (UG479) for a parameter
++// the netlist does not give.
++struct DspCfg
++{
++    bool areg, breg, creg, dreg, adreg, mreg, preg;
++    bool opmodereg, alumodereg, inmodereg, carryinreg, carryinselreg;
++    bool mult;   // the multiplier can be in the path (USE_MULT is not NONE)
++    bool nomult; // A:B can reach the post-adder directly (USE_MULT is not MULTIPLY)
++    bool dport;  // the pre-adder is in the A path (USE_DPORT)
++};
++
++bool param_set(const Context *ctx, const CellInfo *cell, const char *name, bool def)
++{
++    auto found = cell->params.find(ctx->id(name));
++    if (found == cell->params.end())
++        return def;
++    if (found->second.is_string) {
++        const std::string value = found->second.as_string();
++        return value == "TRUE" || value == "1" || value == "2";
++    }
++    return found->second.as_int64() != 0;
++}
++
++DspCfg config(const Context *ctx, const CellInfo *cell)
++{
++    DspCfg c;
++    c.areg = param_set(ctx, cell, "AREG", true);
++    c.breg = param_set(ctx, cell, "BREG", true);
++    c.creg = param_set(ctx, cell, "CREG", true);
++    c.dreg = param_set(ctx, cell, "DREG", true);
++    c.adreg = param_set(ctx, cell, "ADREG", true);
++    c.mreg = param_set(ctx, cell, "MREG", true);
++    c.preg = param_set(ctx, cell, "PREG", true);
++    c.opmodereg = param_set(ctx, cell, "OPMODEREG", true);
++    c.alumodereg = param_set(ctx, cell, "ALUMODEREG", true);
++    c.inmodereg = param_set(ctx, cell, "INMODEREG", true);
++    c.carryinreg = param_set(ctx, cell, "CARRYINREG", true);
++    c.carryinselreg = param_set(ctx, cell, "CARRYINSELREG", true);
++    const std::string use_mult = str_or_default(cell->params, ctx->id("USE_MULT"), "MULTIPLY");
++    c.mult = use_mult != "NONE";
++    c.nomult = use_mult != "MULTIPLY";
++    c.dport = param_set(ctx, cell, "USE_DPORT", false);
++    return c;
++}
++
++// An input: setup and hold against CLK (setup < 0: none), and the
++// combinational delay to P (comb < 0: none).
++struct InArc
++{
++    delay_t setup = -1, hold = 0, comb = -1;
++    void check(delay_t su, delay_t h)
++    {
++        setup = std::max(setup, su);
++        hold = std::max(hold, h);
++    }
++    void through(delay_t d) { comb = std::max(comb, d); }
++};
++
++// The cascade outputs lag P by this much in every pair of rows of the table
++// (PREG 0.59 - 0.39, MREG 2.24 - 1.96, ADREG 3.41 - 3.13, AREG 4.84 - 4.55,
++// PCIN 1.57 - 1.29, C 1.83 - 1.55): the largest of those differences.
++const delay_t CASCADE_OUT = 290;
++
++InArc input_arc(const DspCfg &c, DspPin pin)
++{
++    InArc r;
++    switch (pin) {
++    case DP_A:
++    case DP_ACIN:
++    case DP_B:
++    case DP_BCIN: {
++        const bool is_a = pin == DP_A || pin == DP_ACIN;
++        const bool own_register = is_a ? c.areg : c.breg;
++        if (own_register) {
++            // T_DSPDCK_A_AREG 0.31/0.16, _B_BREG 0.39/0.15, _ACIN_AREG 0.27/0.16, _BCIN_BREG 0.30/0.15
++            r.check(pin == DP_A ? 310 : pin == DP_B ? 390 : pin == DP_ACIN ? 270 : 300, is_a ? 160 : 150);
++            break;
++        }
++        const bool through_preadder = is_a && c.dport;
++        if (c.mult) {
++            if (through_preadder && c.adreg)
++                r.check(1490, 20); // T_DSPDCK_{A,D}_ADREG
++            else if (through_preadder && (c.mreg || c.preg))
++                r.check(4530, 620); // no row for the pre-adder into MREG: T_DSPDCK_D_PREG_MULT, the longer path
++            else if (c.mreg)
++                r.check(2790, 10); // T_DSPDCK_{A,B}_MREG_MULT
++            else if (c.preg)
++                r.check(4640, 240); // T_DSPDCK_{A,B}_PREG_MULT
++            else
++                r.through(4390); // T_DSPDO_A_CARRYOUT_MULT, the slowest A to P-side output using the multiplier
++        }
++        if (c.nomult) {
++            if (c.preg)
++                r.check(2000, 240); // T_DSPDCK_{A,B}_PREG
++            else
++                r.through(1760); // T_DSPDO_A_P
++        }
++        break;
++    }
++    case DP_C:
++        if (c.creg)
++            r.check(200, 200); // T_DSPDCK_C_CREG
++        else if (c.preg)
++            r.check(1780, 220); // T_DSPDCK_C_PREG
++        else
++            r.through(1550); // T_DSPDO_C_P
++        break;
++    case DP_D:
++        if (!c.dport)
++            break;
++        if (c.dreg)
++            r.check(350, 260); // T_DSPDCK_D_DREG
++        else if (c.adreg)
++            r.check(1490, 20); // T_DSPDCK_{A,D}_ADREG
++        else if (c.mreg || c.preg)
++            r.check(4530, 620); // T_DSPDCK_D_PREG_MULT, also the bound for D into MREG
++        else
++            r.through(4300); // T_DSPDO_D_P_MULT
++        break;
++    case DP_PCIN:
++        if (c.preg)
++            r.check(1520, 130); // T_DSPDCK_PCIN_PREG
++        else
++            r.through(1290); // T_DSPDO_PCIN_P
++        break;
++    // The control pins: Artix-7, DSP_L.sdf (register, PREG behind them, straight to P).
++    case DP_OPMODE:
++        if (c.opmodereg)
++            r.check(449, 223);
++        else if (c.preg)
++            r.check(2600, 0);
++        else
++            r.through(2326);
++        break;
++    case DP_ALUMODE:
++        if (c.alumodereg)
++            r.check(246, 208);
++        else if (c.preg)
++            r.check(2369, 0);
++        else
++            r.through(2098);
++        break;
++    case DP_INMODE:
++        if (c.inmodereg)
++            r.check(449, 186);
++        else if (c.mreg || c.preg)
++            r.check(5557, 0); // into PREG through the multiplier; also the bound for MREG
++        else
++            r.through(5283);
++        break;
++    case DP_CARRYIN:
++        if (c.carryinreg)
++            r.check(299, 151);
++        else if (c.preg)
++            r.check(1690, 0);
++        else
++            r.through(1416);
++        break;
++    case DP_CARRYINSEL:
++        if (c.carryinselreg)
++            r.check(208, 174);
++        else if (c.preg)
++            r.check(2184, 0);
++        else
++            r.through(1910);
++        break;
++    case DP_CE:
++        r.check(450, 200); // the largest T_DSPDCK_CE*: CEP 0.45, and hold: CEM 0.20
++        break;
++    case DP_RST:
++        r.check(500, 260); // the largest T_DSPDCK_RST*: RSTD 0.50, and hold: RSTC 0.26
++        break;
++    default:
++        break;
++    }
++    return r;
++}
++
++// Clock to a P-side output, < 0 when no register feeds it.
++delay_t clock_to_p(const DspCfg &c)
++{
++    if (c.preg)
++        return 390; // T_DSPCKO_P_PREG
++    delay_t q = -1;
++    if (c.mult) {
++        if (c.mreg) {
++            q = std::max(q, 1960); // T_DSPCKO_P_MREG
++        } else {
++            if (c.dport && c.adreg)
++                q = std::max(q, 3130); // T_DSPCKO_P_ADREG_MULT
++            if (c.breg || (c.areg && !(c.dport && c.adreg)))
++                q = std::max(q, 4550); // T_DSPCKO_P_AREG_MULT
++            if (c.dport && c.dreg && !c.adreg)
++                q = std::max(q, 4510); // T_DSPCKO_P_DREG_MULT
++            if (c.inmodereg)
++                q = std::max(q, 5470); // Artix-7: INMODEREG to P through the multiplier
++        }
++    }
++    if (c.nomult && (c.areg || c.breg))
++        q = std::max(q, 1880); // T_DSPCKO_P_BREG
++    if (c.creg)
++        q = std::max(q, 1950); // T_DSPCKO_P_CREG
++    // Artix-7: the control registers to P
++    if (c.opmodereg)
++        q = std::max(q, 2231);
++    if (c.alumodereg)
++        q = std::max(q, 2054);
++    if (c.carryinselreg)
++        q = std::max(q, 1927);
++    if (c.carryinreg)
++        q = std::max(q, 1764);
++    return q;
++}
++
++delay_t clock_to_out(const DspCfg &c, DspPin pin)
++{
++    switch (pin) {
++    case DP_P:
++        return clock_to_p(c);
++    case DP_PCOUT: {
++        const delay_t q = clock_to_p(c);
++        return q < 0 ? q : q + CASCADE_OUT;
++    }
++    case DP_ACOUT:
++        return c.areg ? 740 : -1; // T_DSPCKO_{ACOUT;BCOUT}_{AREG;BREG}
++    case DP_BCOUT:
++        return c.breg ? 740 : -1;
++    default:
++        return -1;
++    }
++}
++
++// Combinational delay from an input to an output, < 0 when there is no such path.
++delay_t through(const DspCfg &c, DspPin from, DspPin to)
++{
++    if (to == DP_ACOUT)
++        return c.areg ? -1 : from == DP_A ? 630 : from == DP_ACIN ? 450 : -1; // T_DSPDO_{A;B}_{ACOUT;BCOUT}, _ACIN_ACOUT
++    if (to == DP_BCOUT)
++        return c.breg ? -1 : from == DP_B ? 630 : from == DP_BCIN ? 450 : -1;
++    if (to != DP_P && to != DP_PCOUT)
++        return -1;
++    const delay_t comb = input_arc(c, from).comb;
++    if (comb < 0)
++        return -1;
++    return to == DP_P ? comb : comb + CASCADE_OUT;
++}
++
++} // namespace
++
++bool XilinxImpl::dsp48e1_is_timed_here(const CellInfo *cell) const
++{
++    // A chipdb with DSP48E1 timing of its own keeps it.
++    return cell->type == id_DSP48E1_DSP48E1 && cell->timing_index == -1;
++}
++
++TimingPortClass XilinxImpl::dsp48e1_port_class(const CellInfo *cell, IdString port, int &clockInfoCount) const
++{
++    clockInfoCount = 0;
++    const DspPin pin = classify(port.str(ctx));
++    if (pin == DP_NONE)
++        return TMG_IGNORE;
++    if (pin == DP_CLK)
++        return TMG_CLOCK_INPUT;
++    const DspCfg c = config(ctx, cell);
++    const bool is_output = cell->ports.at(port).type == PORT_OUT;
++    if (is_output) {
++        const bool clocked = clock_to_out(c, pin) >= 0;
++        clockInfoCount = clocked ? 1 : 0;
++        return clocked ? TMG_REGISTER_OUTPUT : TMG_COMB_OUTPUT;
++    }
++    const InArc arc = input_arc(c, pin);
++    if (arc.setup >= 0) {
++        clockInfoCount = 1;
++        return TMG_REGISTER_INPUT;
++    }
++    return arc.comb >= 0 ? TMG_COMB_INPUT : TMG_IGNORE;
++}
++
++TimingClockingInfo XilinxImpl::dsp48e1_clocking_info(const CellInfo *cell, IdString port) const
++{
++    const DspPin pin = classify(port.str(ctx));
++    const DspCfg c = config(ctx, cell);
++    TimingClockingInfo info;
++    info.clock_port = id_CLK;
++    info.edge = RISING_EDGE;
++    const bool is_output = cell->ports.at(port).type == PORT_OUT;
++    if (is_output) {
++        info.clockToQ = DelayQuad(clock_to_out(c, pin));
++    } else {
++        const InArc arc = input_arc(c, pin);
++        info.setup = DelayPair(arc.setup);
++        info.hold = DelayPair(arc.hold);
++    }
++    return info;
++}
++
++bool XilinxImpl::dsp48e1_cell_delay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const
++{
++    const DspPin from = classify(fromPort.str(ctx)), to = classify(toPort.str(ctx));
++    const bool no_such_arc = from == DP_NONE || to == DP_NONE || from == DP_CLK;
++    if (no_such_arc)
++        return false;
++    const delay_t comb = through(config(ctx, cell), from, to);
++    if (comb < 0)
++        return false;
++    delay = DelayQuad(comb);
++    return true;
++}
++
++NEXTPNR_NAMESPACE_END
+diff --git a/himbaechel/uarch/xilinx/xilinx.cc b/himbaechel/uarch/xilinx/xilinx.cc
+index 8ba5036..e680956 100644
+--- a/himbaechel/uarch/xilinx/xilinx.cc
++++ b/himbaechel/uarch/xilinx/xilinx.cc
+@@ -1664,6 +1664,8 @@ void XilinxImpl::name_clocks_after_ports()
+ 
+ bool XilinxImpl::getCellDelay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const
+ {
++    if (dsp48e1_is_timed_here(cell))
++        return dsp48e1_cell_delay(cell, fromPort, toPort, delay);
+     // A 5LUT and a 6LUT in one position share pins A1-A5, and fixup_routing connects both cells to every net on them, so a
+     // cell can carry nets its function does not read (even its own output, through its partner). The packer names the
+     // inputs a LUT does read X_ORIG_PORT_<pin>; when a LUT has them, a pin without one has no arc to the output.
+@@ -1904,12 +1906,23 @@ bool XilinxImpl::clock_on_falling_edge(const CellInfo *cell, IdString clock_port
+     const bool is_bram = cell->type == id_RAMB18E1_RAMB18E1 || cell->type == id_RAMB36E1_RAMB36E1;
+     if (is_bram)
+         return bram_clock_on_falling_edge(cell, clock_port);
++    const bool is_dsp = cell->type == id_DSP48E1_DSP48E1;
++    if (is_dsp)
++        return clock_port == id_CLK && cell_param_is_one(cell, "IS_CLK_INVERTED");
+     return false;
+ }
+ 
++TimingPortClass XilinxImpl::getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const
++{
++    if (dsp48e1_is_timed_here(cell))
++        return dsp48e1_port_class(cell, port, clockInfoCount);
++    return ctx->get_port_timing_class_default(cell, port, clockInfoCount);
++}
++
+ TimingClockingInfo XilinxImpl::getPortClockingInfo(const CellInfo *cell, IdString port, int index) const
+ {
+-    TimingClockingInfo info = ctx->get_port_clocking_info_default(cell, port, index);
++    TimingClockingInfo info = dsp48e1_is_timed_here(cell) ? dsp48e1_clocking_info(cell, port)
++                                                          : ctx->get_port_clocking_info_default(cell, port, index);
+     const bool falling = clock_on_falling_edge(cell, info.clock_port);
+     if (falling) {
+         // Only the rising arcs stored in the chipdb are flipped. An arc that
+diff --git a/himbaechel/uarch/xilinx/xilinx.h b/himbaechel/uarch/xilinx/xilinx.h
+index bf09220..af4f915 100644
+--- a/himbaechel/uarch/xilinx/xilinx.h
++++ b/himbaechel/uarch/xilinx/xilinx.h
+@@ -147,6 +147,13 @@ struct XilinxImpl : HimbaechelAPI
+     // already programs that bit). Report the falling edge for that clock port
+     // so a path between opposite edges gets half a period.
+     TimingClockingInfo getPortClockingInfo(const CellInfo *cell, IdString port, int index) const override;
++    TimingPortClass getPortTimingClass(const CellInfo *cell, IdString port, int &clockInfoCount) const override;
++    // DSP48E1 arcs worked out from the cell's parameters where the chipdb has
++    // no timing for it (dsp_timing.cc).
++    bool dsp48e1_is_timed_here(const CellInfo *cell) const;
++    TimingPortClass dsp48e1_port_class(const CellInfo *cell, IdString port, int &clockInfoCount) const;
++    TimingClockingInfo dsp48e1_clocking_info(const CellInfo *cell, IdString port) const;
++    bool dsp48e1_cell_delay(const CellInfo *cell, IdString fromPort, IdString toPort, DelayQuad &delay) const;
+     bool clock_on_falling_edge(const CellInfo *cell, IdString clock_port) const;
+     bool bram_clock_on_falling_edge(const CellInfo *cell, IdString clock_port) const;
+     bool cell_param_is_one(const CellInfo *cell, const char *name) const;

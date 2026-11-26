@@ -6,7 +6,7 @@
 /out/
 
 # Yosys, nextpnr, and Project X-Ray outputs created at the repository root
-# when a stage is run by hand instead of through the Makefile.
+# when a stage is run by hand instead of through the justfile.
 /*.bit
 /*.bin
 /*.fasm
@@ -62,3 +62,7 @@ __pycache__/
 # Temporary downloads and fragments.
 *.tmp
 *.part
+third_party/prjxray-db-openxc7/
+
+# Rust build output
+/host/target/

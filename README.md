@@ -1,122 +1,117 @@
-# B210 Open FPGA
+# B210 open FPGA
 
-Source-first, terminal-only FPGA build for the B210 Kintex-7 firmware. The
-design is the B200/B210 Verilog RTL, rebuilt with open tools. No vendor IDE,
-license, Nix, or GUI is required.
+An independent, fully open FPGA image and Rust host for the
+[OpenSourceSDRLab B210-Kintex-7](https://opensourcesdrlab.com/products/b210-kintex-7)
+software-defined radio - a USRP B210-compatible board pairing the Analog
+Devices AD9361 RF transceiver (70 MHz .. 6 GHz, 2 x 2 full duplex) with a
+Xilinx Kintex-7 `xc7k325t-ffg676` and a Cypress FX3 USB 3.0 controller.
 
-```text
-Yosys v0.69            Verilog synthesis
-nextpnr f745549        placement and routing (himbaechel/Xilinx)
-Project X-Ray          FASM -> frames -> .bit
-```
+The board ships with a Vivado-based, UHD-compatible FPGA image
+([OpenSourceSDRLab/B210-Kintex-7](https://github.com/OpenSourceSDRLab/B210-Kintex-7)
+holds its schematic, mechanical files and that image). This repository is a
+different route to the same hardware:
 
-The result is an independent open-flow image, not a vendor-supplied image.
+- **The FPGA is built with open tools only** - Yosys, nextpnr-himbaechel and
+  Project X-Ray, every tool from pinned sources. No Vivado, no vendor IP.
+- **We own the protocol end to end.** The USB wire format, the register map
+  and the host are designed here from scratch (`docs/PROTOCOL.md`); the host
+  is one small Rust crate (`b210`), no UHD. The vendor's UHD image and this
+  image are alternatives for the same board, not interchangeable software:
+  each speaks its own protocol.
+- **Everything claimed is measured.** `docs/DESIGN.md` records the decisions
+  with the board measurements that back them; `just check` runs the FPGA
+  benches and the host tests, including fault-injection cases that must fail.
 
-## Design
-
-| Item | Value |
-| --- | --- |
-| FPGA | `xc7k325tffg676-2` (Kintex-7 325T, FFG676) |
-| Top module | `b200` |
-| HDL | Verilog-2001 |
-| Constraints | `src/constraints/b210.xdc` |
-| Clocking | `src/top/b200_clk_gen.v` (`MMCME2_ADV`, 40 MHz in, 40/100/100 MHz out) |
-| Halfband filters | `src/ip/hbdec.v` (49-tap, `src/ip/hb47.coe`) |
-| Device data | `third_party/prjxray-db` (Project X-Ray, CC0) |
-
-## Toolchain
-
-All tools are built from source in atomic container images:
-
-| Image | Dockerfile | Contents |
-| --- | --- | --- |
-| `b210-open-fpga-base` | `container/base.Dockerfile` | Ubuntu 24.04 build environment |
-| `b210-open-fpga-yosys` | `container/yosys.Dockerfile` | Yosys `v0.69` |
-| `b210-open-fpga-nextpnr` | `container/nextpnr.Dockerfile` | nextpnr `f745549`, Xilinx himbaechel, xc7k325t chipdb |
-| `b210-open-fpga-prjxray` | `container/prjxray.Dockerfile` | Project X-Ray `ed3331c` frame tools |
-| `b210-open-fpga` | `container/toolchain.Dockerfile` | composed final image |
-
-Repositories and official documentation are listed under
-[References](#references).
-
-The host needs Podman or Docker, GNU Make, Git, Python 3, and Icarus Verilog
-(`iverilog`, `vvp`) for the host tests.
-
-## Layout
-
-```text
-src/                 RTL, constraints, and portable IP
-tests/               self-checking host tests
-scripts/             source manifest and small Python helpers
-container/           atomic toolchain images
-third_party/         Project X-Ray xc7k325t data (CC0)
-Makefile             build interface
-README.md            this file
-build/               generated output; ignored by Git
-```
-
-## Commands
+## Quick start
 
 ```sh
-make tools       # build the atomic images and the final toolchain
-make build       # synthesize, place, route, and write the bitstream
-make synth       # Yosys synthesis only
-make pnr         # place and route only (requires make synth)
-make bitstream   # FASM -> frames -> .bit/.bin (requires make pnr)
-make analyze     # Yosys netlist analysis
-make timing      # nextpnr timing/utilization summary
-make test        # Gray-code, halfband, and bit2bin tests
-make doctor      # check host tools and the toolchain image
-make verify      # check the committed source state
-make shell       # interactive shell in the toolchain image
-make clean       # remove only this repository's build/ directory
-make image-clean # remove all toolchain images
+just setup                                 # container, nextpnr + chipdb, UHD sources + FX3 firmware
+just udev                                  # once: USB access to the board (2500:0020)
+just build                                 # fpga/rtl -> build/fpga/usrp_v2.bin + build record (hours)
+(cd host && cargo build --release)
+just load                                  # b210 load build/fpga/usrp_v2.bin
+just check                                 # FPGA benches + cargo test + clippy
 ```
 
-Overrides:
+After a power-up the FX3 is in its ROM bootloader (04b4:00f3); `b210 load`
+then first loads Ettus's stock FX3 firmware from `.tools/uhd315/images`
+(`--firmware FILE.hex` for another path; the file must match the SHA-256
+`scripts/toolchain.sh` pins), waits for 2500:0020 and loads the image.
+
+## Command line
 
 ```sh
-make build CONTAINER_ENGINE=docker
-make build FPGA_PART=xc7k325tffg676-1
-make build FPGA_ALLOW_TIMING_FAIL=1   # bring-up only; not timing signoff
+b210 load <IMAGE> [--firmware FILE.hex]  # FX3 firmware if needed, then the FPGA image; start the bus
+b210 state | monitor                     # FX3 state; live status, event counters, USB events
+b210 read <ADDR> | write <ADDR> <VALUE>  # registers (hex 0x..)
+b210 rx-test [STREAM]                    # stream the FPGA's pattern; every sample checked
+b210 loop-test [STREAM]                  # a timed tx burst through the FPGA loopback, back on rx
+b210 capture [STREAM] [--out F] [--source radio|loopback|pattern] [--prbs]
+b210-radio id | apply CONFIG.toml | peek REGS | reset | test CONFIG.toml MODE | scan CONFIG.toml
+b210-plot FILE [--view ...] [--fft N] [--lo HZ] [--hi HZ] [--png PREFIX [--sheet]]
 ```
 
-## Outputs
+`--help` on any command gives the full options. The essentials:
 
-```text
-build/fpga/synth/b200.json                  Yosys netlist
-build/fpga/pnr/b200.fasm                    nextpnr FASM
-build/fpga/pnr/b200.frames                  Project X-Ray frames
-build/fpga/bitstream/b200.bit               TLV bitstream
-build/fpga/bitstream/b200.bin               raw payload (FX3 format)
-build/fpga/bitstream/usrp_b210_fpga.bin     copy with the UHD filename
-build/fpga/logs/                            tool logs
-build/fpga/reports/                         timing and utilization reports
+- The sample clock is the AD9361's: apply a configuration first
+  (`b210-radio apply host/b210/examples/config.toml`, a TOML of radio state:
+  rate, LO, bandwidth, gains), or a stream stops with "no sample clock".
+- `capture` writes interleaved i16 I/Q, one file per channel plus a `.toml`
+  sidecar any tool can read. It refuses a radio stream whose ADC saturated
+  and refuses to analyse a stream that lost sample times (a splice); a
+  digital source (`pattern`, `loopback`) is checked bit for bit instead.
+- `b210-plot` prints a report (level, DC, I/Q balance, tone, floor, spurs,
+  findings with causes) and draws the spectrum, waterfall, time, histogram
+  and constellation in the terminal; `--png PREFIX [--sheet]` writes the
+  same views as grayscale PNG files, `--sheet` composing them into one image.
+
+The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
+p. 15), whatever the gain: no setting protects the receiver from a stronger
+signal at the port, which must be attenuated before it.
+
+## Is the antenna receiving?
+
+Apply a configuration, capture, and read the report. A real signal answers
+the LO test: move the LO by 100 kHz and capture again; a station moves by
+100 kHz in baseband, an internal spur does not.
+
+```sh
+b210-radio apply host/b210/examples/config.toml     # 2.45 GHz ISM, 2 x 2
+b210 capture --seconds 2 --out /tmp/cap.raw
+b210-plot /tmp/cap_ch0.raw --view report
+b210-plot /tmp/cap_ch0.raw --png /tmp/cap_ch0 --sheet   # images to browse, plus one sheet
 ```
 
-The `.bin` is the exact `e` payload of the `.bit`, including the 7-series
-bus-width/sync preamble. The `.bit` wrapper records the build time, so its
-hash varies; the raw `.bin` is reproducible.
+The same stream from your own Rust code, in the order the hardware
+requires (open, bring up, apply, set the rx source, stream):
 
-## Validation
+```sh
+cd host && cargo run --release --example stream -- b210/examples/config.toml 5
+```
 
-- Yosys synthesis completes; place and route reports 0 errors; every clock
-  constraint passes.
-- The raw image carries device IDCODE `0x3651093` (XC7K325T).
-- Host tests: 256/256 Gray-code round trips, 25/25 halfband taps, and the
-  bit2bin round trip.
-- A fresh checkout reproduces the netlist and raw `.bin` byte-for-byte.
+`host/b210/examples/stream.rs` is the minimal client: its callback gets each
+packet's I/Q and its `Check` reports lost samples, bad values and bad
+headers; it exits 1 if the stream was not clean.
+`host/b210/examples/rf_tone.rs` is the duplex one: it transmits a +1 MHz tone
+through the RF TX port while receiving, and prints the level the antenna sees
+at each rx gain - the TX RF path, which the digital loopback never reaches.
 
-Detailed reports are written under `build/fpga/reports/`.
+## Repository layout
 
-## References
+- `fpga/rtl/`, `fpga/b210.xdc`: the FPGA; `fpga/tests/`: its benches, one
+  file per module, each case stating the result it must give
+- `host/b210/`: the Rust crate and the three binaries; `host/b210/examples/`:
+  the client examples above
+- `scripts/`: the build flow (`build.sh` writes the build record:
+  image hash, sources, tools, timing) and the mutation campaign
+  (`mutate.sh`, `mutate.py`)
+- `container/`: the Yosys / Project X-Ray image and the tool patches
+- `docs/PROTOCOL.md`: the USB protocol and register map
+- `docs/DESIGN.md`: the design decisions and the measurements behind them
 
-- Yosys: <https://github.com/YosysHQ/yosys>
-- Yosys `synth_xilinx`:
-  <https://yosyshq.readthedocs.io/projects/yosys/en/latest/cmd/synth_xilinx.html>
-- nextpnr: <https://github.com/YosysHQ/nextpnr>
-- nextpnr Himbächel:
-  <https://github.com/YosysHQ/nextpnr/blob/main/docs/himbaechel.md>
-- Project X-Ray: <https://github.com/F4PGA/prjxray>
-- Project X-Ray database: <https://github.com/F4PGA/prjxray-db>
-- F4PGA: <https://f4pga.org/>
+## Licence
+
+GPL-3.0-or-later (see `LICENSE`); every source file's first line is its
+SPDX header.
+The Ettus FX3 firmware and UHD sources this flow downloads for the bring-up
+keep their own licences and are pinned by hash, not committed.
