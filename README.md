@@ -7,7 +7,7 @@ nextpnr-himbaechel, Project X-Ray), every tool from pinned sources. The host
 side is a Rust crate talking to the board over USB, with no UHD.
 
 - `fpga/rtl/`, `fpga/b210.xdc`: the FPGA; `fpga/tests/`: its benches
-- `host/b210/`: the Rust crate, binaries `b210` and `b210-plot`
+- `host/b210/`: the Rust crate, binaries `b210`, `b210-radio` and `b210-plot`
 - `scripts/`: the build flow (`build.sh`, `assemble.sh`, `toolchain.sh`)
 - `container/`: the Yosys / Project X-Ray image and the tool patches
 - `docs/PROTOCOL.md`: the USB protocol and register map; `docs/DESIGN.md`: the design
@@ -43,13 +43,18 @@ b210 monitor [--interval-ms 500]       # live status, event counters, USB events
 b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
 b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
 b210 capture [STREAM] [--out capture.raw] [--source pattern|tone|radio]
-b210-plot <FILE> [--rate HZ] [--view spectrum|time|both] [--fft N] [--lo HZ] [--hi HZ]
+b210-radio id|apply CONFIG.toml|peek REGS...|reset
+b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [--hi HZ]
 ```
 
 `STREAM` options: `--seconds`, `--format sc16|sc12`, `--channels 1|2`,
-`--div`, `--depth-ms`. `capture` writes interleaved i16 I/Q, one file per
-channel; `b210-plot` draws spectrum and I/Q in the terminal. `--help` on
-any command gives the full list and defaults.
+`--depth-ms`. The sample clock is the AD9361's, so any stream needs the
+chip running: `b210-radio apply host/b210/examples/config.toml` first, or
+the stream stops with "no sample clock". `capture` writes interleaved i16
+I/Q, one file per channel; `b210-plot` writes a report (level, DC, I/Q
+balance, tone, floor, spurs, findings) and draws the spectrum, waterfall,
+time, histogram and constellation in the terminal. `--help` on any command
+gives the full list and defaults.
 
 The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
 p. 15), whatever the gain: no setting protects the receiver from a stronger
