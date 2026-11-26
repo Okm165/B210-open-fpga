@@ -68,6 +68,24 @@ The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
 p. 15), whatever the gain: no setting protects the receiver from a stronger
 signal at the port, which must be attenuated before it.
 
+## Is the antenna receiving?
+
+Apply a configuration, capture, and read the report. A real signal answers
+the LO test: move the LO by 100 kHz and capture again; a station moves by
+100 kHz in baseband, an internal spur does not.
+
+```sh
+b210-radio apply host/b210/examples/config.toml     # 2.45 GHz ISM, 2 x 2
+b210 capture --seconds 2 --out /tmp/cap.raw
+b210-plot /tmp/cap_ch0.raw --view report
+b210-plot /tmp/cap_ch0.raw --view spectrum
+```
+
+`capture` exits 1 when the ADC saturates (lower the gain in the config's
+`gain_db`); a crowded band such as FM overloads at 70 dB and is clean from
+55 dB down, so a strong band needs a lower gain than a weak one
+(`docs/DESIGN.md`, "antenna").
+
 ## v1
 
 The first version (Ettus's UHD-compatible image built with open tools, plus
