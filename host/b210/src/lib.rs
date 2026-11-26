@@ -7,6 +7,7 @@ pub mod device;
 pub mod dsp;
 pub mod iq;
 pub mod quality;
+pub mod prbs;
 pub mod proto;
 pub mod regs;
 pub mod stream;

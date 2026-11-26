@@ -167,7 +167,16 @@ examples/config.toml     every configuration key
    channels at 2 x 30.72 MS/s (2R2T), and 1.9200 MHz at the same level and
    SNR at 1 x 61.44 MS/s (1R1T); the 12-bit limit at -6.02 dBFS is 68.0 dB,
    so the capture is bit exact. `b210-radio test CONFIG tone|prbs|loopback|
-   none` selects it. The PRBS checker and eye scan remain v1 measurements.
+   none` selects it.
+   The PRBS mode is checked bit by bit in the host (src/prbs.rs): the chip's
+   16-bit generator (taps {2,3,5..16}, ADI's BIST FAQ; Berlekamp-Massey on a
+   capture gives complexity 16 with the same taps) puts one bit per word and
+   per data line in bit 0, so each line's stream must obey
+   s[n] = s[n-2]^...^s[n-16]. Measured on the board: 110,320,320 bits at
+   2 x 30.72 MS/s sc16 and 110,276,672 at 1 x 61.44 MS/s sc12, 0 mismatches,
+   50.0% ones on both. A single-channel read of the 2R2T stream also passes:
+   decimating a maximal-length sequence by 2 is the same sequence shifted,
+   so that is not an error detector. The eye scan remains a v1 measurement.
    Build 10 also carries the tx rule that a packet with samples but
    neither START_OF_BURST nor an open burst is malformed (PROTOCOL.md 3.3):
    playing it left the sample side in a burst the deframer could not end.

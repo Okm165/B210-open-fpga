@@ -42,7 +42,7 @@ b210 write <ADDR> <VALUE>  # write a register
 b210 monitor [--interval-ms 500]       # live status, event counters, USB events
 b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
 b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
-b210 capture [STREAM] [--out capture.raw] [--source pattern|tone|radio]
+b210 capture [STREAM] [--out capture.raw] [--source pattern|tone|radio] [--prbs]
 b210-radio id|apply CONFIG.toml|peek REGS...|reset
 b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [--hi HZ]
 ```
@@ -51,7 +51,8 @@ b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [-
 `--depth-ms`. The sample clock is the AD9361's, so any stream needs the
 chip running: `b210-radio apply host/b210/examples/config.toml` first, or
 the stream stops with "no sample clock". `capture` writes interleaved i16
-I/Q, one file per channel; `b210-plot` writes a report (level, DC, I/Q
+I/Q, one file per channel (`--prbs` with `--source radio` checks the AD9361's
+BIST sequence instead, after `b210-radio test CONFIG prbs`); `b210-plot` writes a report (level, DC, I/Q
 balance, tone, floor, spurs, findings) and draws the spectrum, waterfall,
 time, histogram and constellation in the terminal. `--help` on any command
 gives the full list and defaults.

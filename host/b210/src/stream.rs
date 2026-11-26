@@ -92,6 +92,9 @@ pub struct Check {
     /// Whether `values` compares samples against `expect` at all: off for a
     /// source with no closed form (the radio).
     pub check_values: bool,
+    /// When set, samples are instead checked against the AD9361's BIST
+    /// pseudo-random sequence (prbs.rs), bit 0 of every word.
+    pub prbs: Option<crate::prbs::Checker>,
     /// The first data packet's time.
     pub first: Option<u64>,
     /// The time and sequence the next packet must carry.
@@ -130,6 +133,7 @@ impl Default for Check {
             mismatches: Vec::new(),
             data_seen: false,
             check_values: true,
+            prbs: None,
         }
     }
 }
@@ -138,6 +142,7 @@ impl Check {
     /// Nothing lost, flagged or wrong.
     pub fn clean(&self) -> bool {
         self.lost == 0 && self.bad_values == 0 && self.bad_headers == 0 && self.overflow_flags == 0
+            && self.prbs.as_ref().is_none_or(crate::prbs::Checker::ok)
     }
 
     /// One data packet's header (`n` sample times) against the stream so
@@ -168,6 +173,10 @@ impl Check {
     /// Every sample time of a packet against `expect(t)`, the four values I0
     /// Q0 I1 Q1 tick t must carry (the first `2 x count` of them compared).
     pub fn values(&mut self, h: &Header, v: &[i16], s: Shape, expect: &impl Fn(u64) -> [i16; 4]) {
+        if let Some(p) = &mut self.prbs {
+            p.feed(v, s.count());
+            return;
+        }
         if !self.check_values {
             return;
         }

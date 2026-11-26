@@ -74,6 +74,11 @@ struct CaptureArgs {
     /// radio: the AD9361, samples kept, not checked against a closed form
     #[arg(long, default_value = "tone")]
     source: String,
+    /// radio only: check every word's bit 0 against the AD9361's BIST
+    /// pseudo-random sequence (`b210-radio test CONFIG prbs` first) instead
+    /// of keeping the samples unchecked
+    #[arg(long)]
+    prbs: bool,
     /// tone frequency, Hz (channel 0 at +f, channel 1 at -f)
     #[arg(long, default_value_t = 1.234_567e6, allow_hyphen_values = true)]
     tone_hz: f64,
@@ -411,6 +416,12 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     let begin = Instant::now();
     let mut check = Check::default();
     check.check_values = src != rx_source::RADIO;
+    if c.prbs {
+        if src != rx_source::RADIO {
+            bail!("--prbs is for --source radio (the AD9361's BIST)");
+        }
+        check.prbs = Some(b210::prbs::Checker::default());
+    }
     let Usb { ctrl, tx, rx, depth } = &mut *usb;
     let depth = *depth;
     // Three threads: the rx loop only checks and queues packets, a writer
@@ -477,8 +488,13 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
             None => println!(", no tone"),
         }
     }
+    if let Some(p) = &check.prbs {
+        println!("PRBS: {} bits, {} mismatches, {:.1}% ones", p.bits(), p.mismatches(), 100.0 * p.ones());
+    }
     if !(counters_ok && check.clean()) { bail!("capture: the stream was not clean (see above)"); }
-    println!("{}; analyse with: b210-plot {}", if check.check_values {
+    println!("{}; analyse with: b210-plot {}", if check.prbs.is_some() {
+        "every header and the BIST pseudo-random sequence checked"
+    } else if check.check_values {
         "every sample time checked against what the source must carry"
     } else {
         "every header and the timing checked; the samples are the radio's"
