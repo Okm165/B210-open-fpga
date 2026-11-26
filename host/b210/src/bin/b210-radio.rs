@@ -100,11 +100,11 @@ fn main() -> Result<()> {
             let mut dev = apply(&mut usb.ctrl, None, &cfg)?;
             dev.ad.set_test(Test::Prbs)?;
             // the port's mode follows the configuration's rx channels
-            let mask = match cfg.rx.as_ref().map(|r| r.channels()).unwrap_or([None, None]) {
-                [Some(_), Some(_)] => 0b11,
-                [Some(_), None] => 0b01,
-                [None, Some(_)] => 0b10,
-                [None, None] => bail!("scan needs a [rx] section with channels"),
+            // a valid config has one channel (ch0) or two
+            let mask = match cfg.chains().rx_count() {
+                2 => 0b11,
+                1 => 0b01,
+                _ => bail!("scan needs a [rx] section with channels"),
             };
             let s = stream::Shape { format: Format::Sc16, mask };
             let expect = |_t: u64| [0i16; 4];

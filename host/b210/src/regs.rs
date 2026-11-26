@@ -1,4 +1,11 @@
 //! Register addresses (docs/PROTOCOL.md section 6, fpga/rtl/regs.v).
+//!
+//! The map is complete, not just the part the commands drive: SCRATCH is
+//! for `b210 read/write` sanity checks, and the timed-start registers
+//! (time_set_lo/hi, time_ctrl, rx_at_lo/hi) are implemented by the image
+//! but no command sets them - a stream starts when START is written. They
+//! are here so the map matches the RTL and PROTOCOL.md; none is a hint that
+//! the CLI has a timed mode.
 
 pub const ID: u16 = 0x000;
 pub const VERSION: u16 = 0x001;

@@ -21,8 +21,6 @@ pub const VERSION: u8 = 1;
 /// The bus's data ceiling, bytes/s (section 3: 32 bits x 100 MHz): the
 /// stream rate x bytes per sample time, rx and tx summed, must stay below it.
 pub const BUS_BYTES_PER_SEC: f64 = 4.0 * 100e6;
-/// The least rx packet the FPGA makes, sample times (section 3, rx_spp).
-pub const MIN_SPP: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
