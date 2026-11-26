@@ -65,7 +65,9 @@ balance, tone, floor, spurs, findings) and draws the spectrum, waterfall,
 time, histogram and constellation in the terminal; `--png PREFIX` writes the
 same image views as grayscale PNG files (`PREFIX_spectrum.png`,
 `PREFIX_waterfall.png`, `PREFIX_time.png`, `PREFIX_hist.png`,
-`PREFIX_iq.png`) for browsing. `--help` on any command
+`PREFIX_iq.png`) for browsing, and `--png PREFIX --sheet` also composes them
+into one `PREFIX_sheet.png` (two per row, no labels: the fixed layout is the
+caption) so a whole receive state is one image. `--help` on any command
 gives the full list and defaults.
 
 The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
@@ -83,7 +85,7 @@ b210-radio apply host/b210/examples/config.toml     # 2.45 GHz ISM, 2 x 2
 b210 capture --seconds 2 --out /tmp/cap.raw
 b210-plot /tmp/cap_ch0.raw --view report
 b210-plot /tmp/cap_ch0.raw --view spectrum
-b210-plot /tmp/cap_ch0.raw --png /tmp/cap_ch0      # the views as PNG images to browse
+b210-plot /tmp/cap_ch0.raw --png /tmp/cap_ch0 --sheet   # images to browse, plus one sheet
 ```
 
 The same stream from your own Rust code, in the order the hardware

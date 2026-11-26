@@ -7,9 +7,10 @@
 //   b210-plot cap_ch0.raw --view spectrum --lo -1e6 --hi 1e6   # zoom: the FFT
 //                                                  # grows so the band has bins
 //   b210-plot cap_ch1.raw --view time,iq --t0 0.5  # waveform at 0.5 s
-//   b210-plot cap_ch0.raw --png out/radio          # the views as PNG images:
+//   b210-plot cap_ch0.raw --png out/radio --sheet  # the views as PNG images:
 //                                                  # out/radio_spectrum.png, _waterfall,
-//                                                  # _time, _hist, _iq (report stays text)
+//                                                  # _time, _hist, _iq, and one composed
+//                                                  # out/radio_sheet.png (report stays text)
 //   b210-plot cap_ch0.raw --config zoom.toml       # settings kept in a file,
 //                                                  # keys = flag names; flags win
 //
@@ -119,6 +120,13 @@ struct Settings {
     /// terminal keeps the labelled axes) [default: none]
     #[arg(long)]
     png: Option<PathBuf>,
+    /// with --png, also compose the views into one image, PREFIX_sheet.png:
+    /// two per row in the order given, so all five make spectrum | waterfall,
+    /// time | hist, iq and an empty cell. Grayscale and label-free: the fixed
+    /// layout is the caption, so no font is needed
+    #[arg(long)]
+    #[serde(default)]
+    sheet: bool,
 }
 
 impl Settings {
@@ -129,7 +137,7 @@ impl Settings {
             lo: self.lo.or(base.lo), hi: self.hi.or(base.hi), top_db: self.top_db.or(base.top_db),
             range_db: self.range_db.or(base.range_db), t0: self.t0.or(base.t0), t1: self.t1.or(base.t1),
             span: self.span.or(base.span), width: self.width.or(base.width), height: self.height.or(base.height),
-            png: self.png.or(base.png),
+            png: self.png.or(base.png), sheet: self.sheet || base.sheet,
         }
     }
 }
@@ -149,6 +157,7 @@ struct Plot {
     width: usize,
     height: usize,
     png: Option<PathBuf>,
+    sheet: bool,
 }
 
 impl Plot {
@@ -162,8 +171,9 @@ impl Plot {
             views, rate, fft: s.fft, lo: s.lo, hi: s.hi,
             top_db: s.top_db.unwrap_or(0.0), range_db: s.range_db.unwrap_or(110.0),
             t0: s.t0.unwrap_or(0.0), t1: s.t1, span: s.span.unwrap_or(100e-6),
-            width: s.width.unwrap_or(100), height: s.height.unwrap_or(14), png: s.png,
+            width: s.width.unwrap_or(100), height: s.height.unwrap_or(14), png: s.png, sheet: s.sheet,
         };
+        if p.sheet && p.png.is_none() { bail!("--sheet composes the image views: give --png PREFIX as well"); }
         // written positively, so a NaN anywhere fails the check
         let ok = p.rate.is_finite() && p.rate > 0.0 && p.width >= 20 && p.height >= 4 && p.range_db > 0.0
             && p.t0 >= 0.0 && p.span > 0.0;
@@ -236,7 +246,7 @@ fn main() -> Result<()> {
         let views: Vec<View> = a.views.iter().filter(|v| **v != View::Report).copied().collect();
         anyhow::ensure!(!views.is_empty(), "--png writes the spectrum, waterfall, time, hist and iq views; --view report alone has no image");
         println!();
-        png_views(&x, rate, n, &g, &views, prefix)?;
+        png_views(&x, rate, n, &g, &views, prefix, a.sheet)?;
     }
     Ok(())
 }
@@ -471,11 +481,13 @@ fn bin_range(sp: &dsp::Spectrum, lo: f64, hi: f64, c: u32, w: u32) -> (usize, us
 /// The image views as PNG files, PREFIX_view.png. Grayscale, 8-bit:
 /// brighter is more power (spectrum, waterfall) or more density (hist, iq);
 /// the time view draws I bright over Q dimmer.
-fn png_views(x: &[i16], rate: f64, n: usize, g: &Geometry, views: &[View], prefix: &std::path::Path) -> Result<()> {
+fn png_views(x: &[i16], rate: f64, n: usize, g: &Geometry, views: &[View], prefix: &std::path::Path,
+             sheet: bool) -> Result<()> {
     let (w, h) = (g.width as u32 * 2 * PNG_SCALE, g.height as u32 * 4 * PNG_SCALE);
     let frames = x.len() / 2;
     let stem = prefix.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "plot".into());
     let out = |name: &str| prefix.with_file_name(format!("{stem}_{name}.png"));
+    let mut made = Vec::with_capacity(views.len());
     for v in views {
         let (name, im) = match v {
             View::Spectrum => {
@@ -554,8 +566,36 @@ fn png_views(x: &[i16], rate: f64, n: usize, g: &Geometry, views: &[View], prefi
         let path = out(name);
         im.write(&path).with_context(|| path.display().to_string())?;
         println!("png {} ({} x {})", path.display(), im.w, im.h);
+        made.push(im);
+    }
+    if sheet {
+        let im = compose_sheet(&made);
+        let path = prefix.with_file_name(format!("{stem}_sheet.png"));
+        im.write(&path).with_context(|| path.display().to_string())?;
+        println!("png {} ({} x {}) ({} views, two per row)", path.display(), im.w, im.h, made.len());
     }
     Ok(())
+}
+
+/// Gap between sheet cells, pixels.
+const SHEET_GAP: u32 = 4;
+
+/// The views side by side, two per row in their given order, each cell as
+/// wide and tall as the widest and tallest view. All five therefore compose
+/// spectrum | waterfall over time | hist over iq and an empty cell; the fixed
+/// layout is the whole caption, so nothing here needs a font.
+fn compose_sheet(views: &[png::Gray]) -> png::Gray {
+    let (cw, ch) = views.iter().fold((0, 0), |(w, h), i| (w.max(i.w), h.max(i.h)));
+    let cols = 2u32.min(views.len() as u32);
+    let rows = (views.len() as u32).div_ceil(2);
+    let mut sheet = png::Gray::new(cols * cw + (cols - 1) * SHEET_GAP, rows * ch + (rows - 1) * SHEET_GAP);
+    for (k, im) in views.iter().enumerate() {
+        let (ox, oy) = ((k as u32 % 2) * (cw + SHEET_GAP), (k as u32 / 2) * (ch + SHEET_GAP));
+        for y in 0..im.h {
+            for x in 0..im.w { sheet.set(ox + x, oy + y, im.get(x, y)); }
+        }
+    }
+    sheet
 }
 
 /// The code histogram as an image: each channel's count per code as a
@@ -595,6 +635,9 @@ mod png {
         pub fn new(w: u32, h: u32) -> Gray { Gray { w, h, px: vec![0; w as usize * h as usize] } }
         pub fn set(&mut self, x: u32, y: u32, v: u8) {
             if x < self.w && y < self.h { self.px[y as usize * self.w as usize + x as usize] = v; }
+        }
+        pub fn get(&self, x: u32, y: u32) -> u8 {
+            if x < self.w && y < self.h { self.px[y as usize * self.w as usize + x as usize] } else { 0 }
         }
         /// One column from row y down to the bottom (a spectrum's stem).
         pub fn stem(&mut self, x: u32, y: u32, v: u8) { for yy in y..self.h { self.set(x, yy, v); } }
@@ -702,6 +745,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_sheet_lays_the_views_out_two_per_row_in_order() {
+        let mut a = png::Gray::new(3, 2);
+        a.set(0, 0, 11);
+        a.set(2, 1, 12);
+        let mut b = png::Gray::new(3, 2);
+        b.set(1, 0, 21);
+        let mut c = png::Gray::new(3, 2);
+        c.set(0, 1, 31);
+        let s = compose_sheet(&[a, b, c]);
+        // two columns, two rows, one gap of 4 px between cells
+        assert_eq!((s.w, s.h), (3 + 4 + 3, 2 + 4 + 2));
+        assert_eq!(s.get(0, 0), 11, "first view, top left");
+        assert_eq!(s.get(2, 1), 12);
+        assert_eq!(s.get(3 + 4 + 1, 0), 21, "second view, top right");
+        assert_eq!(s.get(0, 2 + 4 + 1), 31, "third view, second row left");
+        assert_eq!(s.get(3, 0), 0, "the gap is black");
+        // one view is a sheet of one, and --sheet without --png is refused
+        assert_eq!((compose_sheet(&[png::Gray::new(5, 7)]).w, compose_sheet(&[png::Gray::new(5, 7)]).h), (5, 7));
+        let s: Settings = toml::from_str("sheet = true\nrate = 1e6\n").unwrap();
+        assert!(Plot::from(s, None).is_err());
+    }
+
+    #[test]
     fn a_spliced_file_says_so_and_a_continuous_one_says_nothing() {
         let meta = |lost| capture::Meta { rate_hz: 30.72e6, channel: 0, source: "radio".into(), lost };
         assert!(splice_note(None).is_none(), "a file from elsewhere has no sidecar");
@@ -723,7 +789,7 @@ mod tests {
         assert_eq!((p.top_db, p.range_db, p.t0), (0.0, 110.0, 0.0), "defaults fill the rest");
         // every flag is a key: a file naming each one parses
         let all = "rate = 1e6\nview = [\"all\"]\nfft = 4096\nlo = 0\nhi = 1\ntop_db = 0\nrange_db = 90\n\
-                   t0 = 0\nt1 = 1\nspan = 1e-4\nwidth = 50\nheight = 10\npng = \"out/plot\"\n";
+                   t0 = 0\nt1 = 1\nspan = 1e-4\nwidth = 50\nheight = 10\npng = \"out/plot\"\nsheet = true\n";
         assert!(toml::from_str::<Settings>(all).is_ok());
         // negative controls: an unknown key, and a rate from nowhere
         assert!(toml::from_str::<Settings>("ftt = 4096\n").is_err());

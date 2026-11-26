@@ -104,7 +104,7 @@ src/
   capture.rs      one channel of I/Q on disk (i16 interleaved), per-channel files, the sidecar
   quality.rs      signal quality: level, DC, I/Q balance, SNR, SINAD, SFDR, ENOB, findings
   bin/b210.rs     binary `b210`: load, state, read, write, monitor, rx-test, loop-test, capture
-  bin/b210-plot.rs binary `b210-plot`: a capture's report, spectrum, waterfall, time, histogram, constellation in the terminal, and as PNG images (`--png`)
+  bin/b210-plot.rs binary `b210-plot`: a capture's report, spectrum, waterfall, time, histogram, constellation in the terminal, and as PNG images (`--png`, with `--sheet` composing them into one image)
   bin/b210-radio.rs binary `b210-radio`: the AD9361 from a configuration file (id, apply, peek, reset)
 tests/ad9361_golden.rs   the driver against UHD's C++ traces
 examples/config.toml     every configuration key
@@ -219,6 +219,14 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
      pattern (0.0488% at the rails, run 2) and a 0 dBFS tone (1.92%, run 1)
      both exit 0; before this they exited 1 with "the ADC saturated" - a
      false failure that made two of the four receive states uncapturable.
+   - `b210-plot --png PREFIX --sheet` composes the five views into
+     PREFIX_sheet.png: two per row in the order asked for, so all five make
+     spectrum | waterfall / time | hist / iq and an empty cell. The layout is
+     fixed and is the caption - the writer has no font and no dependency -
+     so one receive state is one file that no external tool (a Python/PIL
+     script, an image viewer's batch mode) had to make. The sheet is 1.09 MB
+     (1608 x 680, stored deflate: the same bytes as the raw pixels) against
+     175 KB for a single view; size was not worth a compressor.
    - A stream that lost sample times is not analysed: the file is a splice
      of two stretches, so its spectrum is not the spectrum of one record.
      `capture` prints whether the FPGA announced the drop in OVERFLOW
