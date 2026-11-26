@@ -346,7 +346,14 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    midpoint (ADI AN-1441's practice): 0x006 = 0x9, 1.44 ns to the near edge
    and 1.68 ns to the far one; 1,216,224,240 bits of PRBS at the new point,
    0 mismatches; the BIST tone unchanged (SNR 67.9 dB). The golden test
-   records it as the second allowed difference from UHD.
+   records it as the second allowed difference from UHD. The scan's point
+   count is a property of its dwell, not a constant: re-run four times at
+   0.02 s a point (2.5 M and 1.2 M PRBS bits a point) it gives 146, 148,
+   146, 149 of 256 at 2 x 30.72 and 152, 155, 154 at 1 x 61.44; every flip is at
+   clock 2/4/9/11/12/14, the window's edges, where a point's error rate is
+   around one per point's bit count, so it passes or fails by chance. The
+   stable result is the window (clock 0, data 4 .. 15) and 0x09 in it; the
+   tool now prints the bits a point, so a count is read with its dwell.
    Mixed channel counts work: 2 rx + 1 tx at 30.72 MS/s applies with the
    port in 2R2T (0x005 = 30720), the 2-channel pattern stream is clean, a
    1-channel tx burst loops back exact (153.6 M samples), and a 2-channel

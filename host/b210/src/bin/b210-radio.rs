@@ -108,7 +108,10 @@ fn main() -> Result<()> {
             };
             let s = stream::Shape { format: Format::Sc16, mask };
             let expect = |_t: u64| [0i16; 4];
-            println!("scanning rx clock 0..15 x data 0..15, {seconds:.3} s each; o = 0 PRBS errors");
+            // one PRBS bit per 16-bit word per data line: I and Q of every
+            // channel, so 2 x count words per sample time
+            let bits = (seconds * cfg.rate_hz * (2 * s.count()) as f64).round() as u64;
+            println!("scanning rx clock 0..15 x data 0..15, {seconds:.3} s each ({bits} PRBS bits a point); o = 0 errors");
             let mut pass = [[false; 16]; 16];
             for clock in 0..16u8 {
                 for data in 0..16u8 {
@@ -132,7 +135,8 @@ fn main() -> Result<()> {
             dev.ad.set_delays(ad9361::RX_DELAYS, ad9361::TX_DELAYS)?;
             dev.ad.set_test(Test::None)?;
             let ok = pass.iter().flatten().filter(|p| **p).count();
-            println!("{ok} of 256 points pass; the chip's delays restored to {:#04x}", ad9361::RX_DELAYS);
+            println!("{ok} of 256 points pass ({bits} bits each; a point at the window edge can pass or fail \
+                      between runs); the chip's delays restored to {:#04x}", ad9361::RX_DELAYS);
             if ok == 0 { bail!("no delay pair carries the PRBS: the port is not working"); }
         }
         Cmd::Test { config, mode } => {
