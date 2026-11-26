@@ -34,12 +34,12 @@
 // axes; --width/--height are in cells.
 
 use anyhow::{bail, Context, Result};
-use b210::{dsp, iq, quality};
+use b210::{capture, dsp, quality};
 use clap::{Args, Parser, ValueEnum};
 use serde::Deserialize;
 use std::path::PathBuf;
 
-const FS: f64 = iq::FULL_SCALE;
+const FS: f64 = capture::FULL_SCALE;
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
         bail!("{}: {bytes} bytes is not a whole number of I/Q pairs", cli.file.display());
     }
     let frames = (bytes / 4) as usize;
-    let meta = iq::read_meta(&cli.file).with_context(|| iq::meta_path(&cli.file).display().to_string())?;
+    let meta = capture::read_meta(&cli.file).with_context(|| capture::meta_path(&cli.file).display().to_string())?;
     let a = Plot::from(cli.settings.over(file_settings), meta.as_ref().map(|m| m.rate_hz))?;
     let rate = a.rate;
     let i0 = (a.t0 * rate) as usize;
@@ -196,7 +196,7 @@ fn main() -> Result<()> {
         return report_of(&r);
     }
     // every other view needs its interval; read only that, not the channel
-    let x = iq::read_range(&cli.file, i0, i1 - i0).with_context(|| cli.file.display().to_string())?;
+    let x = capture::read_range(&cli.file, i0, i1 - i0).with_context(|| cli.file.display().to_string())?;
     for v in &a.views {
         println!();
         match v {

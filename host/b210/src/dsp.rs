@@ -1,6 +1,6 @@
 //! The spectral arithmetic every view and every quality metric shares.
 //!
-//! Units. Samples are 12-bit codes (`iq::FULL_SCALE` = 2048), I and Q of one
+//! Units. Samples are 12-bit codes (`capture::FULL_SCALE` = 2048), I and Q of one
 //! complex value x = I + jQ. Power is |x|^2 in codes^2; a complex tone of
 //! amplitude A (|x| = A at every instant) has power A^2, so a full-scale
 //! complex tone (A = 2048) is 0 dBFS: `dbfs(p) = 10 log10(p / 2048^2)`.
@@ -188,9 +188,9 @@ pub fn welch_read(
 }
 
 /// Codes^2 -> dB relative to a full-scale complex tone (|x| = 2048,
-/// `iq::FULL_SCALE`), floored so an empty bin is a finite number.
+/// `capture::FULL_SCALE`), floored so an empty bin is a finite number.
 pub fn dbfs(power: f64) -> f64 {
-    let fs = crate::iq::FULL_SCALE;
+    let fs = crate::capture::FULL_SCALE;
     (10.0 * (power / (fs * fs)).log10()).max(-200.0)
 }
 
@@ -216,7 +216,7 @@ impl Tone {
         // the nearest odd m: 2 round((x - 1) / 2) + 1, at most one step away
         let x = f / rate * Self::L as f64;
         let m = (2 * ((x - 1.0) / 2.0).round() as i64 + 1).rem_euclid(Self::L as i64) as u64;
-        let a = crate::iq::FULL_SCALE * 10f64.powf(dbfs / 20.0);
+        let a = crate::capture::FULL_SCALE * 10f64.powf(dbfs / 20.0);
         let code = |x: f64| (a * x).round().clamp(-2048.0, 2047.0) as i16;
         let table = (0..Self::L)
             .map(|k| {

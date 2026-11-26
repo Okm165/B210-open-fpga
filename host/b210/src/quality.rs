@@ -3,7 +3,7 @@
 //! findings with what to do about them.
 //!
 //! Everything is relative to a full-scale complex tone (0 dBFS: |x| = 2048
-//! codes, `iq::FULL_SCALE`), see `dsp`.
+//! codes, `capture::FULL_SCALE`), see `dsp`.
 //!
 //! Level (time domain, all samples):
 //!   DC        mean of I and of Q; `dc_dbfs` = power of the mean.
@@ -222,7 +222,7 @@ pub fn analyze(s: &[i16], rate: f64, fft: usize) -> Option<Report> {
 /// `analyze` of a capture file, in bounded memory: one pass for the sums,
 /// one for the DC-removed power and peak, and one read per spectrum segment
 /// (at most 64 segments of `n` frames each). The file is the raw format of
-/// `iq`: interleaved little-endian i16, 4 bytes per sample time.
+/// `capture`: interleaved little-endian i16, 4 bytes per sample time.
 pub fn analyze_file(path: &Path, rate: f64, fft: usize) -> io::Result<Option<Report>> {
     let bytes = std::fs::metadata(path)?.len();
     if !bytes.is_multiple_of(4) {
@@ -275,7 +275,7 @@ fn report(sp: Spectrum, frames: usize, rate: f64, level: Level, balance: Balance
 
 /// The (I, Q) pairs of a raw capture file, one 64 KiB read at a time, so the
 /// whole file is never held. A file whose last read leaves a half pair is an
-/// error, since `iq` wrote 4 bytes per sample time.
+/// error, since `capture` wrote 4 bytes per sample time.
 fn pairs<R: std::io::Read>(mut r: R) -> impl Iterator<Item = io::Result<(i16, i16)>> {
     let mut buf = vec![0u8; 1 << 16];
     let (mut filled, mut pos) = (0usize, 0usize);

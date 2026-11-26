@@ -366,7 +366,7 @@ fn monitor(usb: &mut Usb, interval_ms: u64) -> Result<()> {
 const WRITE_QUEUE: usize = 4096;
 
 /// Stream the rx source into one file per channel (interleaved i16 I, Q;
-/// iq::channel_path names them) with a .toml sidecar each, and print each
+/// capture::channel_path names them) with a .toml sidecar each, and print each
 /// channel's level and quality.
 ///
 /// pattern: the FPGA's f(t), every value checked.
@@ -376,11 +376,11 @@ const WRITE_QUEUE: usize = 4096;
 ///          files are what the whole digital chain delivered. A perfect
 ///          chain gives exactly the quantised tone: SNR at the 12-bit limit.
 fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
-    use b210::{iq, quality};
+    use b210::{capture, quality};
     use std::io::Write;
     let s = shape(a)?;
     let nv = 2 * s.count();
-    let paths: Vec<_> = (0..s.count()).map(|ch| iq::channel_path(&c.out, ch)).collect();
+    let paths: Vec<_> = (0..s.count()).map(|ch| capture::channel_path(&c.out, ch)).collect();
     let src = match c.source.as_str() {
         "pattern" => rx_source::PATTERN,
         "tone" => rx_source::LOOPBACK,
@@ -478,7 +478,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
              check.lost, check.bad_values, check.bad_headers);
     let mut clipped = Vec::new();
     for (ch, path) in paths.iter().enumerate() {
-        iq::write_meta(path, &iq::Meta { rate_hz: rate, channel: ch, source: c.source.clone() })?;
+        capture::write_meta(path, &capture::Meta { rate_hz: rate, channel: ch, source: c.source.clone() })?;
         let Some(r) = quality::analyze_file(path, rate, 16384)? else { continue };
         if let Some(note) = quality::clipping_note(&r.level) { clipped.push((ch, note, quality::clipping_refuses(&r.level))); }
         let l = &r.level;

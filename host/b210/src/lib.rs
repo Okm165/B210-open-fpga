@@ -5,7 +5,7 @@ pub mod config;
 pub mod ad9361;
 pub mod device;
 pub mod dsp;
-pub mod iq;
+pub mod capture;
 pub mod quality;
 pub mod prbs;
 pub mod proto;
