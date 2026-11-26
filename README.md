@@ -45,7 +45,7 @@ b210 monitor [--interval-ms 500]       # live status, event counters, USB events
 b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
 b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
 b210 capture [STREAM] [--out capture.raw] [--source pattern|tone|radio] [--prbs]
-b210-radio id|apply CONFIG.toml|peek REGS...|reset
+b210-radio id|apply CONFIG.toml|peek REGS...|reset|test CONFIG.toml MODE|scan CONFIG.toml
 b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [--hi HZ]
 ```
 
@@ -54,7 +54,12 @@ b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [-
 chip running: `b210-radio apply host/b210/examples/config.toml` first, or
 the stream stops with "no sample clock". `capture` writes interleaved i16
 I/Q, one file per channel (`--prbs` with `--source radio` checks the AD9361's
-BIST sequence instead, after `b210-radio test CONFIG prbs`); `b210-plot` writes a report (level, DC, I/Q
+BIST sequence instead, after `b210-radio test CONFIG prbs`); `capture` refuses a
+stream whose ADC saturated (it prints the per-channel fraction and exits 1)
+and analyses the file in bounded memory. `b210-radio test` selects the
+AD9361's digital test mode at its data port (`tone`, `prbs`, `loopback`,
+`none`); `b210-radio scan` sweeps its rx clock/data delays with the PRBS and
+prints the eye. `b210-plot` writes a report (level, DC, I/Q
 balance, tone, floor, spurs, findings) and draws the spectrum, waterfall,
 time, histogram and constellation in the terminal. `--help` on any command
 gives the full list and defaults.

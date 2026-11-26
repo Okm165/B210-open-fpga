@@ -59,20 +59,6 @@ pub fn channel_path(prefix: &Path, c: usize) -> PathBuf {
     prefix.with_file_name(format!("{stem}_ch{c}.raw"))
 }
 
-/// Read one channel. A file whose length is not a whole number of I/Q pairs
-/// is an error: a truncated capture must never be plotted as if complete.
-pub fn read(path: &Path) -> io::Result<Vec<i16>> {
-    let mut bytes = Vec::new();
-    File::open(path)?.read_to_end(&mut bytes)?;
-    if !bytes.len().is_multiple_of(4) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{}: {} bytes is not a whole number of I/Q pairs", path.display(), bytes.len()),
-        ));
-    }
-    Ok(bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect())
-}
-
 /// `count` sample times of the channel starting at `first`, read in place:
 /// `b210-plot` needs only its selected interval, not the whole channel.
 pub fn read_range(path: &Path, first: usize, count: usize) -> io::Result<Vec<i16>> {
@@ -126,9 +112,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("x_ch0.raw");
         std::fs::write(&p, [1i16, -2, 300, -4000].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
-        assert_eq!(read(&p).unwrap(), vec![1, -2, 300, -4000]);
+        assert_eq!(read_range(&p, 0, 2).unwrap(), vec![1, -2, 300, -4000]);
         std::fs::write(&p, [0u8; 6]).unwrap();
-        assert!(read(&p).is_err(), "6 bytes is not whole I/Q pairs");
+        assert!(read_range(&p, 0, 1).is_err(), "6 bytes is not whole I/Q pairs");
         let m = Meta { rate_hz: 30.72e6, channel: 1, source: "pattern".into() };
         write_meta(&p, &m).unwrap();
         assert_eq!(read_meta(&p).unwrap(), Some(m));
