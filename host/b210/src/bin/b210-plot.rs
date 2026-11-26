@@ -268,7 +268,7 @@ fn report_of(r: &quality::Report) -> Result<()> {
     let b = &r.balance;
     println!("REPORT  ({} sample times, {}-point spectrum)", r.frames, r.fft);
     println!("  level     rms {:.1} dBFS, peak {:.1} dBFS, crest factor {:.1} dB, clipped {} of values",
-             l.rms_dbfs, l.peak_dbfs, l.crest_db, clipped_pct(l.clipped));
+             l.rms_dbfs, l.peak_dbfs, l.crest_db, clipped_pct(l.clipped_fraction));
     println!("  DC        I {:+.2}, Q {:+.2} codes = {:.1} dBFS", l.dc_i, l.dc_q, l.dc_dbfs);
     if b.circular {
         println!("  balance   gain {:+.3} dB, phase {:+.3} deg -> image rejection {:.1} dB (I/Q correlation {:+.3})",

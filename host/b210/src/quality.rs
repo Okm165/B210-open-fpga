@@ -75,7 +75,7 @@ pub struct Level {
     pub rms_dbfs: f64,
     pub peak_dbfs: f64,
     pub crest_db: f64,
-    pub clipped: f64,
+    pub clipped_fraction: f64,
     /// Consecutive sample times with a value at a code limit (0: none).
     pub longest_clip: usize,
 }
@@ -161,7 +161,7 @@ struct Moments {
     si2: f64,
     sq2: f64,
     siq: f64,
-    clip: usize,
+    clip_values: usize,
     /// The run being counted, and the longest one seen: consecutive sample
     /// times with at least one value at a code limit.
     clip_run: usize,
@@ -172,7 +172,7 @@ impl Moments {
     fn add(&mut self, i: i16, q: i16) {
         let rail = |v: i16| v <= -2048 || v >= 2047;
         if rail(i) || rail(q) {
-            self.clip += rail(i) as usize + rail(q) as usize;
+            self.clip_values += rail(i) as usize + rail(q) as usize;
             self.clip_run += 1;
             self.clip_longest = self.clip_longest.max(self.clip_run);
         } else {
@@ -235,7 +235,7 @@ fn finish(m: &Moments, pairs: impl Iterator<Item = (i16, i16)>) -> Level {
         rms_dbfs: dsp::dbfs(pow),
         peak_dbfs: dsp::dbfs(peak),
         crest_db: if pow > 0.0 { 10.0 * (peak / pow).log10() } else { 0.0 },
-        clipped: m.clip as f64 / (2.0 * n),
+        clipped_fraction: m.clip_values as f64 / (2.0 * n),
         longest_clip: m.clip_longest,
     }
 }
@@ -422,7 +422,7 @@ pub const CLIP_REFUSE: f64 = 1e-6;
 
 /// Is the clipping enough that the capture must be refused?
 pub fn clipping_refuses(l: &Level) -> bool {
-    l.clipped >= CLIP_REFUSE
+    l.clipped_fraction >= CLIP_REFUSE
 }
 
 /// What the clipping means, in two grades: material (refused; the gain advice
@@ -431,15 +431,15 @@ pub fn clipping_refuses(l: &Level) -> bool {
 /// edge of a burst.
 pub fn clipping_note(l: &Level) -> Option<String> {
     let run = if l.longest_clip == 1 { "1 sample time".to_string() } else { format!("{} sample times", l.longest_clip) };
-    if l.clipped >= CLIP_REFUSE {
+    if l.clipped_fraction >= CLIP_REFUSE {
         Some(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
             spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom); \
             the longest clipped run is {run}.",
-            100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
-    } else if l.clipped > 0.0 {
+            100.0 * l.clipped_fraction, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
+    } else if l.clipped_fraction > 0.0 {
         Some(format!("CLIPPING, isolated: {:.1e} of I/Q values sit at the code limits, below the {:.0e} at which \
             a capture is refused; the input exceeded full scale for those samples only (longest run {run}).",
-            l.clipped, CLIP_REFUSE))
+            l.clipped_fraction, CLIP_REFUSE))
     } else {
         None
     }
@@ -455,7 +455,7 @@ pub fn findings(r: &Report) -> Vec<String> {
         out.push(format!("LOW LEVEL: the peak is {:.1} dBFS, {:.0} dB of the converter's range unused; \
             raise the rx gain (aim for a peak near {:.0} dBFS).", l.peak_dbfs, -l.peak_dbfs, -l.crest_db.max(3.0) - 3.0));
     }
-    if l.clipped == 0.0 && l.crest_db > 20.0 {
+    if l.clipped_fraction == 0.0 && l.crest_db > 20.0 {
         out.push(format!("IMPULSIVE: crest factor {:.1} dB (Gaussian noise is about 10-12 dB) - bursts or \
             transients dominate the peak, while the rms and the floor describe the background between them; \
             b210-plot --view time shows where they are.", l.crest_db));
@@ -546,7 +546,7 @@ mod tests {
         let want = 10.0 * (a * a * 6.0).log10();
         assert!((t.snr_db - want).abs() < 1.5, "snr {} want {want}", t.snr_db);
         assert!((t.enob - 12.0).abs() < 0.3, "enob {}", t.enob);
-        assert!(r.balance.irr_db > 60.0 && r.level.clipped == 0.0);
+        assert!(r.balance.irr_db > 60.0 && r.level.clipped_fraction == 0.0);
     }
 
     #[test]
@@ -649,8 +649,8 @@ mod tests {
 
     #[test]
     fn clipping_is_refused_only_above_one_value_in_a_million() {
-        let level = |clipped| Level { dc_i: 0.0, dc_q: 0.0, dc_dbfs: -200.0, rms_dbfs: -20.0,
-                                      peak_dbfs: 0.0, crest_db: 3.0, clipped, longest_clip: 1 };
+        let level = |clipped_fraction| Level { dc_i: 0.0, dc_q: 0.0, dc_dbfs: -200.0, rms_dbfs: -20.0,
+                                      peak_dbfs: 0.0, crest_db: 3.0, clipped_fraction, longest_clip: 1 };
         let limit = 1.0 / 1_000_000.0;
         assert!(!clipping_refuses(&level(0.0)));
         assert!(!clipping_refuses(&level(limit / 2.0)));
@@ -690,7 +690,7 @@ mod tests {
         // negative control for the note: 30 dB below full scale, nothing at the rails
         let s = signal(1 << 15, 0.03, 512.0, 1.0, 0.0, (0.0, 0.0), 0.032);
         let r = analyze(&s, 1e6, 4096).unwrap();
-        assert_eq!(r.level.clipped, 0.0);
+        assert_eq!(r.level.clipped_fraction, 0.0);
         assert!(clipping_note(&r.level).is_none());
     }
 
@@ -699,13 +699,13 @@ mod tests {
         // 6 dB over full scale: hard clipping, odd harmonics of the complex tone
         let s = signal(1 << 16, 0.03, 4096.0, 1.0, 0.0, (0.0, 0.0), 0.0);
         let r = analyze(&s, 1e6, 4096).unwrap();
-        assert!(r.level.clipped > 0.1);
+        assert!(r.level.clipped_fraction > 0.1);
         let f = findings(&r);
         assert!(f[0].starts_with("CLIPPING"), "{f:?}");
         // capture refuses a clipped stream through the same note
         let note = clipping_note(&r.level).expect("clipped: a note");
         assert_eq!(note, f[0]);
-        assert!(note.contains(&format!("{:.4}%", 100.0 * r.level.clipped)), "{note}");
+        assert!(note.contains(&format!("{:.4}%", 100.0 * r.level.clipped_fraction)), "{note}");
         assert!(r.tone.as_ref().unwrap().sfdr_dbc < 40.0);
     }
 
