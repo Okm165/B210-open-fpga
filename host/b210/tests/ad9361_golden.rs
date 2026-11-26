@@ -354,7 +354,6 @@ fn uhd_unmodified_differs_only_in_the_tx_attenuation() {
     for (name, _) in scenarios() {
         let (actual, golden) = rust_and_golden(&name);
         assert_eq!(golden.len(), actual.len(), "{name}");
-        let differ: Vec<usize> = (0..golden.len()).filter(|&i| golden[i] != actual[i]).collect();
         let allowed: Vec<usize> = deviations(&golden).unwrap().iter().flat_map(|&(i, n)| i..i + n).collect();
         assert!(allowed.iter().all(|&i| [OUR_ATTEN.as_slice(), &[OUR_RX_DELAY]].concat().contains(&actual[i])), "{name}");
     }

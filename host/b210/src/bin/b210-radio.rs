@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use b210::ad9361::{self, Bus, Test};
 use b210::config::Config;
 use b210::device::{self, Device, Exec, PollRecord, Spi};
-use b210::usb::{Ctrl, Usb, DEPTH_MS_DEFAULT};
+use b210::usb::{Usb, DEPTH_MS_DEFAULT};
 use b210::stream::{self, Check};
 use b210::prbs::Checker;
 use b210::proto::Format;
@@ -125,10 +125,10 @@ fn main() -> Result<()> {
                         check.prbs.as_ref().is_some_and(|p| p.ok());
                 }
                 print!("  {clock:2} ");
-                for data in 0..16 { print!("{}", if pass[clock as usize][data] { 'o' } else { '.' }); }
+                for ok in &pass[clock as usize] { print!("{}", if *ok { 'o' } else { '.' }); }
                 println!();
             }
-            println!("     {}", "0123456789abcdef");
+            println!("     0123456789abcdef");
             dev.ad.set_delays(ad9361::RX_DELAYS, ad9361::TX_DELAYS)?;
             dev.ad.set_test(Test::None)?;
             let ok = pass.iter().flatten().filter(|p| **p).count();
