@@ -12,7 +12,9 @@ cd "$(dirname "$0")/../.."
 # RTL: the directory the bench takes its RTL from (scripts/mutate.sh points it
 # at a mutated copy); the benches and models always come from fpga/tests.
 RTL=${RTL:-fpga/rtl}
-# each run its own directory, so runs in parallel never mix
+# each run its own directory, so runs in parallel never mix; removed at the
+# end unless KEEP=1 (a case that fails is rerun by hand from its log, which
+# says what it did, so the directory is not needed)
 mkdir -p build/sim
 SIM=$(mktemp -d build/sim/run.XXXXXX)
 
@@ -150,7 +152,9 @@ echo "$CASES" | grep -v '^$' | grep -- "${1:-}" | while read -r line; do
 done | sort > $SIM/results.txt
 wait
 cat $SIM/results.txt
-n=$(grep -c . $SIM/results.txt)
+n=$(grep -c . "$SIM/results.txt" || true)
 bad=$(grep -c '^WRONG' $SIM/results.txt || true)
 echo "$n cases, $bad wrong"
+[ "$n" -gt 0 ] || echo "no case matches the filter" >&2
+[ "${KEEP:-0}" = 1 ] || rm -rf "$SIM"
 [ "$bad" -eq 0 ]
