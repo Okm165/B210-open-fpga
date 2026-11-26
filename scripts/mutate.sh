@@ -25,7 +25,7 @@ benches() {
     command.v)     echo command ;;
     events.v)      echo events ;;
     fx3_master.v|fx3_pads.v) echo fx3_master ;;
-    gray_sync.v)   echo sample_domain ;;
+    gray_sync.v)   echo "sample_domain gray_sync" ;;
     packet_fifo.v) echo packet_fifo ;;
     packet_mux.v)  echo events ;;
     regs.v)        echo regs ;;

@@ -49,12 +49,20 @@ no Ettus RTL, no Python.
 - **command**: executes a command packet's operations (WRITE, READ, SPI,
   WAIT, POLL), one result per operation.
 - **Benches**: one file per module in fpga/tests, each case stating the
-  result it must give (`fpga/tests/run.sh`, 97 cases). A bench that cannot
+  result it must give (`fpga/tests/run.sh`, 99 cases). A bench that cannot
   fail is not a test: gray_sync's case sends the *binary* counter through a
   2 ns skew between its low bits - the mix the Gray code exists to prevent -
   and the bench must catch it (874 errors: values ahead of the source,
   backwards moves, a wrong final value after 600 steps); the same skew on
   the Gray code passes, which is the property the timestamp rests on.
+  The bench also starts the counter at a value with the low bit of every
+  16-bit chunk set: chunk k's parity is bit 16k of the count, so a run from
+  zero leaves every cross-chunk parity zero and a broken parity above it
+  invisible - measured with the mutation campaign, where XOR -> AND in the
+  chunk-parity stage survived the bench until the base changed. All three
+  gray_sync mutants (one per conversion stage) are now killed by this bench
+  alone, without the heavyweight sample_domain bench that used to be the
+  only cover.
   `scripts/mutate.sh` measures how far the benches reach: 96.8% of 378
   mutants killed, counted before the gray_sync bench was added, so it is a
   floor.

@@ -23,6 +23,12 @@
 module tb_gray_sync;
   parameter W = 64;             // a multiple of 16
   parameter N = 600;            // source steps
+  // The counter starts here, and must fit the counter's width. Chunk k's
+  // parity is bit 16k of the count, so the
+  // cross-chunk stage is only exercised when the low bit of each chunk above
+  // is set: a count near zero makes every parity zero and a broken parity
+  // above it invisible (measured: XOR -> AND survives BASE = 0).
+  parameter [63:0] BASE = 0;
   parameter SRC = 8138;         // source half period, ps (61.44 MHz)
   parameter DST = 5000;         // destination half period, ps (100 MHz)
   parameter SKEW = 0;           // ps added to bits 0 .. 3
@@ -32,8 +38,9 @@ module tb_gray_sync;
   always #(SRC / 1000.0) sclk = ~sclk;
   always #(DST / 1000.0) dclk = ~dclk;
 
-  reg [W-1:0] cnt = 0;          // the source's count
-  always @(posedge sclk) if (cnt < N) cnt <= cnt + 1;
+  reg [W-1:0] cnt;              // the source's count
+  initial cnt = BASE;
+  always @(posedge sclk) if (cnt < BASE + N) cnt <= cnt + 1;
 
   wire [W-1:0] g = FAULT == 1 ? cnt : (cnt ^ (cnt >> 1));
   wire [W-1:0] g_in;
@@ -63,14 +70,14 @@ module tb_gray_sync;
   end
 
   initial begin
-    wait (cnt == N);
+    wait (cnt == BASE + N);
     repeat (20) @(posedge dclk);
-    if (bin !== N) begin
+    if (bin !== BASE + N) begin
       errors = errors + 1;
-      $display("%0t after %0d steps bin is %0d, not %0d", $time, N, bin, N);
+      $display("%0t after %0d steps bin is %0d, not %0d", $time, N, bin, BASE + N);
     end
-    $display("%0d steps, %0d-bit, skew %0s, fault %0d: %0d errors",
-             N, W, SKEW == 0 ? "none" : "on", FAULT, errors);
+    $display("%0d steps from %0d, %0d-bit, skew %0s, fault %0d: %0d errors",
+             N, BASE, W, SKEW == 0 ? "none" : "on", FAULT, errors);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");
     $finish;
   end
