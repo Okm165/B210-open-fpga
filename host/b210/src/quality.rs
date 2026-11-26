@@ -436,6 +436,11 @@ pub fn findings(r: &Report) -> Vec<String> {
         out.push(format!("LOW LEVEL: the peak is {:.1} dBFS, {:.0} dB of the converter's range unused; \
             raise the rx gain (aim for a peak near {:.0} dBFS).", l.peak_dbfs, -l.peak_dbfs, -l.crest_db.max(3.0) - 3.0));
     }
+    if l.clipped == 0.0 && l.crest_db > 20.0 {
+        out.push(format!("IMPULSIVE: crest factor {:.1} dB (Gaussian noise is about 10-12 dB) - bursts or \
+            transients dominate the peak, while the rms and the floor describe the background between them; \
+            b210-plot --view time shows where they are.", l.crest_db));
+    }
     let dc_dbc = l.dc_dbfs - l.rms_dbfs;
     if l.dc_dbfs > -60.0 && dc_dbc > -40.0 {
         out.push(format!("DC OFFSET: I {:+.1}, Q {:+.1} codes ({:.1} dBFS, {:.1} dB relative to the signal) - \
@@ -675,6 +680,20 @@ mod tests {
         assert!(!r.balance.circular && r.balance.rho < -0.99);
         let f = findings(&r);
         assert!(f.iter().any(|x| x.starts_with("REAL-VALUED")) && !f.iter().any(|x| x.starts_with("I/Q IMBALANCE")));
+    }
+
+    #[test]
+    fn an_impulsive_capture_is_named_not_just_peaky() {
+        // noise alone: crest about 12 dB, no finding
+        let mut s = signal(1 << 16, 0.03, 0.0, 1.0, 0.0, (0.0, 0.0), 100.0);
+        let r = analyze(&s, 1e6, 4096).unwrap();
+        assert!(r.level.crest_db < 20.0, "noise crest {}", r.level.crest_db);
+        assert!(!findings(&r).iter().any(|f| f.starts_with("IMPULSIVE")));
+        // four samples at +2000 codes raise the peak, not the rms
+        for k in 0..4 { s[2 * (1000 + k)] = 2000; }
+        let r = analyze(&s, 1e6, 4096).unwrap();
+        assert!(r.level.crest_db > 20.0, "burst crest {}", r.level.crest_db);
+        assert!(findings(&r).iter().any(|f| f.starts_with("IMPULSIVE")), "{:?}", findings(&r));
     }
 
     #[test]

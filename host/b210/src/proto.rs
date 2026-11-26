@@ -32,10 +32,9 @@ pub enum Kind {
 }
 
 /// Samples on the wire (section 3); a header's format 0 (no samples) is
-/// `Header::format == None`. In a configuration file and on the command
-/// line: "sc16", "sc12".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "lowercase")]
+/// `Header::format == None`. A stream's setting, chosen on the command
+/// line: "sc16", "sc12" (`--format`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
     /// Each value c << 4 in 16 bits: 4 bytes per complex sample.
     Sc16 = 1,

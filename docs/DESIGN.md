@@ -298,6 +298,12 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    5 s capture had exactly one sample time at the rail (frame 26 025 176,
    Q = 2047 among 1413/1399) - a burst edge, not a data-path glitch: no
    lost samples, no bad headers, and the PRBS eye test covers the pins.
+   Such a window is now named for what it is: a 43.4 dB crest factor (noise
+   is about 10-12 dB) with no clipping raises "IMPULSIVE: bursts or
+   transients dominate the peak, while the rms and the floor describe the
+   background between them" instead of leaving "NO TONE" and a near-full-
+   scale peak unexplained. A test pins both sides: noise alone has no
+   finding, four samples at 2000 codes in noise do.
    The AD9361's own BIST tone (fs/32, -6 dBFS at the chip's rx port, so the
    chip drives the pins the way RF does) now proves the pin capture at both
    rates: 0.9600 MHz at -6.02 dBFS, SNR 67.9 dB, ENOB 11.70 on both
