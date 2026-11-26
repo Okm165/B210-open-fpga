@@ -15,7 +15,7 @@
 //! compares the FPGA's event counters before and after.
 
 use anyhow::{bail, Context, Result};
-use b210::dsp::Tone;
+use b210::dsp::TestTone;
 use b210::proto::{self, Format};
 use b210::regs::{self, rx_source, Counters, COUNTER_NAMES};
 use b210::stream::{self, Check, Shape};
@@ -378,7 +378,7 @@ const SUMMARY_FFT: usize = 16_384;
 /// channel's level and quality.
 ///
 /// pattern: the FPGA's f(t), every value checked.
-/// tone:    the host sends a tone burst (`dsp::Tone`) through the FPGA's
+/// tone:    the host sends a tone burst (`dsp::TestTone`) through the FPGA's
 ///          tx path and loopback; only the burst's sample times are kept,
 ///          every one checked bit for bit against what was sent, so the
 ///          files are what the whole digital chain delivered. A perfect
@@ -404,10 +404,10 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     println!("capture {} x{} from {}: {:.3} MS/s -> {}", a.format, a.channels, c.source, rate / 1e6,
              paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
     let n = (a.seconds * rate) as u64;
-    let tone = Tone::new(c.tone_hz, rate, c.tone_dbfs);
+    let tone = TestTone::new(c.tone_hz, rate, c.tone_dbfs);
     if c.source == "tone" {
         println!("tone {:+.6} MHz (snapped to {} / {} of the rate) at {:.1} dBFS; channel 1 at the negative frequency",
-                 tone.freq(rate) / 1e6, tone.m, Tone::L, c.tone_dbfs);
+                 tone.freq(rate) / 1e6, tone.m, TestTone::L, c.tone_dbfs);
     }
     let tone = &tone;
     // The sample times kept: all of them for the pattern, the burst's for a

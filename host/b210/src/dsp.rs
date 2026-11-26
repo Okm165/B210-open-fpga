@@ -203,16 +203,16 @@ pub fn dbfs(power: f64) -> f64 {
 /// underflows. Channel 0 plays +f, channel 1 -f (the conjugate), so a
 /// swapped I/Q or a swapped channel shows in the spectrum. Amplitude
 /// A = 2048 x 10^(dbfs/20) codes, rounded and held to the 12-bit range.
-pub struct Tone {
+pub struct TestTone {
     table: Vec<[i16; 2]>,
     /// The tone's frequency, in rate / L.
     pub m: u64,
 }
 
-impl Tone {
+impl TestTone {
     pub const L: u64 = 1 << 16;
 
-    pub fn new(f: f64, rate: f64, dbfs: f64) -> Tone {
+    pub fn new(f: f64, rate: f64, dbfs: f64) -> TestTone {
         // the nearest odd m: 2 round((x - 1) / 2) + 1, at most one step away
         let x = f / rate * Self::L as f64;
         let m = (2 * ((x - 1.0) / 2.0).round() as i64 + 1).rem_euclid(Self::L as i64) as u64;
@@ -224,7 +224,7 @@ impl Tone {
                 [code(p.cos()), code(p.sin())]
             })
             .collect();
-        Tone { table, m }
+        TestTone { table, m }
     }
 
     /// The frequency actually played, Hz, in -rate/2 .. rate/2.
@@ -254,17 +254,17 @@ mod tests {
     #[test]
     fn the_tone_is_coherent_conjugate_on_channel_1_and_matches_direct_computation() {
         let rate = 30.72e6;
-        let t = Tone::new(1.234567e6, rate, -1.0);
+        let t = TestTone::new(1.234567e6, rate, -1.0);
         assert_eq!(t.m % 2, 1, "m odd: coprime with L");
-        assert!((t.freq(rate) - 1.234567e6).abs() <= rate / Tone::L as f64, "snapped within one step");
+        assert!((t.freq(rate) - 1.234567e6).abs() <= rate / TestTone::L as f64, "snapped within one step");
         let a = 2048.0 * 10f64.powf(-1.0 / 20.0);
         for i in [0u64, 1, 12345, 1 << 40] {
-            let p = 2.0 * std::f64::consts::PI * (t.m * (i % Tone::L) % Tone::L) as f64 / Tone::L as f64;
+            let p = 2.0 * std::f64::consts::PI * (t.m * (i % TestTone::L) % TestTone::L) as f64 / TestTone::L as f64;
             assert_eq!(t.value(i, 0), (a * p.cos()).round() as i16, "i={i}");
             assert_eq!(t.value(i, 1), (a * p.sin()).round() as i16, "i={i}");
             assert_eq!((t.value(i, 2), t.value(i, 3)), (t.value(i, 0), -t.value(i, 1)));
         }
-        assert!(Tone::new(-2e6, rate, 0.0).freq(rate) < 0.0, "negative frequencies stay negative");
+        assert!(TestTone::new(-2e6, rate, 0.0).freq(rate) < 0.0, "negative frequencies stay negative");
     }
 
     /// A complex tone of amplitude `a` at frequency `f` cycles per sample,
@@ -311,9 +311,9 @@ mod tests {
         // at 0 dBFS the table holds -2048, whose mathematical conjugate is
         // +2048; the wire has no such code, so the nearest one (+2047) is
         // sent and must be what value() reports
-        let t = Tone::new(1e6, 30.72e6, 0.0);
+        let t = TestTone::new(1e6, 30.72e6, 0.0);
         let mut saw_min = false;
-        for i in 0..Tone::L {
+        for i in 0..TestTone::L {
             let s = t.value(i, 1);
             let c = t.value(i, 3);
             assert!((-2048..=2047).contains(&c), "i {i}: {c} outside the 12-bit codes");
