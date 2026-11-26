@@ -66,6 +66,10 @@
 //!   setting would be what the file says.
 //! - rx gain_db in 0 ..= 76, integral: the gain table index (UHD
 //!   get_gain_range: step 1.0; set_gain truncates to an integer index).
+//!   The table moves the output about 1 dB per step (measured on the board
+//!   0.90 over 40 .. 76 at 30.72 MS/s), but the receiver's own output floor
+//!   is -62 dBFS rms and hides everything below about 45: a lower index
+//!   buys headroom, not sensitivity (DESIGN.md, "the receiver's own floor").
 //!   No gain protects the receiver: the RX inputs' absolute maximum is
 //!   +2.5 dBm peak (AD9361 data sheet Rev. F, p. 15, absolute maximum
 //!   ratings), whatever the gain; a stronger signal at the port must be

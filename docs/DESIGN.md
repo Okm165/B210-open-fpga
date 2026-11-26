@@ -178,6 +178,23 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    - 1.575 GHz (GPS L1, nominally quiet): input-referred level close to the
      ISM band's, and 17.6 dB of a 20 dB gain cut follows it, so it is ~88%
      external broadband energy, not the converter floor.
+   - The receiver's own floor: at 1 x 30.72 MS/s with a 20 MHz analog
+     filter, the output of an empty channel is -62 dBFS rms (1.2 codes,
+     crest 12 dB) for every gain index from 0 to 40, then follows the
+     analog input at about 0.9 dB per step up to 76. Three measurements
+     put that floor inside the chip, not at the antenna: it is the same
+     at 1.5 GHz and 2.45 GHz (-61.9 vs -61.7 at index 10), it moves 2.8 dB
+     when the analog bandwidth goes 2 -> 30 MHz (thermal noise would move
+     11.8 dB), and it moves 1.4 dB when the rate goes 30.72 -> 3.84 MS/s.
+     It is not the gain table (registers read back 10/20/40/70 at 0x109,
+     manual mode 0x0FA = 0xE0, and the table bytes and load sequence equal
+     UHD's) and not the rx IQ tracking (0x169 = 0xcf/0x00/0x0f give the
+     same floor). Consequence: below ~45 dB the gain index buys headroom,
+     not sensitivity, which is why the example asks 60/55 dB. The floor is
+     ~10 effective bits through the analog path, against 11.7 through the
+     digital one (the BIST tone); a calibrated RF source is needed to say
+     whether that is the chip or this board, so it stays an open number,
+     not a claim.
    - `b210 capture` refuses a clipped stream: it prints the per-channel
      CLIPPING note (the same text `b210-plot` gives) and exits 1, because a
      saturated capture is not a measurement of the input. Measured: the FM
