@@ -1,4 +1,5 @@
-//! b210 - board access and the step-1 measurements.
+//! b210 - board access and the streaming measurements: the FPGA image's
+//! registers, the rx sources with every sample checked, and captures.
 //!
 //!   b210 load IMAGE.bin            load the FPGA, start the bus (from power-up:
 //!                                  the FX3 firmware first, --firmware FILE.hex)

@@ -129,7 +129,8 @@
 //! rx_spp, every tx header), so the plan has no step for them and the file
 //! has no key.
 //!
-//! Operations that could transmit (step 1 mutes for them), with reason:
+//! Operations that could transmit (the plan mutes every tx chain first),
+//! with reason:
 //! reference (the synthesizers relock, LOs move meanwhile); rate (UHD's
 //! set_clock_rate switches every chain on, both tx chains included, and
 //! calibrates with TX on); tx bandwidth (the tx filters are recalibrated
