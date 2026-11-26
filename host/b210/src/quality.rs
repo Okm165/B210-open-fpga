@@ -237,6 +237,9 @@ fn tone(sp: &Spectrum, k0: usize) -> (Option<Tone>, Vec<Spur>) {
         snr_db: 10.0 * (p_tone / noise_band).log10(),
         sinad_db: sinad,
         sfdr_dbc: 10.0 * (sp.power[k0] / spur_peak).log10(),
+        // ENOB for a full-scale tone; `dbfs` (negative) refers the measured
+        // SINAD of this tone up to full scale, so enob <= (snr + |dbfs| -
+        // 1.76) / 6.02: it is always below what the noise alone would give.
         enob: (sinad - 1.76 - dbfs) / 6.02,
         image_dbc: 10.0 * (p_image / p_tone).log10(),
     };
