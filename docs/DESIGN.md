@@ -161,7 +161,13 @@ examples/config.toml     every configuration key
    floor + 10 dB (quality::SPUR_DB, with a gamma-noise test that also pins
    the 6 dB case as noise); the 2.45 GHz captures then report none, while
    the FM stations (about 40 dB over the floor) stay listed.
-   BIST/PRBS/eye scan are still v1 measurements, not repeated on this image.
+   The AD9361's own BIST tone (fs/32, -6 dBFS at the chip's rx port, so the
+   chip drives the pins the way RF does) now proves the pin capture at both
+   rates: 0.9600 MHz at -6.02 dBFS, SNR 67.9 dB, ENOB 11.70 on both
+   channels at 2 x 30.72 MS/s (2R2T), and 1.9200 MHz at the same level and
+   SNR at 1 x 61.44 MS/s (1R1T); the 12-bit limit at -6.02 dBFS is 68.0 dB,
+   so the capture is bit exact. `b210-radio test CONFIG tone|prbs|loopback|
+   none` selects it. The PRBS checker and eye scan remain v1 measurements.
    Build 10 also carries the tx rule that a packet with samples but
    neither START_OF_BURST nor an open burst is malformed (PROTOCOL.md 3.3):
    playing it left the sample side in a burst the deframer could not end.

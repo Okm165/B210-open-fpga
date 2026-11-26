@@ -3,7 +3,7 @@
 //! step with each step's time, the driver's polls and the PLL lock bits.
 
 use anyhow::{Context, Result, bail};
-use b210::ad9361::Bus;
+use b210::ad9361::{Bus, Test};
 use b210::config::Config;
 use b210::device::{self, Device, Exec, PollRecord, Spi};
 use b210::usb::{Ctrl, Usb, DEPTH_MS_DEFAULT};
@@ -37,6 +37,15 @@ enum Cmd {
     Peek { regs: Vec<String> },
     /// Hold the AD9361 in reset (radio register 0x030 = 0).
     Reset,
+    /// Bring the chip up, apply CONFIG, then select a digital test mode at
+    /// its data port: `tone` (fs/32, -6 dBFS), `prbs` (its pseudo-random
+    /// sequence), `loopback` (the tx port onto the rx port) or `none`.
+    /// The mode stays until the chip is reset (any `apply`).
+    Test {
+        config: PathBuf,
+        #[arg(value_parser = ["none", "tone", "prbs", "loopback"])]
+        mode: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -71,6 +80,18 @@ fn main() -> Result<()> {
             let new = load(&config)?;
             let old = from.as_deref().map(load).transpose()?;
             apply(ctrl, old.as_ref(), &new)?;
+        }
+        Cmd::Test { config, mode } => {
+            let test = match mode.as_str() {
+                "none" => Test::None,
+                "tone" => Test::Tone,
+                "prbs" => Test::Prbs,
+                _ => Test::Loopback,
+            };
+            let mut dev = apply(ctrl, None, &load(&config)?)?;
+            dev.ad.set_test(test)?;
+            println!("digital test mode {mode}: the AD9361 now drives its data port with it");
+            println!("capture it with: b210 capture --source radio ...; any `apply` clears it");
         }
     }
     Ok(())
@@ -136,7 +157,7 @@ fn print_polls(polls: &mut Vec<PollRecord>) {
     }
 }
 
-fn apply(ctrl: Ctrl, old: Option<&Config>, new: &Config) -> Result<()> {
+fn apply(ctrl: Ctrl, old: Option<&Config>, new: &Config) -> Result<Device> {
     let mut configs = Vec::new();
     if let Some(old) = old {
         configs.push(("from", old));
@@ -196,5 +217,5 @@ fn apply(ctrl: Ctrl, old: Option<&Config>, new: &Config) -> Result<()> {
     }
     let polls_ok = dev.ad.bus().polls.iter().all(|p| p.ok);
     println!("done: every poll {}", if polls_ok { "succeeded" } else { "did not succeed" });
-    Ok(())
+    Ok(dev)
 }
