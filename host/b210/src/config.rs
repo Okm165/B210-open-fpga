@@ -14,7 +14,8 @@
 //! | `lo_hz` | Hz, 70e6 ..= 6e9 | the direction's one synthesizer |
 //! | `bandwidth_hz` | Hz, rx 800e3 ..= 56e6, tx 1.08e6 ..= 40e6, and <= `rate_hz` | the direction's one analog filter setting |
 //! | `ch0`, `ch1` | present = enabled | a channel (bit c of PROTOCOL.md's channel mask); rx and tx
-//! may differ (2 rx + 1 tx measured on the board: 2R2T, the single channel uses channel 0) |
+//! may differ (2 rx + 1 tx measured on the board: 2R2T, the single channel uses channel 0, so
+//! ch1 alone is rejected) |
 //! | `rx.chC.gain_db` | dB, 0 ..= 76 in 1 dB steps | rx gain index of the AD9361 gain table |
 //! | `tx.chC.gain_db` | dB, 0 ..= 89.75 in 0.25 dB steps | attenuation = 89.75 dB - gain_db |
 //!
@@ -287,6 +288,9 @@ pub enum Error {
     /// A section with no channel.
     #[error("[{0}] has no channel: add ch0 and/or ch1, or remove the section")]
     NoChannel(&'static str),
+    /// ch1 alone: a one-channel direction carries channel 0.
+    #[error("[{0}] enables only ch1, but a one-channel direction carries channel 0: use ch0, or ch0 and ch1")]
+    OnlyChannel1(&'static str),
     /// `key` = `value` names something this FPGA image cannot do yet.
     #[error("{key} = \"{value}\": not built yet ({why})")]
     NotBuilt { key: &'static str, value: &'static str, why: &'static str },
@@ -339,6 +343,9 @@ impl Config {
             if chains.rx_count() == 0 {
                 return Err(Error::NoChannel("rx"));
             }
+            if rx.ch0.is_none() && rx.ch1.is_some() {
+                return Err(Error::OnlyChannel1("rx"));
+            }
             range("rx.lo_hz", rx.lo_hz, MIN_LO, MAX_LO, "Hz")?;
             bandwidth("rx.bandwidth_hz", rx.bandwidth_hz, (MIN_RX_BANDWIDTH, MAX_RX_BANDWIDTH))?;
             for (c, ch) in rx.channels().into_iter().enumerate() {
@@ -352,6 +359,9 @@ impl Config {
         if let Some(tx) = &self.tx {
             if chains.tx_count() == 0 {
                 return Err(Error::NoChannel("tx"));
+            }
+            if tx.ch0.is_none() && tx.ch1.is_some() {
+                return Err(Error::OnlyChannel1("tx"));
             }
             range("tx.lo_hz", tx.lo_hz, MIN_LO, MAX_LO, "Hz")?;
             bandwidth("tx.bandwidth_hz", tx.bandwidth_hz, (MIN_TX_BANDWIDTH, MAX_TX_BANDWIDTH))?;
@@ -744,10 +754,16 @@ mod tests {
     }
 
     #[test]
-    fn a_section_needs_a_channel() {
+    fn a_section_needs_a_channel_and_a_one_channel_direction_is_channel_0() {
         assert_eq!(with(|c| rx(c).ch0 = None), Err(Error::NoChannel("rx")));
         assert_eq!(with(|c| tx(c).ch0 = None), Err(Error::NoChannel("tx")));
         assert_eq!(with(|c| c.tx = None), Ok(())); // the whole section away: tx off
+        // ch1 alone would run as a one-channel port carrying channel 0
+        assert_eq!(with(|c| { let ch0 = rx(c).ch0.take(); rx(c).ch1 = ch0; }), Err(Error::OnlyChannel1("rx")));
+        assert_eq!(with(|c| { let ch0 = tx(c).ch0.take(); tx(c).ch1 = ch0; }), Err(Error::OnlyChannel1("tx")));
+        // ch0 alone, or both, are the one- and two-channel cases
+        assert_eq!(with(|c| rx(c).ch1 = None), Ok(()));
+        assert_eq!(with(|c| { rx(c).ch1 = Some(RxChannel { gain_db: 0.0 }); }), Ok(()));
     }
 
     #[test]
@@ -874,17 +890,17 @@ mod tests {
         // 1 rx + 2 tx -> 2 rx + 1 tx: 2-channel at both ends, 1 + 1 after
         // step 2 (found by the generated pairs)
         let old = Config::parse("rate_hz = 25e6\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\n\
-                                 ch1 = { gain_db = 0 }\n[tx]\nlo_hz = 1e9\nbandwidth_hz = 2e6\n\
+                                 ch0 = { gain_db = 0 }\n[tx]\nlo_hz = 1e9\nbandwidth_hz = 2e6\n\
                                  ch0 = { gain_db = 40 }\nch1 = { gain_db = 40 }\n").unwrap();
         let mut new = old.clone();
-        rx(&mut new).ch0 = Some(RxChannel { gain_db: 76.0 });
-        tx(&mut new).ch0 = None;
+        rx(&mut new).ch1 = Some(RxChannel { gain_db: 0.0 });
+        tx(&mut new).ch1 = None;
         assert_eq!(Config::changes(Some(&old), &new), [
             mute(0), mute(1),
-            C::Chains(Chains { rx: 0b10, tx: 0b10 }),
-            C::Chains(Chains { rx: 0b11, tx: 0b10 }),
-            C::Gain { direction: DRx, channel: 0, db: 76.0 },
-            C::Gain { direction: DTx, channel: 1, db: 40.0 },
+            C::Chains(Chains { rx: 0b01, tx: 0b01 }),
+            C::Chains(Chains { rx: 0b11, tx: 0b01 }),
+            C::Gain { direction: DRx, channel: 1, db: 0.0 },
+            C::Gain { direction: DTx, channel: 0, db: 40.0 },
         ]);
     }
 

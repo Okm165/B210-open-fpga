@@ -281,8 +281,11 @@ examples/config.toml     every configuration key
    Mixed channel counts work: 2 rx + 1 tx at 30.72 MS/s applies with the
    port in 2R2T (0x005 = 30720), the 2-channel pattern stream is clean, a
    1-channel tx burst loops back exact (153.6 M samples), and a 2-channel
-   radio capture runs with the transmitter on. The eye scan remains a v1
-   measurement.
+   radio capture runs with the transmitter on. The single channel of a
+   direction is channel 0, so ch1 alone is rejected (a one-channel port
+   carries channel 0; before the check it applied and streamed channel 0
+   under the name ch1). The eye is measured by the driver's own scan, the
+   entry above.
    Build 10 also carries the tx rule that a packet with samples but
    neither START_OF_BURST nor an open burst is malformed (PROTOCOL.md 3.3):
    playing it left the sample side in a burst the deframer could not end.
