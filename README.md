@@ -98,6 +98,12 @@ cd host && cargo run --release --example stream -- b210/examples/config.toml 5
 `host/b210/examples/stream.rs` is the minimal client: its callback gets each
 packet's I/Q and its `Check` reports lost samples, bad values and bad
 headers; it exits 1 if the stream was not clean.
+`host/b210/examples/rf_tone.rs` is the duplex one: it transmits a +1 MHz tone
+through the RF TX port while receiving, and prints the level the antenna sees
+at each rx gain - the TX RF path, which the digital loopback never reaches.
+It needs a config with one rx channel (ch0) and one tx channel (ch0), and its
+tone is only above the receiver's floor with the tx gain near 89.75 dB
+(0 dB attenuation): `cargo run --release --example rf_tone -- rf.toml`.
 
 `capture` exits 1 when the ADC saturates (lower the gain in the config's
 `gain_db`), only for `--source radio`: the pattern and the host tone reach

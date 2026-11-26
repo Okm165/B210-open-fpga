@@ -377,6 +377,19 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    SNR at 1 x 61.44 MS/s (1R1T); the 12-bit limit at -6.02 dBFS is 68.0 dB,
    so the capture is bit exact. `b210-radio test CONFIG tone|prbs|loopback|
    none` selects it.
+   The TX RF path - the one stage the digital loopback never reaches - is
+   measured by `host/b210/examples/rf_tone.rs`: a +1 MHz complex tone at
+   -10 dBFS, transmitted with the tx gain at 89.75 (0 dB attenuation), is
+   received on the antenna at exactly +1.000 MHz (the rx and tx LOs agree
+   within the 1.875 kHz bin of a 16384-point spectrum) and follows the rx
+   gain at 0.91 and 0.96 dB per dB in two runs over 20 .. 70 dB (-65.0 ->
+   -19.4 and -66.9 -> -19.0 dBFS), with no clipping and no counter moved
+   once the burst had a 0.3 s lead (a 0.1 s lead underflowed the tx ring at
+   the start and put gaps in the tone). The example config's 29.75 dB of
+   tx attenuation puts the tone at the receiver's floor, so the tool asks
+   for a real transmit level. This is the only measurement that shows the
+   TX chain's RF output at all, and it confirms the gain steps against a
+   known signal rather than the ambient.
    The PRBS mode is checked bit by bit in the host (src/prbs.rs): the chip's
    16-bit generator (taps {2,3,5..16}, ADI's BIST FAQ; Berlekamp-Massey on a
    capture gives complexity 16 with the same taps) puts one bit per word and

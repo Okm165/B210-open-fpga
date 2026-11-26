@@ -66,8 +66,9 @@
 //!   setting would be what the file says.
 //! - rx gain_db in 0 ..= 76, integral: the gain table index (UHD
 //!   get_gain_range: step 1.0; set_gain truncates to an integer index).
-//!   The table moves the output about 1 dB per step (measured on the board
-//!   0.90 over 40 .. 76 at 30.72 MS/s), but the receiver's own output floor
+//!   The table moves the output about 1 dB per step (a known tx tone
+//!   measured 0.91 and 0.96 dB per dB over 20 .. 70 at 30.72 MS/s), but the
+//!   receiver's own output floor
 //!   is -62 dBFS rms and hides everything below about 45: a lower index
 //!   buys headroom, not sensitivity (DESIGN.md, "the receiver's own floor").
 //!   No gain protects the receiver: the RX inputs' absolute maximum is
