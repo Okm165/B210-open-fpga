@@ -471,6 +471,33 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_and_corrupted_bytes_never_panic() {
+        // xorshift: a fixed stream, so a failure is reproducible
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        // every length 0 ..= 64, arbitrary bytes: decode and scan must
+        // return a verdict, never panic and never fail to terminate
+        for len in 0..=64 {
+            for _ in 0..50 {
+                let b: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+                let _ = Header::decode(&b);
+                let _ = packets(&b, 4096);
+            }
+        }
+        // bit flips of a valid stream: the header's fields are all checked
+        let valid = command(7, &[Op::Spi { device: SPI_AD9361, word: 0x80_37_00 }, Op::Read { addr: 3 }]).unwrap();
+        for i in 0..valid.len() * 8 {
+            let mut b = valid.clone();
+            b[i / 8] ^= 1 << (i % 8);
+            let _ = Header::decode(&b);
+            // whatever the bytes say, a packet list is inside the buffer
+            if let Ok(ranges) = packets(&b, 4096) {
+                assert!(ranges.iter().all(|r| r.end <= b.len() && r.start < r.end), "bit {i}: {ranges:?} of {}", b.len());
+            }
+        }
+    }
+
+    #[test]
     fn header_round_trip_and_rejects() {
         let h = Header {
             length: 16_384,
