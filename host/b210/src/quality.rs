@@ -11,7 +11,9 @@
 //!             the largest |x|; crest factor = peak / rms (a tone: 0 dB,
 //!             Gaussian noise: about 10-12 dB). Headroom for a signal of
 //!             crest C is about -C dBFS.
-//!   clipped   fraction of I/Q values at the code limits (-2048 or 2047).
+//!   clipped   fraction of I/Q values at the code limits (-2048 or 2047),
+//!             and the longest run of consecutive sample times with one:
+//!             a burst edge and a one-sample glitch are not the same event.
 //!
 //! I/Q balance (time domain, DC removed). With Pi = E[I^2], Pq = E[Q^2],
 //! Piq = E[I Q]:
@@ -74,6 +76,8 @@ pub struct Level {
     pub peak_dbfs: f64,
     pub crest_db: f64,
     pub clipped: f64,
+    /// Consecutive sample times with a value at a code limit (0: none).
+    pub longest_clip: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -158,10 +162,22 @@ struct Moments {
     sq2: f64,
     siq: f64,
     clip: usize,
+    /// The run being counted, and the longest one seen: consecutive sample
+    /// times with at least one value at a code limit.
+    clip_run: usize,
+    clip_longest: usize,
 }
 
 impl Moments {
     fn add(&mut self, i: i16, q: i16) {
+        let rail = |v: i16| v <= -2048 || v >= 2047;
+        if rail(i) || rail(q) {
+            self.clip += rail(i) as usize + rail(q) as usize;
+            self.clip_run += 1;
+            self.clip_longest = self.clip_longest.max(self.clip_run);
+        } else {
+            self.clip_run = 0;
+        }
         let (i, q) = (i as f64, q as f64);
         self.n += 1;
         self.si += i;
@@ -169,7 +185,6 @@ impl Moments {
         self.si2 += i * i;
         self.sq2 += q * q;
         self.siq += i * q;
-        self.clip += (i <= -2048.0 || i >= 2047.0) as usize + (q <= -2048.0 || q >= 2047.0) as usize;
     }
 
     fn of(s: &[i16]) -> Moments {
@@ -221,6 +236,7 @@ fn finish(m: &Moments, pairs: impl Iterator<Item = (i16, i16)>) -> Level {
         peak_dbfs: dsp::dbfs(peak),
         crest_db: if pow > 0.0 { 10.0 * (peak / pow).log10() } else { 0.0 },
         clipped: m.clip as f64 / (2.0 * n),
+        longest_clip: m.clip_longest,
     }
 }
 
@@ -411,15 +427,18 @@ pub fn clipping_refuses(l: &Level) -> bool {
 
 /// What the clipping means, in two grades: material (refused; the gain advice
 /// is the peak over the rails plus 3 dB of headroom) and isolated (reported,
-/// kept).
+/// kept). Both state the longest run: one sample is a transient, a run is the
+/// edge of a burst.
 pub fn clipping_note(l: &Level) -> Option<String> {
+    let run = if l.longest_clip == 1 { "1 sample time".to_string() } else { format!("{} sample times", l.longest_clip) };
     if l.clipped >= CLIP_REFUSE {
         Some(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
-            spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom).",
+            spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom); \
+            the longest clipped run is {run}.",
             100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
     } else if l.clipped > 0.0 {
         Some(format!("CLIPPING, isolated: {:.1e} of I/Q values sit at the code limits, below the {:.0e} at which \
-            a capture is refused; the input exceeded full scale for those samples only.",
+            a capture is refused; the input exceeded full scale for those samples only (longest run {run}).",
             l.clipped, CLIP_REFUSE))
     } else {
         None
@@ -631,7 +650,7 @@ mod tests {
     #[test]
     fn clipping_is_refused_only_above_one_value_in_a_million() {
         let level = |clipped| Level { dc_i: 0.0, dc_q: 0.0, dc_dbfs: -200.0, rms_dbfs: -20.0,
-                                      peak_dbfs: 0.0, crest_db: 3.0, clipped };
+                                      peak_dbfs: 0.0, crest_db: 3.0, clipped, longest_clip: 1 };
         let limit = 1.0 / 1_000_000.0;
         assert!(!clipping_refuses(&level(0.0)));
         assert!(!clipping_refuses(&level(limit / 2.0)));
@@ -641,8 +660,29 @@ mod tests {
         // rail code cannot support
         let sparse = clipping_note(&level(limit / 10.0)).unwrap();
         assert!(sparse.contains("isolated") && !sparse.contains("Lower the rx gain"), "{sparse}");
+        assert!(sparse.contains("longest run 1 sample time"), "{sparse}");
         // material: the saturated-capture text, with the headroom advice
         assert!(clipping_note(&level(0.01)).unwrap().contains("Lower the rx gain"));
+    }
+
+    #[test]
+    fn the_longest_run_separates_a_burst_edge_from_one_sample() {
+        let mut s = vec![0i16; 200]; // 100 sample times
+        for k in 10..15 { s[2 * k] = 2047; } // five consecutive
+        let r = analyze(&s, 1e6, 64).unwrap();
+        assert_eq!(r.level.longest_clip, 5);
+        assert!(clipping_note(&r.level).unwrap().contains("longest clipped run is 5 sample times"));
+        // one value at the other rail: a run of one sample time
+        s[2 * 10..2 * 15].fill(0);
+        s[2 * 50] = -2048;
+        let r = analyze(&s, 1e6, 64).unwrap();
+        assert_eq!(r.level.longest_clip, 1);
+        assert!(clipping_note(&r.level).unwrap().contains("longest clipped run is 1 sample time"));
+        // negative control: nothing at a rail, no note
+        s[2 * 50] = 0;
+        let r = analyze(&s, 1e6, 64).unwrap();
+        assert_eq!(r.level.longest_clip, 0);
+        assert!(clipping_note(&r.level).is_none());
     }
 
     #[test]

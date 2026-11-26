@@ -305,6 +305,11 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    5 s capture had exactly one sample time at the rail (frame 26 025 176,
    Q = 2047 among 1413/1399) - a burst edge, not a data-path glitch: no
    lost samples, no bad headers, and the PRBS eye test covers the pins.
+   The level also carries the longest clipped run, which separates a burst
+   edge from a one-sample excursion: the 10 s window whose only rail value
+   is the single sample above reports "(longest run 1 sample time)", while
+   a test's five-sample burst reports 5. The run is counted per sample time
+   (either I or Q at a rail).
    Such a window is now named for what it is: a 43.4 dB crest factor (noise
    is about 10-12 dB) with no clipping raises "IMPULSIVE: bursts or
    transients dominate the peak, while the rms and the floor describe the
