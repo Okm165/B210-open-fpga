@@ -39,7 +39,7 @@ module events #(
   reg [31:0]  timer = 0;
   reg [15:0]  seq = 0;
   reg [63:0]  t = 0;
-  reg [K-1:0] todo = 0;                // events still to write
+  reg [K-1:0] pending = 0;             // one bit per event still to write
   reg [2:0]   k = 0;                   // the event being written
   reg [1:0]   w = 0;                   // its word
   reg [2:0]   hw = 0;                  // header word
@@ -62,13 +62,13 @@ module events #(
   reg [2:0] first;
   always @* begin
     first = 0;
-    for (i = K - 1; i >= 0; i = i - 1) if (todo[i]) first = i;
+    for (i = K - 1; i >= 0; i = i - 1) if (pending[i]) first = i;
   end
   // the next code to write after k
   reg [2:0] first_after_k;
   always @* begin
     first_after_k = 0;
-    for (i = K - 1; i >= 0; i = i - 1) if (todo[i] && i != k) first_after_k = i;
+    for (i = K - 1; i >= 0; i = i - 1) if (pending[i] && i != k) first_after_k = i;
   end
   wire [31:0] increase = snap[32*k +: 32] - reported[32*k +: 32];
 
@@ -79,7 +79,7 @@ module events #(
       state <= IDLE; reported <= counts; timer <= INTERVAL;
     end else case (state)
       IDLE: if (timer == 0 && m != 0 && w_room) begin
-        snap <= counts; todo <= rose; t <= now; hw <= 0; state <= HEAD;
+        snap <= counts; pending <= rose; t <= now; hw <= 0; state <= HEAD;
         w_valid <= 1; w_data <= {VERSION, 8'd0, T_EVENT, len};
       end
       HEAD: begin
@@ -99,8 +99,8 @@ module events #(
           default: begin
             w_data <= t[63:32];
             reported[32*k +: 32] <= snap[32*k +: 32];
-            todo[k] <= 0;
-            if (todo == (1 << k)) begin                // the last event
+            pending[k] <= 0;
+            if (pending == (1 << k)) begin                // the last event
               w_last <= 1; seq <= seq + 1; timer <= INTERVAL; state <= IDLE;
             end else begin
               k <= first_after_k; w <= 0;
