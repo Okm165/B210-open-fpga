@@ -270,14 +270,21 @@ fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, floor_bin: f64) -> V
     }).collect()
 }
 
+/// The ADC saturated: what it means and how much gain to take out. A capture
+/// with any clipped value is not a measurement of the input; `b210 capture`
+/// refuses it and `b210-plot` prints this first.
+pub fn clipping_note(l: &Level) -> Option<String> {
+    (l.clipped > 0.0).then(|| format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
+        spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom).",
+        100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
+}
+
 /// What the numbers say, most serious first, each with its cause and fix.
 pub fn findings(r: &Report) -> Vec<String> {
     let mut out = Vec::new();
     let l = &r.level;
-    if l.clipped > 0.0 {
-        out.push(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
-            spectral number below is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom).",
-            100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)));
+    if let Some(note) = clipping_note(l) {
+        out.push(note);
     } else if l.peak_dbfs < -40.0 {
         out.push(format!("LOW LEVEL: the peak is {:.1} dBFS, {:.0} dB of the converter's range unused; \
             raise the rx gain (aim for a peak near {:.0} dBFS).", l.peak_dbfs, -l.peak_dbfs, -l.crest_db.max(3.0) - 3.0));
@@ -433,6 +440,15 @@ mod tests {
     }
 
     #[test]
+    fn a_clean_signal_has_no_clipping_note() {
+        // negative control for the note: 30 dB below full scale, nothing at the rails
+        let s = signal(1 << 15, 0.03, 512.0, 1.0, 0.0, (0.0, 0.0), 0.032);
+        let r = analyze(&s, 1e6, 4096).unwrap();
+        assert_eq!(r.level.clipped, 0.0);
+        assert!(clipping_note(&r.level).is_none());
+    }
+
+    #[test]
     fn clipping_is_found_and_a_harmonic_classified() {
         // 6 dB over full scale: hard clipping, odd harmonics of the complex tone
         let s = signal(1 << 16, 0.03, 4096.0, 1.0, 0.0, (0.0, 0.0), 0.0);
@@ -440,6 +456,10 @@ mod tests {
         assert!(r.level.clipped > 0.1);
         let f = findings(&r);
         assert!(f[0].starts_with("CLIPPING"), "{f:?}");
+        // capture refuses a clipped stream through the same note
+        let note = clipping_note(&r.level).expect("clipped: a note");
+        assert_eq!(note, f[0]);
+        assert!(note.contains(&format!("{:.4}%", 100.0 * r.level.clipped)), "{note}");
         assert!(r.tone.as_ref().unwrap().sfdr_dbc < 40.0);
     }
 

@@ -476,10 +476,12 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     report_mismatches(&check);
     println!("kept {kept} sample times per channel; rx lost {}, bad values {}, bad headers {}",
              check.lost, check.bad_values, check.bad_headers);
+    let mut clipped = Vec::new();
     for (ch, path) in paths.iter().enumerate() {
         iq::write_meta(path, &iq::Meta { rate_hz: rate, channel: ch, source: c.source.clone() })?;
         let x = iq::read(path)?;
         let Some(r) = quality::analyze(&x, rate, 16384) else { continue };
+        if let Some(note) = quality::clipping_note(&r.level) { clipped.push((ch, note)); }
         let l = &r.level;
         print!("  ch{ch} {}: rms {:.1} dBFS, peak {:.1} dBFS, DC {:.1} dBFS", path.display(), l.rms_dbfs, l.peak_dbfs, l.dc_dbfs);
         match &r.tone {
@@ -491,7 +493,10 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     if let Some(p) = &check.prbs {
         println!("PRBS: {} bits, {} mismatches, {:.1}% ones", p.bits(), p.mismatches(), 100.0 * p.ones());
     }
+    for (ch, note) in &clipped { println!("  ch{ch}: {note}"); }
     if !(counters_ok && check.clean()) { bail!("capture: the stream was not clean (see above)"); }
+    if !clipped.is_empty() { bail!("capture: the ADC saturated on {} channel(s) - the samples are not the input (see above)",
+                                   clipped.len()); }
     println!("{}; analyse with: b210-plot {}", if check.prbs.is_some() {
         "every header and the BIST pseudo-random sequence checked"
     } else if check.check_values {

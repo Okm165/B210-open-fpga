@@ -168,6 +168,15 @@ examples/config.toml     every configuration key
    - 1.575 GHz (GPS L1, nominally quiet): input-referred level close to the
      ISM band's, and 17.6 dB of a 20 dB gain cut follows it, so it is ~88%
      external broadband energy, not the converter floor.
+   - `b210 capture` refuses a clipped stream: it prints the per-channel
+     CLIPPING note (the same text `b210-plot` gives) and exits 1, because a
+     saturated capture is not a measurement of the input. Measured: the FM
+     config at 70 dB exits 1 (0.47% / 15.4% clipped), at 30 dB exits 0.
+   - The rx gain surface 0 .. 76 stands at every band: ADI's per-band
+     "maximum gain" (73 / 71 / 62 dB) is not a clamp on the table index -
+     at 2.45 GHz the measured noise floor rose 5.3 dB from index 70 to 76
+     (+4.9 from 60 to 65), so the extra rows carry gain. UHD clamps the
+     index at 76 only (set_gain), which is what the driver does too.
    - Port asymmetry, resolved: on the FM band both ports receive the same
      99.4 MHz station, ch1 about 8 dB stronger (tone -40.7 vs -49.0 dBFS
      at 30 dB gain, -50.9 vs -59.4 at 20; ch0's falls below the detector
