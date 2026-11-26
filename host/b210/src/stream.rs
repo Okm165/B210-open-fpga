@@ -121,15 +121,15 @@ pub struct Mismatch {
 #[derive(Debug)]
 pub struct Check {
     pub packets: u64,
-    pub samples: u64,
+    pub sample_times: u64,
     pub lost: u64,
     pub overflow_flags: u64,
     pub bad_values: u64,
     pub bad_headers: u64,
-    /// Whether `values` compares samples against `expect` at all: off for a
+    /// Whether `values` compares sample_times against `expect` at all: off for a
     /// source with no closed form (the radio).
     pub check_values: bool,
-    /// When set, samples are instead checked against the AD9361's BIST
+    /// When set, sample_times are instead checked against the AD9361's BIST
     /// pseudo-random sequence (prbs.rs), bit 0 of every word.
     pub prbs: Option<crate::prbs::Checker>,
     /// The first data packet's time.
@@ -138,7 +138,7 @@ pub struct Check {
     pub next: Option<(u64, u16)>,
     /// The first [`REPORTED`] mismatching values.
     pub mismatches: Vec<Mismatch>,
-    /// A packet with samples has arrived: an END_OF_BURST from now on ends
+    /// A packet with sample_times has arrived: an END_OF_BURST from now on ends
     /// this stream, not a stopped earlier one.
     data_seen: bool,
 }
@@ -149,18 +149,18 @@ pub struct Seen {
     /// The header of a data packet that passed `Check::header`; its values
     /// were checked.
     pub data: Option<Header>,
-    /// The packet carried samples (whether or not its header passed).
-    pub samples: bool,
+    /// The packet carried sample_times (whether or not its header passed).
+    pub sample_times: bool,
     /// The packet ends the stream: END_OF_BURST after data.
     pub end: bool,
 }
 
 impl Default for Check {
-    /// `check_values` on: a Check that does not compare samples must say so.
+    /// `check_values` on: a Check that does not compare sample_times must say so.
     fn default() -> Self {
         Check {
             packets: 0,
-            samples: 0,
+            sample_times: 0,
             lost: 0,
             overflow_flags: 0,
             bad_values: 0,
@@ -184,7 +184,7 @@ impl Check {
 
     /// One data packet's header (`n` sample times) against the stream so
     /// far: format and channels as configured, HAS_TIME, times contiguous
-    /// unless OVERFLOW says samples were dropped (then the gap is counted
+    /// unless OVERFLOW says sample_times were dropped (then the gap is counted
     /// lost), sequence +1. False for a header that must not be used.
     pub fn header(&mut self, h: &Header, s: Shape, n: usize) -> bool {
         if h.format != Some(s.format) || h.mask != s.mask || h.flags & flag::HAS_TIME == 0 {
@@ -202,7 +202,7 @@ impl Check {
         self.overflow_flags += overflow as u64;
         self.first.get_or_insert(h.time);
         self.packets += 1;
-        self.samples += n as u64;
+        self.sample_times += n as u64;
         self.next = Some((h.time + n as u64, h.sequence.wrapping_add(1)));
         true
     }
@@ -257,7 +257,7 @@ impl Check {
             values.resize(n * 2 * s.count(), 0);
             proto::unpack(s.format, &p[proto::HEADER..proto::HEADER + payload], values);
             self.data_seen = true;
-            seen.samples = true;
+            seen.sample_times = true;
             if self.header(&h, s, n) {
                 self.values(&h, values, s, expect);
                 seen.data = Some(h);
@@ -286,7 +286,7 @@ pub fn flush_rx(rx: &mut Endpoint<Bulk, In>) {
 
 /// Run one rx stream: flush the endpoint, start the stream (continuous,
 /// full packets, `depth` transfers in flight), put every packet through
-/// `check`, and after each packet with samples call `packet` with the
+/// `check`, and after each packet with sample_times call `packet` with the
 /// header and values (I0 Q0 [I1 Q1] per sample time) of a packet whose
 /// header passed (None otherwise) and the check so far. STOP is sent once
 /// `packet` returns true; the stream ends at its END_OF_BURST. Returns the
@@ -305,7 +305,7 @@ pub fn rx_stream(
 ) -> Result<f64> {
     // the AD9361's data port is set by the applied configuration (radio
     // register 0x030 bit 1: 2R2T); a stream of a different width would
-    // interleave the samples wrongly, so refuse it here
+    // interleave the sample_times wrongly, so refuse it here
     let radio = ctrl.read(regs::RADIO)?;
     if !s.port_matches(radio) {
         let port = if radio & crate::device::TWO_R2T != 0 { "2R2T" } else { "1R1T" };
@@ -347,7 +347,7 @@ fn rx_loop(
         let used = ranges.last().map_or(0, |r| r.end);
         for r in ranges {
             let seen = check.packet(&bytes[r], s, expect, &mut values);
-            if seen.samples {
+            if seen.sample_times {
                 let data = seen.data.as_ref().map(|h| (h, values.as_slice()));
                 if packet(data, check)? && !stopping {
                     ctrl.write(regs::RX_CTRL, rx::STOP)?;
@@ -498,7 +498,7 @@ mod tests {
         // time going backwards: a bad header, nothing lost
         assert!(c.header(&rx_header(1500, 12, 0), S, 100));
         assert_eq!((c.lost, c.bad_headers), (60, 3));
-        assert_eq!((c.packets, c.samples, c.first), (6, 600, Some(1000)));
+        assert_eq!((c.packets, c.sample_times, c.first), (6, 600, Some(1000)));
         assert!(!c.clean());
     }
 
@@ -569,11 +569,11 @@ mod tests {
         let stale = c.packet(&wire(rx_header(5, 3, flag::END_OF_BURST), 0), S, &expect, &mut values);
         assert_eq!(stale, Seen::default());
         let data = c.packet(&wire(rx_header(100, 0, 0), 4), S, &expect, &mut values);
-        assert_eq!((data.data.map(|h| h.time), data.samples, data.end), (Some(100), true, false));
+        assert_eq!((data.data.map(|h| h.time), data.sample_times, data.end), (Some(100), true, false));
         assert_eq!(values.len(), 4 * 4);
         // now an END_OF_BURST ends the stream
         let end = c.packet(&wire(rx_header(104, 1, flag::END_OF_BURST), 0), S, &expect, &mut values);
-        assert!(end.end && !end.samples);
+        assert!(end.end && !end.sample_times);
         assert!(c.clean(), "{c:?}");
     }
 
@@ -589,7 +589,7 @@ mod tests {
         // 4 sample times of 2 channels read as 1 channel: 24 bytes are 8 of 3
         let one = Shape { mask: 0b01, ..S };
         let p = wire(rx_header(0, 0, 0), 4);
-        assert!(c.packet(&p, one, &expect, &mut values).samples, "whole sample times of the other shape");
+        assert!(c.packet(&p, one, &expect, &mut values).sample_times, "whole sample times of the other shape");
         // a payload of 5 bytes is no whole sample time of either
         let mut odd = p.clone();
         odd[..proto::HEADER].copy_from_slice(&Header { length: proto::HEADER as u16 + 5, ..h }.encode());

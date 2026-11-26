@@ -71,12 +71,12 @@ struct CaptureArgs {
     #[arg(long, default_value = "capture.raw")]
     out: std::path::PathBuf,
     /// pattern: the FPGA's f(t); tone: a host tone through tx and the loopback;
-    /// radio: the AD9361, samples kept, not checked against a closed form
+    /// radio: the AD9361, sample_times kept, not checked against a closed form
     #[arg(long, default_value = "tone")]
     source: String,
     /// radio only: check every word's bit 0 against the AD9361's BIST
     /// pseudo-random sequence (`b210-radio test CONFIG prbs` first) instead
-    /// of keeping the samples unchecked
+    /// of keeping the sample_times unchecked
     #[arg(long)]
     prbs: bool,
     /// tone frequency, Hz (channel 0 at +f, channel 1 at -f)
@@ -235,8 +235,8 @@ fn report_mismatches(c: &Check) {
 
 fn report_rx(c: &Check, seconds: f64) {
     report_mismatches(c);
-    println!("rx: {} packets, {} sample times in {seconds:.2} s = {:.3} MS/s", c.packets, c.samples,
-             c.samples as f64 / seconds / 1e6);
+    println!("rx: {} packets, {} sample times in {seconds:.2} s = {:.3} MS/s", c.packets, c.sample_times,
+             c.sample_times as f64 / seconds / 1e6);
     println!("rx: lost {} sample times ({} packets flagged OVERFLOW); bad values {}, bad headers {}",
              c.lost, c.overflow_flags, c.bad_values, c.bad_headers);
 }
@@ -304,7 +304,7 @@ fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     let seconds = rx_result?;
     let packets = tx_result?;
     report_rx(&check, seconds);
-    println!("tx: {n} samples in {packets} packets, burst at tick {at}");
+    println!("tx: {n} sample_times in {packets} packets, burst at tick {at}");
     let covered = check.first.is_some_and(|f| f <= at) && check.next.is_some_and(|(t, _)| t >= end);
     if !covered {
         println!("  rx did not cover the whole burst");
@@ -316,7 +316,7 @@ fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     if !(counters_ok & check.clean() & covered) {
         bail!("loop-test FAILED");
     }
-    println!("loop-test PASSED: all {n} tx samples back on rx at exactly their ticks, zeros around them");
+    println!("loop-test PASSED: all {n} tx sample_times back on rx at exactly their ticks, zeros around them");
     Ok(())
 }
 
@@ -326,7 +326,7 @@ fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
 /// sample clock running), the measured sample rate, both rings' fill now
 /// and at most since the last line (the marks are cleared after each read),
 /// and how much every counter rose. Every counter rising except BURST_ACK
-/// is trouble: OVERFLOW = rx samples dropped, UNDERFLOW = tx ran dry in a
+/// is trouble: OVERFLOW = rx sample_times dropped, UNDERFLOW = tx ran dry in a
 /// burst, LATE = a burst came after its time, SEQ_ERR / BAD_PKT = broken tx
 /// packets, cdc_lost = a design error, cmd_drop = malformed commands.
 fn monitor(usb: &mut Usb, interval_ms: u64) -> Result<()> {
@@ -512,13 +512,13 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     for (ch, note, _) in &clipped { println!("  ch{ch}: {note}"); }
     if !(counters_ok && check.clean()) { bail!("capture: the stream was not clean (see above)"); }
     let refused = clipped.iter().filter(|(_, _, refused)| *refused).count();
-    if refused > 0 { bail!("capture: the ADC saturated on {refused} channel(s) - the samples are not the input (see above)"); }
+    if refused > 0 { bail!("capture: the ADC saturated on {refused} channel(s) - the sample_times are not the input (see above)"); }
     println!("{}; analyse with: b210-plot {}", if check.prbs.is_some() {
         "every header and the BIST pseudo-random sequence checked"
     } else if check.check_values {
         "every sample time checked against what the source must carry"
     } else {
-        "every header and the timing checked; the samples are the radio's"
+        "every header and the timing checked; the sample_times are the radio's"
     }, paths[0].display());
     Ok(())
 }

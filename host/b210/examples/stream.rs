@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         },
     )?;
 
-    let frames = check.samples.max(1) as f64;
+    let frames = check.sample_times.max(1) as f64;
     for ch in 0..s.count() {
         // the DC-removed power, as quality.rs computes it: E[x^2] - E[x]^2
         let (di, dq) = (si[ch] / frames, sq[ch] / frames);
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
                  20.0 * (rms / 2048.0).log10());
     }
     println!("{} sample times in {streamed:.2} s; lost {}, bad values {}, bad headers {}, overflow flags {}",
-             check.samples, check.lost, check.bad_values, check.bad_headers, check.overflow_flags);
+             check.sample_times, check.lost, check.bad_values, check.bad_headers, check.overflow_flags);
     if !check.clean() {
         bail!("the stream was not clean");
     }
