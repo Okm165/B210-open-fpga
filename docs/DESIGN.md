@@ -195,10 +195,10 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
      digital one (the BIST tone); a calibrated RF source is needed to say
      whether that is the chip or this board, so it stays an open number,
      not a claim.
-   - `b210 capture` refuses a clipped stream: it prints the per-channel
+   - `b210 capture` refuses a clipped ADC stream: it prints the per-channel
      CLIPPING note (the same text `b210-plot` gives) and exits 1, because a
      saturated capture is not a measurement of the input. Measured: the FM
-     config at 70 dB exits 1 (0.50% / 15.0% clipped), at 30 dB exits 0.
+     config at 70 dB exits 1 (9.7% / 11.4% clipped), at 30 dB exits 0.
      Refusal needs clipping at or above 1e-6 of the I/Q values
      (`quality::CLIP_REFUSE`, about one clipped value per 64 x 16384
      analysis block); below that the note says "isolated" and the capture
@@ -207,6 +207,24 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
      two. The 47 dB came from the crest factor of that one sample, not
      from the signal, so the gain advice is given only in the material
      grade.
+   - The refusal is the ADC's alone. A digital source (--source pattern,
+     --source tone) spans the code range by construction and is checked
+     bit for bit, so its rails are a fact to report, not a saturation: the
+     note names the fraction and the longest run and adds the gain advice
+     as the rule for an ADC input, and the capture exits 0. Measured: the
+     pattern (0.0488% at the rails, run 2) and a 0 dBFS tone (1.92%, run 1)
+     both exit 0; before this they exited 1 with "the ADC saturated" - a
+     false failure that made two of the four receive states uncapturable.
+   - A stream that lost sample times is not analysed: the file is a splice
+     of two stretches, so its spectrum is not the spectrum of one record.
+     `capture` prints whether the FPGA announced the drop in OVERFLOW
+     headers (the host fell behind) or a gap came unannounced (the data
+     path lost it), writes the sidecar with the count, and exits 1 before
+     the analysis. `b210-plot` prints "SPLICE: its capture lost N sample
+     times ..." for such a file, so an archived splice is never read as a
+     measurement. Measured: a capture run while the RTL gate compiled lost
+     602,888 sample times with OVERFLOW set, then a repeat under no CPU
+     load kept 58.27 M with 0 lost.
    - The incremental plan was checked on the chip, not only against the
      mock: apply B --from A and then read every AD9361 register 0x000 ..
      0x2FF, against a fresh apply B read the same way. Registers that

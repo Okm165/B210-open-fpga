@@ -425,16 +425,21 @@ pub fn clipping_refuses(l: &Level) -> bool {
     l.clipped_fraction >= CLIP_REFUSE
 }
 
-/// What the clipping means, in two grades: material (refused; the gain advice
-/// is the peak over the rails plus 3 dB of headroom) and isolated (reported,
-/// kept). Both state the longest run: one sample is a transient, a run is the
-/// edge of a burst.
+/// What the clipping means, in two grades: material (refused when the values
+/// are an ADC's; the advice is the peak over the rails plus 3 dB of headroom)
+/// and isolated (reported, kept). Both state the longest run: one sample is a
+/// transient, a run is the edge of a burst.
+///
+/// The note never says the ADC saturated: it describes the codes, and only an
+/// ADC input can be lowered by a gain (a digital test source - the pattern,
+/// the host tone - reaches the rails by construction, so the advice reads as
+/// the rule it is, not as a diagnosis).
 pub fn clipping_note(l: &Level) -> Option<String> {
     let run = if l.longest_clip == 1 { "1 sample time".to_string() } else { format!("{} sample times", l.longest_clip) };
     if l.clipped_fraction >= CLIP_REFUSE {
-        Some(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
-            spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom); \
-            the longest clipped run is {run}.",
+        Some(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits, so every spectral number is \
+            distorted; the longest clipped run is {run}. Lower the rx gain by at least {:.0} dB (crest factor \
+            + 3 dB headroom) when the values are an ADC's.",
             100.0 * l.clipped_fraction, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
     } else if l.clipped_fraction > 0.0 {
         Some(format!("CLIPPING, isolated: {:.1e} of I/Q values sit at the code limits, below the {:.0e} at which \

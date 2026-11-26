@@ -383,6 +383,13 @@ const SUMMARY_FFT: usize = 16_384;
 ///          every one checked bit for bit against what was sent, so the
 ///          files are what the whole digital chain delivered. A perfect
 ///          chain gives exactly the quantised tone: SNR at the 12-bit limit.
+/// radio:   the AD9361's output; its values have no closed form.
+///
+/// Both digital sources span the code range by construction, so their CLIPPING
+/// note reports the rails without refusing; only the radio's saturation
+/// refuses a capture, because only there is the data a measurement of an input.
+/// A stream that lost sample times is not analysed at all: the file is a
+/// splice, and its sidecar says so for `b210-plot`.
 fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     use b210::{capture, quality};
     use std::io::Write;
@@ -485,12 +492,39 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     report_mismatches(&check);
     println!("kept {kept} sample times per channel; rx lost {}, bad values {}, bad headers {}",
              check.lost, check.bad_values, check.bad_headers);
+    if check.lost > 0 {
+        // The protocol makes the two origins distinguishable, and they are
+        // opposite diagnoses: OVERFLOW is the FPGA saying it dropped sample
+        // times because the host did not read them fast enough; a gap with no
+        // flag is the data path losing them silently.
+        println!("  {}", if check.overflow_flags > 0 {
+            format!("the FPGA announced the drop in {} OVERFLOW header(s): the host did not keep up \
+                     (writes and builds compete with {:.0} MB/s)", check.overflow_flags,
+                     rate * s.bytes_per_time() as f64 / 1e6)
+        } else {
+            "no OVERFLOW header announced the gap: the data path lost sample times, not the host".to_string()
+        });
+    }
+    // The sidecar is written before the verdict so a file that fails below can
+    // still be read (and marked) by b210-plot.
+    for (ch, path) in paths.iter().enumerate() {
+        capture::write_meta(path, &capture::Meta { rate_hz: rate, channel: ch, source: c.source.clone(),
+                                                   lost: check.lost })?;
+    }
+    if !check.clean() {
+        bail!("capture: the stream was not clean - the files are a splice, not a continuous record; \
+               b210-plot marks them, so their spectra are a diagnostic, not a measurement");
+    }
     let mut clipped = Vec::new();
     println!("analysis: {SUMMARY_FFT}-point spectrum per channel (b210-plot defaults to 4096)");
     for (ch, path) in paths.iter().enumerate() {
-        capture::write_meta(path, &capture::Meta { rate_hz: rate, channel: ch, source: c.source.clone() })?;
         let Some(r) = quality::analyze_file(path, rate, SUMMARY_FFT)? else { continue };
-        if let Some(note) = quality::clipping_note(&r.level) { clipped.push((ch, note, quality::clipping_refuses(&r.level))); }
+        if let Some(note) = quality::clipping_note(&r.level) {
+            // Only an ADC's values can be helped by a gain: a digital source
+            // (pattern, tone) spans the codes by construction, so its rails
+            // are a fact to report, not a saturation to refuse.
+            clipped.push((ch, note, c.source == "radio" && quality::clipping_refuses(&r.level)));
+        }
         let l = &r.level;
         print!("  ch{ch} {}: rms {:.1} dBFS, peak {:.1} dBFS, DC {:.1} dBFS", path.display(), l.rms_dbfs, l.peak_dbfs, l.dc_dbfs);
         match &r.tone {
@@ -510,7 +544,8 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
         println!("PRBS: {} bits, {} mismatches, {:.1}% ones", p.bits(), p.mismatches(), 100.0 * p.ones());
     }
     for (ch, note, _) in &clipped { println!("  ch{ch}: {note}"); }
-    if !(counters_ok && check.clean()) { bail!("capture: the stream was not clean (see above)"); }
+    if !counters_ok { bail!("capture: an event counter moved during the stream - the samples may be sound, \
+                              the run is not (see above)"); }
     let refused = clipped.iter().filter(|(_, _, refused)| *refused).count();
     if refused > 0 { bail!("capture: the ADC saturated on {refused} channel(s) - the sample_times are not the input (see above)"); }
     println!("{}; analyse with: b210-plot {}", if check.prbs.is_some() {

@@ -29,6 +29,11 @@ pub struct Meta {
     pub channel: usize,
     /// rx source register setting the capture was taken with
     pub source: String,
+    /// sample times the stream lost while writing this file (0: a continuous
+    /// record). A file with `lost > 0` is a splice of two or more stretches:
+    /// its spectrum is a diagnostic, not a measurement.
+    #[serde(default)]
+    pub lost: u64,
 }
 
 /// The sidecar of a capture file: same path, extension `.toml`.
@@ -115,7 +120,14 @@ mod tests {
         assert_eq!(read_range(&p, 0, 2).unwrap(), vec![1, -2, 300, -4000]);
         std::fs::write(&p, [0u8; 6]).unwrap();
         assert!(read_range(&p, 0, 1).is_err(), "6 bytes is not whole I/Q pairs");
-        let m = Meta { rate_hz: 30.72e6, channel: 1, source: "pattern".into() };
+        let m = Meta { rate_hz: 30.72e6, channel: 1, source: "pattern".into(), lost: 0 };
+        write_meta(&p, &m).unwrap();
+        assert_eq!(read_meta(&p).unwrap(), Some(m));
+        // a sidecar from before `lost` existed is still a continuous record
+        std::fs::write(meta_path(&p), "rate_hz = 1.0\nchannel = 0\nsource = \"radio\"\n").unwrap();
+        assert_eq!(read_meta(&p).unwrap().map(|m| m.lost), Some(0));
+        // a splice has to be written and read back
+        let m = Meta { rate_hz: 30.72e6, channel: 0, source: "radio".into(), lost: 602_888 };
         write_meta(&p, &m).unwrap();
         assert_eq!(read_meta(&p).unwrap(), Some(m));
         assert_eq!(read_meta(&dir.join("none.raw")).unwrap(), None);

@@ -44,6 +44,15 @@ use std::path::PathBuf;
 
 const FS: f64 = capture::FULL_SCALE;
 
+/// The line b210-plot prints for a file whose capture lost sample times: the
+/// record is two or more stretches laid end to end, so every spectrum and
+/// level in it is a diagnostic of the data, not a measurement of the input.
+fn splice_note(meta: Option<&capture::Meta>) -> Option<String> {
+    let lost = meta?.lost;
+    (lost > 0).then(|| format!("SPLICE: its capture lost {lost} sample times, so the record is not \
+                                continuous; spectra and levels below are a diagnostic, not a measurement"))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum View { All, Report, Spectrum, Waterfall, Time, Hist, Iq }
@@ -196,6 +205,9 @@ fn main() -> Result<()> {
              cli.file.display(), frames, frames as f64 / rate, rate / 1e6,
              meta.as_ref().map_or(String::new(), |m| format!(", channel {}, source {}", m.channel, m.source)),
              i0 as f64 / rate, i1 as f64 / rate);
+    if let Some(note) = splice_note(meta.as_ref()) {
+        println!("{note}");
+    }
     let g = Geometry { width: a.width, height: a.height, lo, hi, top: a.top_db, bottom: a.top_db - a.range_db };
     // the report alone needs no samples in memory: it streams the interval
     if let [View::Report] = a.views.as_slice()
@@ -688,6 +700,16 @@ impl Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spliced_file_says_so_and_a_continuous_one_says_nothing() {
+        let meta = |lost| capture::Meta { rate_hz: 30.72e6, channel: 0, source: "radio".into(), lost };
+        assert!(splice_note(None).is_none(), "a file from elsewhere has no sidecar");
+        assert!(splice_note(Some(&meta(0))).is_none(), "a continuous record");
+        let note = splice_note(Some(&meta(602_888))).expect("a splice is marked");
+        assert!(note.contains("lost 602888 sample times"), "{note}");
+        assert!(note.contains("not a measurement"), "{note}");
+    }
 
     #[test]
     fn a_config_file_uses_the_flag_names_and_flags_override_it() {

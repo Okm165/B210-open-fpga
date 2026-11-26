@@ -55,8 +55,9 @@ chip running: `b210-radio apply host/b210/examples/config.toml` first, or
 the stream stops with "no sample clock". `capture` writes interleaved i16
 I/Q, one file per channel (`--prbs` with `--source radio` checks the AD9361's
 BIST sequence instead, after `b210-radio test CONFIG prbs`); `capture` refuses a
-stream whose ADC saturated (it prints the per-channel fraction and exits 1)
-and analyses the file in bounded memory. `b210-radio test` selects the
+radio stream whose ADC saturated (it prints the per-channel fraction and
+exits 1), refuses to analyse a stream that lost sample times (the file is a
+splice), and analyses the file in bounded memory. `b210-radio test` selects the
 AD9361's digital test mode at its data port (`tone`, `prbs`, `loopback`,
 `none`); `b210-radio scan` sweeps its rx clock/data delays with the PRBS and
 prints the eye. `b210-plot` writes a report (level, DC, I/Q
@@ -97,9 +98,10 @@ packet's I/Q and its `Check` reports lost samples, bad values and bad
 headers; it exits 1 if the stream was not clean.
 
 `capture` exits 1 when the ADC saturates (lower the gain in the config's
-`gain_db`); a crowded band such as FM overloads at 70 dB and is clean from
-55 dB down, so a strong band needs a lower gain than a weak one
-(`docs/DESIGN.md`, "antenna").
+`gain_db`), only for `--source radio`: the pattern and the host tone reach
+the code rails by construction and are reported, not refused. A crowded
+band such as FM overloads at 70 dB and is clean from 55 dB down, so a strong
+band needs a lower gain than a weak one (`docs/DESIGN.md`, "antenna").
 
 ## v1
 
