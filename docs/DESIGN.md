@@ -133,7 +133,8 @@ examples/config.toml     every configuration key
    board.
 2. AD9361 data path: ad9361_io in the top on the AD9361's data clock, the
    Rust ad9361 driver on the board. Done on the board (build 9,
-   `d346cc5`): config applied from the TOML with every poll ok; pattern
+   `d346cc5`; re-run on build 10, `f30268d`, after the tx rule below):
+   config applied from the TOML with every poll ok; pattern
    lossless at 2 x 30.72 MS/s (sc12 and sc16) and 1 x 61.44 MS/s; full
    duplex loopback 307.2 M samples back at exactly their ticks in 10 s
    (2 channels) and 5 s (1 channel at 61.44 MS/s); a 3 s radio capture
@@ -161,6 +162,9 @@ examples/config.toml     every configuration key
    the 6 dB case as noise); the 2.45 GHz captures then report none, while
    the FM stations (about 40 dB over the floor) stay listed.
    BIST/PRBS/eye scan are still v1 measurements, not repeated on this image.
+   Build 10 also carries the tx rule that a packet with samples but
+   neither START_OF_BURST nor an open burst is malformed (PROTOCOL.md 3.3):
+   playing it left the sample side in a burst the deframer could not end.
 3. Device API, configuration applied through config.rs, CLI rx / tx /
    record; a board check in just.
 4. No Python, no v1 left in the tree (v1 is tag v1-ettus-uhd).
