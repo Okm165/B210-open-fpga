@@ -176,7 +176,12 @@ examples/config.toml     every configuration key
    2 x 30.72 MS/s sc16 and 110,276,672 at 1 x 61.44 MS/s sc12, 0 mismatches,
    50.0% ones on both. A single-channel read of the 2R2T stream also passes:
    decimating a maximal-length sequence by 2 is the same sequence shifted,
-   so that is not an error detector. The eye scan remains a v1 measurement.
+   so that is not an error detector.
+   Mixed channel counts work: 2 rx + 1 tx at 30.72 MS/s applies with the
+   port in 2R2T (0x005 = 30720), the 2-channel pattern stream is clean, a
+   1-channel tx burst loops back exact (153.6 M samples), and a 2-channel
+   radio capture runs with the transmitter on. The eye scan remains a v1
+   measurement.
    Build 10 also carries the tx rule that a packet with samples but
    neither START_OF_BURST nor an open burst is malformed (PROTOCOL.md 3.3):
    playing it left the sample side in a burst the deframer could not end.

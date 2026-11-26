@@ -15,7 +15,8 @@
 //! | `lo_hz` | Hz, 70e6 ..= 6e9 | the direction's one synthesizer |
 //! | `bandwidth_hz` | Hz, rx 800e3 ..= 56e6, tx 1.08e6 ..= 40e6, and <= `rate_hz` | the direction's one analog filter setting |
 //! | `rx.spp` | sample times, 16 ..= full packet (default full) | rx packet size; latency = spp / rate_hz |
-//! | `ch0`, `ch1` | present = enabled | a channel (bit c of PROTOCOL.md's channel mask) |
+//! | `ch0`, `ch1` | present = enabled | a channel (bit c of PROTOCOL.md's channel mask); rx and tx
+//! may differ (2 rx + 1 tx measured on the board: 2R2T, the single channel uses channel 0) |
 //! | `rx.chC.gain_db` | dB, 0 ..= 76 in 1 dB steps | rx gain index of the AD9361 gain table |
 //! | `tx.chC.gain_db` | dB, 0 ..= 89.75 in 0.25 dB steps | attenuation = 89.75 dB - gain_db |
 //!
