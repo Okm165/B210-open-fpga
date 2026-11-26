@@ -61,7 +61,10 @@ AD9361's digital test mode at its data port (`tone`, `prbs`, `loopback`,
 `none`); `b210-radio scan` sweeps its rx clock/data delays with the PRBS and
 prints the eye. `b210-plot` writes a report (level, DC, I/Q
 balance, tone, floor, spurs, findings) and draws the spectrum, waterfall,
-time, histogram and constellation in the terminal. `--help` on any command
+time, histogram and constellation in the terminal; `--png PREFIX` writes the
+same image views as grayscale PNG files (`PREFIX_spectrum.png`,
+`PREFIX_waterfall.png`, `PREFIX_time.png`, `PREFIX_hist.png`,
+`PREFIX_iq.png`) for browsing. `--help` on any command
 gives the full list and defaults.
 
 The RX inputs' absolute maximum is +2.5 dBm peak (AD9361 data sheet Rev. F,
@@ -79,7 +82,19 @@ b210-radio apply host/b210/examples/config.toml     # 2.45 GHz ISM, 2 x 2
 b210 capture --seconds 2 --out /tmp/cap.raw
 b210-plot /tmp/cap_ch0.raw --view report
 b210-plot /tmp/cap_ch0.raw --view spectrum
+b210-plot /tmp/cap_ch0.raw --png /tmp/cap_ch0      # the views as PNG images to browse
 ```
+
+The same stream from your own Rust code, in the order the hardware
+requires (open, bring up, apply, set the rx source, stream):
+
+```sh
+cd host && cargo run --release --example stream -- b210/examples/config.toml 5
+```
+
+`host/b210/examples/stream.rs` is the minimal client: its callback gets each
+packet's I/Q and its `Check` reports lost samples, bad values and bad
+headers; it exits 1 if the stream was not clean.
 
 `capture` exits 1 when the ADC saturates (lower the gain in the config's
 `gain_db`); a crowded band such as FM overloads at 70 dB and is clean from

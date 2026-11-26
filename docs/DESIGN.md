@@ -101,13 +101,14 @@ src/
   device.rs       the AD9361 on the board: its Bus over the FPGA's operations, the RESETB bring-up, a configuration applied
   ad9361/         the AD9361 driver over a Bus of SPI, WAIT, POLL, and the chip's limits (mod.rs), UHD's tables (tables.rs), a recording Bus for tests (mock.rs)
   dsp.rs          spectra: window, scaling, Welch averaging, dBFS; the coherent test tone
-  iq.rs           one channel of I/Q on disk (i16 interleaved), per-channel files
+  capture.rs      one channel of I/Q on disk (i16 interleaved), per-channel files, the sidecar
   quality.rs      signal quality: level, DC, I/Q balance, SNR, SINAD, SFDR, ENOB, findings
   bin/b210.rs     binary `b210`: load, state, read, write, monitor, rx-test, loop-test, capture
-  bin/b210-plot.rs binary `b210-plot`: a capture's report, spectrum, waterfall, time, histogram, constellation in the terminal
+  bin/b210-plot.rs binary `b210-plot`: a capture's report, spectrum, waterfall, time, histogram, constellation in the terminal, and as PNG images (`--png`)
   bin/b210-radio.rs binary `b210-radio`: the AD9361 from a configuration file (id, apply, peek, reset)
 tests/ad9361_golden.rs   the driver against UHD's C++ traces
 examples/config.toml     every configuration key
+examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream, Check
 ```
 
 ## Code standard (Rust and Verilog alike)
@@ -260,6 +261,27 @@ examples/config.toml     every configuration key
    floor + 10 dB (quality::SPUR_DB, with a gamma-noise test that also pins
    the 6 dB case as noise); the 2.45 GHz captures then report none, while
    the FM stations (about 40 dB over the floor) stay listed.
+   The mirror reading had the same shape of flaw one step further: a tone's
+   "mirror" was always read from a +-8-bin band at -f, but a tone within 2 x
+   8 bins of DC has that band over the DC lobe, so a DC offset was reported
+   as a component at the mirror frequency. Reproduced in a test (tone 9.4
+   bins from DC, DC offset 300/-200 codes): "MIRROR at -2.260 kHz, -17.5
+   dBc" where nothing sits at -f; the power is DC leakage. A mirror is now
+   measured only when its main lobe is disjoint from both the tone's and
+   DC's, and otherwise the report says so ("mirror not measurable"), with
+   no finding. Measured on the board through the loopback tone: 70.8 kHz
+   (9.4 bins of 4096 at 30.72 MS/s) reports "not measurable", 1.2342 MHz
+   reports "mirror -99.4 dBc". The same split appears on the antenna: with
+   the LO at 99.5 MHz and 30 dB gain (2 s, 58.26 M sample times per channel,
+   0 lost), channel 1's 99.4 MHz station sits at -100 kHz (13 bins) and the
+   report says "mirror not measurable" with no finding, while channel 0's
+   strongest component 3.5 MHz out still measures mirror -27.9 dBc and is
+   reported MIRROR - the same code, the geometry decides. (At 50 dB the
+   whole FM band clipped, peak -0.9/0.0 dBFS, ENOB ~2; the report's SEVERAL
+   COMPONENTS finding says those numbers are not the receiver's.)
+   The spur's kind is `Mirror` (not `Image`),
+   matching the finding's word: an I/Q image and a real signal there are
+   indistinguishable in one capture, and the LO-shift test is what decides.
    The AD9361's own BIST tone (fs/32, -6 dBFS at the chip's rx port, so the
    chip drives the pins the way RF does) now proves the pin capture at both
    rates: 0.9600 MHz at -6.02 dBFS, SNR 67.9 dB, ENOB 11.70 on both

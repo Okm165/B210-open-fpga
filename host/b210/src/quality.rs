@@ -50,7 +50,10 @@
 //!             MIRROR, not IMAGE: an I/Q image and a real signal there look
 //!             the same in one capture. Moving the LO separates them - the
 //!             image keeps the tone's offset mirrored, a real signal moves
-//!             the other way.
+//!             the other way. The mirror is only measured when its main
+//!             lobe is disjoint from the tone's and from DC's: a tone within
+//!             2 x LOBE bins of DC has its mirror band over the DC lobe, and
+//!             the power read there is DC leakage, not a mirror.
 //!   floor     the median bin, turned into the mean: a bin averaged over K
 //!             segments is Gamma(K) distributed, whose median is the mean
 //!             times about (1 - 1/(9K))^3 (Wilson-Hilferty; K = 1 gives
@@ -87,7 +90,9 @@ pub struct Balance {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpurKind {
     Harmonic(u32),
-    Image,
+    /// A component at the tone's mirror frequency (an I/Q image or a real
+    /// signal there - one capture cannot tell them apart).
+    Mirror,
     Other,
 }
 
@@ -111,7 +116,9 @@ pub struct Tone {
     pub sinad_db: f64,
     pub sfdr_dbc: f64,
     pub enob: f64,
-    pub image_dbc: f64,
+    /// Power at the mirror frequency relative to the tone; None when the
+    /// mirror band is not disjoint from the tone's or DC's main lobe.
+    pub mirror_dbc: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -299,6 +306,18 @@ fn pairs<R: std::io::Read>(mut r: R) -> impl Iterator<Item = io::Result<(i16, i1
     })
 }
 
+/// Circular distance between bins, in 0 ..= n/2.
+fn apart(a: usize, b: usize, n: usize) -> usize {
+    let d = a.abs_diff(b);
+    d.min(n - d)
+}
+
+/// The mirror band is usable only when its main lobe (radius LOBE) meets
+/// neither the tone's nor DC's.
+fn mirror_separated(sp: &Spectrum, k0: usize, km: usize) -> bool {
+    apart(km, k0, sp.n()) > 2 * LOBE && apart(km, sp.n() / 2, sp.n()) > 2 * LOBE
+}
+
 fn tone(sp: &Spectrum, k0: usize) -> (Option<Tone>, Vec<Spur>) {
     let n = sp.n();
     // frequency: power-weighted centroid of the main lobe
@@ -320,7 +339,9 @@ fn tone(sp: &Spectrum, k0: usize) -> (Option<Tone>, Vec<Spur>) {
         .filter(|k| !{ let d = k.abs_diff(k0); d.min(n - d) <= LOBE }).map(|k| sp.power[k]).sum();
     // everything outside the tone and DC: one pass over the mask
     let sinad_noise = (0..n).filter(|k| !mask[*k]).map(|k| sp.power[k]).sum::<f64>().max(1e-30);
-    let p_image = sp.band(sp.bin(-f), LOBE);
+    let km = sp.bin(-f);
+    let mirror_dbc = mirror_separated(sp, k0, km)
+        .then(|| 10.0 * (sp.band(km, LOBE) / p_tone).log10());
     // the largest bin outside the tone and DC: the SFDR spur
     let spur_peak = (0..n).filter(|k| !mask[*k]).map(|k| sp.power[k]).fold(1e-30, f64::max);
     let mut nmask = mask.clone();
@@ -341,7 +362,7 @@ fn tone(sp: &Spectrum, k0: usize) -> (Option<Tone>, Vec<Spur>) {
         // SINAD of this tone up to full scale, so enob <= (snr + |dbfs| -
         // 1.76) / 6.02: it is always below what the noise alone would give.
         enob: (sinad - 1.76 - dbfs) / 6.02,
-        image_dbc: 10.0 * (p_image / p_tone).log10(),
+        mirror_dbc,
     };
     let spurs = spurs_of(sp, Some((k0, f, p_tone)), 0.0);
     (Some(t), spurs)
@@ -362,7 +383,8 @@ fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, floor_bin: f64) -> V
     peaks.into_iter().map(|k| {
         let (db, kind) = match tone {
             Some((k0, f, _)) => {
-                let kind = if near(k, sp.bin(-f), LOBE) { SpurKind::Image }
+                let km = sp.bin(-f);
+                let kind = if near(k, km, LOBE) && mirror_separated(sp, k0, km) { SpurKind::Mirror }
                     else if let Some(h) = (2..=5).find(|h| near(k, sp.bin(*h as f64 * f), LOBE)) { SpurKind::Harmonic(h) }
                     else { SpurKind::Other };
                 (10.0 * (p[k] / p[k0]).log10(), kind)
@@ -439,7 +461,7 @@ pub fn findings(r: &Report) -> Vec<String> {
         out.push(format!("TONE {:.3} kHz at {:.1} dBFS: SNR {:.1} dB, SINAD {:.1} dB, SFDR {:.1} dBc, ENOB {:.2} bits \
             (an ideal 12-bit converter gives SNR {:.1} dB at this level).",
             t.freq / 1e3, t.dbfs, t.snr_db, t.sinad_db, t.sfdr_dbc, t.enob, limit));
-        if b.circular && t.image_dbc > -40.0 {
+        if let Some(m) = t.mirror_dbc.filter(|m| b.circular && *m > -40.0) {
             // The mirror of a tone is either its I/Q image or a second signal
             // at that frequency; one capture cannot tell them apart (a crowded
             // band has both). Moving the LO separates them: the image keeps
@@ -447,7 +469,7 @@ pub fn findings(r: &Report) -> Vec<String> {
             out.push(format!("MIRROR at {:.3} kHz, {:.1} dBc: a component at the tone's mirror frequency - its I/Q \
                 image or a second signal there. The time-domain balance estimates {:.1} dB, which describes a \
                 single coherent tone only; move the LO: the image keeps the tone's offset mirrored, a real signal \
-                moves the other way.", -t.freq / 1e3, t.image_dbc, b.irr_db));
+                moves the other way.", -t.freq / 1e3, m, b.irr_db));
         }
         let harmonic = r.spurs.iter().find(|s| matches!(s.kind, SpurKind::Harmonic(_)) && s.db > -60.0);
         if let Some(s) = harmonic {
@@ -565,8 +587,9 @@ mod tests {
         assert!((r.balance.irr_db - want).abs() < 0.2, "irr {} want {want}", r.balance.irr_db);
         // the spectrum's image bin, measured independently, says the same
         let t = r.tone.as_ref().unwrap();
-        assert!((t.image_dbc + want).abs() < 0.5, "image {} dBc, want {}", t.image_dbc, -want);
-        assert!(r.spurs.first().is_some_and(|s| s.kind == SpurKind::Image));
+        let m = t.mirror_dbc.expect("the tone is far from DC: a measurable mirror");
+        assert!((m + want).abs() < 0.5, "mirror {m} dBc, want {}", -want);
+        assert!(r.spurs.first().is_some_and(|s| s.kind == SpurKind::Mirror));
         assert!(findings(&r).iter().any(|f| f.starts_with("I/Q IMBALANCE")));
     }
 
@@ -652,6 +675,27 @@ mod tests {
         assert!(!r.balance.circular && r.balance.rho < -0.99);
         let f = findings(&r);
         assert!(f.iter().any(|x| x.starts_with("REAL-VALUED")) && !f.iter().any(|x| x.starts_with("I/Q IMBALANCE")));
+    }
+
+    #[test]
+    fn a_tone_near_dc_has_no_measurable_mirror() {
+        // 9.4 bins from DC (outside the DC mask, so it is a tone) with a DC
+        // offset: the mirror band reaches into the DC lobe, which used to be
+        // read as a -17.5 dBc mirror. Nothing at -f can be separated there.
+        let n = 4096;
+        let s = signal(1 << 16, 9.4 / n as f64, 1500.0, 1.0, 0.0, (300.0, -200.0), 0.0);
+        let r = analyze(&s, 1e6, n).unwrap();
+        let t = r.tone.as_ref().unwrap();
+        assert!(t.mirror_dbc.is_none(), "mirror {:?} from DC leakage", t.mirror_dbc);
+        let f = findings(&r);
+        assert!(!f.iter().any(|x| x.starts_with("MIRROR")), "{f:#?}");
+        assert!(!r.spurs.iter().any(|s| s.kind == SpurKind::Mirror), "{:?}", r.spurs);
+        // just outside the reach: 2 x LOBE = 16 bins from DC, the mirror is
+        // still over the DC lobe; 17 bins and it is measurable
+        let r16 = analyze(&signal(1 << 16, 16.0 / n as f64, 1500.0, 1.0, 0.0, (0.0, 0.0), 0.0), 1e6, n).unwrap();
+        assert!(r16.tone.as_ref().unwrap().mirror_dbc.is_none(), "bins touch at 16");
+        let r17 = analyze(&signal(1 << 16, 17.2 / n as f64, 1500.0, 1.0, 0.0, (0.0, 0.0), 0.0), 1e6, n).unwrap();
+        assert!(r17.tone.as_ref().unwrap().mirror_dbc.is_some(), "17 bins: disjoint");
     }
 
     #[test]
