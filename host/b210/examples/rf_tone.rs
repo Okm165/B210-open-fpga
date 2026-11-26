@@ -65,11 +65,15 @@ const TONE_DBFS: f64 = -10.0;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().context("usage: rf_tone CONFIG.toml [gains]")?;
+    let path = args.next().context("usage: rf_tone CONFIG.toml [gains] [out-prefix]")?;
+    // an optional prefix: the capture of each gain is written as PREFIX.raw
+    // (+ sidecar), so the spectra can be inspected with b210-plot
+
     let gains: Vec<f64> = match args.next() {
         Some(list) => list.split(',').map(|g| g.trim().parse().with_context(|| format!("gain {g}"))).collect::<Result<_>>()?,
         None => vec![20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
     };
+    let out = args.next();
     let text = std::fs::read_to_string(&path).with_context(|| path.clone())?;
     let base = Config::parse(&text).with_context(|| path.clone())?;
     match (&base.rx.as_ref().and_then(|r| r.ch0.as_ref()), &base.tx.as_ref().and_then(|t| t.ch0.as_ref())) {
@@ -125,6 +129,13 @@ fn main() -> Result<()> {
         });
         rx_result?;
         let packets = tx_result?;
+        if let Some(prefix) = &out {
+            let path = b210::capture::channel_path(std::path::Path::new(prefix), 0);
+            let bytes: Vec<u8> = iq.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::write(&path, bytes)?;
+            b210::capture::write_meta(&path, &b210::capture::Meta { rate_hz: rate, channel: 0,
+                source: "radio".to_string(), lost: check.lost })?;
+        }
         let after = regs::counters(ctrl)?;
         let moved: Vec<String> = b210::regs::COUNTER_NAMES.iter().zip(before.iter().zip(after.iter()))
             .filter(|(_, (a, b))| a != b).map(|(n, (a, b))| format!("{n} +{}", b.wrapping_sub(*a))).collect();

@@ -415,6 +415,26 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    for a real transmit level. This is the only measurement that shows the
    TX chain's RF output at all, and it confirms the gain steps against a
    known signal rather than the ambient.
+   Artefacts across the frequency space, hunted with the antenna (a 5 MHz
+   LO sweep over 2.40 .. 2.50 GHz, 21 captures of 0.5 s at 30.72 MS/s,
+   gain 40): the floor stays within 0.9 dB (-133.4 .. -134.3 dBFS/Hz) and
+   not one capture has a component 10 dB above its floor - no internal
+   spur, no mirror of the ambient, nothing that moves with the window
+   instead of the RF. A second hunt with a *strong* signal - the rf_tone
+   example's +1 MHz tone at 0 dB tx attenuation, captured on air (the
+   example now writes the capture when given a prefix) - shows what a
+   strong carrier does: SNR 13.5 dB and ENOB 6.79, six spurs at
+   -32.6 .. -35.5 dBc scattered within +-2.2 MHz (none at a harmonic),
+   and the tone's mirror at -34.8 dBc. The control: the same band, same
+   gain, transmitter off, has no component above floor + 10 dB, so those
+   spurs are the *transmitter's* own spectrum - its phase-noise skirt
+   (the data sheet's 0.37 degrees rms integrated 100 Hz .. 100 MHz at
+   2.4 GHz) and spectral regrowth - received through the coupling, not a
+   receiver or analysis artefact. The mirror is the combined TX+RX
+   quadrature error: the digital path alone measures 70 .. 93 dBc, so the
+   RF path's image rejection is the TX's, and the rx tracking is already
+   at its floor. The analysis itself is excluded by the invariance test
+   and by the digital tone's SFDR 97.6 dBc: nothing there is ours.
    The PRBS mode is checked bit by bit in the host (src/prbs.rs): the chip's
    16-bit generator (taps {2,3,5..16}, ADI's BIST FAQ; Berlekamp-Massey on a
    capture gives complexity 16 with the same taps) puts one bit per word and
