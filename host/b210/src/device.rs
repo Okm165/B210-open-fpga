@@ -400,6 +400,14 @@ impl<E: Exec> Device<E> {
             }
             Change::Chains(ch) => {
                 ad.set_channels(ch.rx, ch.tx)?;
+                // a chains change with a tx chain on runs the TX quadrature
+                // calibration, which turns RX IQ tracking off (0x169=0xC0);
+                // UHD re-enables it in tune(), which its runtime calls after
+                // the chains are set - this plan sets them after the LOs, so
+                // that step is here. Measured: IRR 49.3 dB off, 78.9 dB on
+                if ch.tx != 0 && ch.rx != 0 {
+                    ad.enable_rx_iq_tracking()?;
+                }
                 return self.set_data_port(ch);
             }
             // rx: gain index (dB); tx: 89.75 dB - attenuation, the driver's gain
@@ -686,8 +694,10 @@ mod tests {
         assert_eq!(spi_writes(&ops, 0x073).last(), Some(&119));
         assert_eq!(spi_writes(&ops, 0x075).last(), Some(&137));
         assert_eq!((spi_writes(&ops, 0x074).last(), spi_writes(&ops, 0x076).last()), (Some(&0), Some(&0)));
-        // every chain on, FDD at the end
+        // every chain on, FDD at the end, and RX IQ tracking left on (the
+        // chains step runs the TX quadrature calibration, which turns it off)
         assert_eq!((f.regs[0x002] & 0xC0, f.regs[0x003] & 0xC0, f.regs[0x014]), (0xC0, 0xC0, 0x21));
+        assert_eq!(spi_writes(&ops, 0x169).last(), Some(&0xCF));
         // nothing but SPI, WAIT, POLL and the radio and band registers after
         // the reset packet: the stream settings (format, spp) are no radio
         // operation

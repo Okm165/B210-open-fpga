@@ -118,7 +118,11 @@
 //! 6. **LO**, rx then tx (UHD's set_clock_rate order). Reason: the gain
 //!    table follows the LO band (UHD _tune_helper reprograms it).
 //! 7. **Chains on**: enabled := new. Reason: a chain is switched on into
-//!    a finished path, a tx chain at maximum attenuation.
+//!    a finished path, a tx chain at maximum attenuation. With tx and rx
+//!    both on this step runs the TX quadrature calibration, which turns RX
+//!    IQ tracking off (0x169 = 0xC0); the plan re-enables it right after
+//!    (0xCF), the step UHD's tune() performs in its order (chains before
+//!    tune). Measured: IRR 49.3 dB without it, 78.9 .. 93.2 dB with it.
 //! 8. **Gains**, rx then tx. Reason: tx gain last, so that nothing above
 //!    runs while a tx chain is loud.
 //!

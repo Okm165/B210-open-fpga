@@ -527,6 +527,17 @@ impl<B: Bus> Ad9361<B> {
         self.bus.flush()
     }
 
+    /// Re-enable the RX IQ tracking that a TX quadrature calibration turns
+    /// off (0x169 = 0xC0). UHD does this in tune(), after the recalibration;
+    /// our plan switches the chains on after the LOs, so `Device::apply`
+    /// calls it where UHD's tune() would have. Measured on the board: off
+    /// gave image rejection 49.3 dB where on gave 78.9 dB (same station,
+    /// 30.72 MS/s, 50 dB gain).
+    pub fn enable_rx_iq_tracking(&mut self) -> Result<()> {
+        self.w(0x169, 0xCF)?;
+        self.bus.flush()
+    }
+
     /// Tune the rx or tx LO; the frequency reached (UHD tune()).
     pub fn set_lo(&mut self, dir: Dir, lo: f64) -> Result<f64> {
         check(["rx LO", "tx LO"][dir as usize], lo, MIN_LO, MAX_LO)?;
@@ -1582,6 +1593,35 @@ mod tests {
         assert!(atten < fdd);
         // and nothing writes 0 dB attenuation
         assert!(!m.log.iter().any(|a| matches!(a, Access::Write { reg: 0x073..=0x076, value: 0 })));
+    }
+
+    #[test]
+    fn a_chain_set_runs_the_tx_calibration_and_leaves_tracking_to_the_plan() {
+        // the driver stays UHD's: the calibration turns RX IQ tracking off
+        // (0x169 = 0xC0) and the chains function does not turn it back on;
+        // the plan does, after this (Device::apply, measured 49 vs 79 dB IRR)
+        let mut m = Mock::settled();
+        let before;
+        {
+            let mut d = Ad9361::init(&mut m).unwrap();
+            d.set_rate(30.72e6).unwrap();
+            before = d.bus().log.len();
+            d.set_channels(3, 3).unwrap();
+        }
+        let wrote: Vec<u8> = m.log[before..].iter().filter_map(|a| match a {
+            Access::Write { reg: 0x169, value } => Some(*value),
+            _ => None,
+        }).collect();
+        assert!(wrote.contains(&0xC0), "the calibration disabled tracking: {wrote:?}");
+        assert_ne!(wrote.last(), Some(&0xCF), "the chains function must not re-enable it: {wrote:?}");
+
+        // and the explicit step does
+        let mut m = Mock::settled();
+        {
+            let mut d = Ad9361::init(&mut m).unwrap();
+            d.enable_rx_iq_tracking().unwrap();
+        }
+        assert_eq!(m.regs[0x169], 0xCF);
     }
 
     #[test]

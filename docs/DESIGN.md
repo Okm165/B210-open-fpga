@@ -180,6 +180,24 @@ examples/config.toml     every configuration key
      two. The 47 dB came from the crest factor of that one sample, not
      from the signal, so the gain advice is given only in the material
      grade.
+   - The incremental plan was checked on the chip, not only against the
+     mock: apply B --from A and then read every AD9361 register 0x000 ..
+     0x2FF, against a fresh apply B read the same way. Registers that
+     differ between two identical full applies (temperature, live status
+     the driver never writes, per-run calibration results: 15 of them) are
+     not evidence; of the rest, the only settings that differed were RX2's
+     gain and TIA registers with RX2 disabled, the TX VCO divider with TX
+     off, the TX quadrature calibration scratch index (0x0AA), and - the
+     one real finding - 0x169: `apply` left RX IQ tracking off (0xC0).
+     The chains-on step runs the TX quadrature calibration, which disables
+     tracking, and the plan puts chains on after the LOs, where UHD's
+     tune() would have re-enabled it. On one station at 30.72 MS/s, 50 dB
+     gain: image rejection 49.3 dB with tracking off, 78.9 dB with it on
+     (93.2 dB after the fix, same capture settings). The plan now
+     re-enables tracking after a chains change with tx and rx on; a driver
+     unit test pins the calibration's 0xC0 and the plan's 0xCF, and the
+     golden traces are unchanged (UHD's own set_active_chains also leaves
+     tracking off; only its later tune() differs from our order).
    - `b210 capture` analyses its file in bounded memory (`quality::
      analyze_file`: one pass for the sums, one for the DC-removed power and
      peak, one read per spectrum segment), so a long capture no longer costs

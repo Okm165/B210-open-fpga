@@ -46,6 +46,11 @@
 //!   ENOB      (SINAD - 1.76 dB - tone dBFS) / 6.02: the bits of an ideal
 //!             converter with the same SINAD at full scale. A perfect 12-bit
 //!             capture of a full-scale tone gives 12.
+//!   mirror    a component at the tone's mirror frequency is labelled
+//!             MIRROR, not IMAGE: an I/Q image and a real signal there look
+//!             the same in one capture. Moving the LO separates them - the
+//!             image keeps the tone's offset mirrored, a real signal moves
+//!             the other way.
 //!   floor     the median bin, turned into the mean: a bin averaged over K
 //!             segments is Gamma(K) distributed, whose median is the mean
 //!             times about (1 - 1/(9K))^3 (Wilson-Hilferty; K = 1 gives
@@ -435,8 +440,14 @@ pub fn findings(r: &Report) -> Vec<String> {
             (an ideal 12-bit converter gives SNR {:.1} dB at this level).",
             t.freq / 1e3, t.dbfs, t.snr_db, t.sinad_db, t.sfdr_dbc, t.enob, limit));
         if b.circular && t.image_dbc > -40.0 {
-            out.push(format!("IMAGE at {:.3} kHz, {:.1} dBc: I/Q imbalance seen in the spectrum (the time-domain \
-                estimate says {:.1} dB).", -t.freq / 1e3, t.image_dbc, b.irr_db));
+            // The mirror of a tone is either its I/Q image or a second signal
+            // at that frequency; one capture cannot tell them apart (a crowded
+            // band has both). Moving the LO separates them: the image keeps
+            // the tone's offset mirrored, a real signal moves the other way.
+            out.push(format!("MIRROR at {:.3} kHz, {:.1} dBc: a component at the tone's mirror frequency - its I/Q \
+                image or a second signal there. The time-domain balance estimates {:.1} dB, which describes a \
+                single coherent tone only; move the LO: the image keeps the tone's offset mirrored, a real signal \
+                moves the other way.", -t.freq / 1e3, t.image_dbc, b.irr_db));
         }
         let harmonic = r.spurs.iter().find(|s| matches!(s.kind, SpurKind::Harmonic(_)) && s.db > -60.0);
         if let Some(s) = harmonic {
