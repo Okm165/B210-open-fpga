@@ -515,16 +515,12 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
         bail!("capture: the stream was not clean - the files are a splice, not a continuous record; \
                b210-plot marks them, so their spectra are a diagnostic, not a measurement");
     }
-    let mut clipped = Vec::new();
+    let mut reports: Vec<(usize, quality::Report)> = Vec::new();
     println!("analysis: {SUMMARY_FFT}-point spectrum per channel (b210-plot defaults to 4096)");
     for (ch, path) in paths.iter().enumerate() {
         let Some(r) = quality::analyze_file(path, rate, SUMMARY_FFT)? else { continue };
-        if let Some(note) = quality::clipping_note(&r.level) {
-            // Only an ADC's values can be helped by a gain: a digital source
-            // (pattern, tone) spans the codes by construction, so its rails
-            // are a fact to report, not a saturation to refuse.
-            clipped.push((ch, note, c.source == "radio" && quality::clipping_refuses(&r.level)));
-        }
+        reports.push((ch, r));
+        let r = &reports.last().unwrap().1;
         let l = &r.level;
         print!("  ch{ch} {}: rms {:.1} dBFS, peak {:.1} dBFS, DC {:.1} dBFS", path.display(), l.rms_dbfs, l.peak_dbfs, l.dc_dbfs);
         match &r.tone {
@@ -543,10 +539,19 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     if let Some(p) = &check.prbs {
         println!("PRBS: {} bits, {} mismatches, {:.1}% ones", p.bits(), p.mismatches(), 100.0 * p.ones());
     }
-    for (ch, note, _) in &clipped { println!("  ch{ch}: {note}"); }
+    // The first finding per channel (findings are ordered most serious
+    // first): the same words b210-plot would give, so a capture's own summary
+    // never leaves its biggest anomaly unnamed - a 42 dB-crest window is not
+    // just "no tone".
+    for (ch, r) in &reports {
+        if let Some(note) = quality::findings(r).first() { println!("  ch{ch}: {note}"); }
+    }
     if !counters_ok { bail!("capture: an event counter moved during the stream - the samples may be sound, \
                               the run is not (see above)"); }
-    let refused = clipped.iter().filter(|(_, _, refused)| *refused).count();
+    // Only an ADC's values can be helped by a gain: a digital source
+    // (pattern, tone) spans the codes by construction, so its rails are a
+    // fact to report, not a saturation to refuse.
+    let refused = reports.iter().filter(|(_, r)| c.source == "radio" && quality::clipping_refuses(&r.level)).count();
     if refused > 0 { bail!("capture: the ADC saturated on {refused} channel(s) - the sample_times are not the input (see above)"); }
     println!("{}; analyse with: b210-plot {}", if check.prbs.is_some() {
         "every header and the BIST pseudo-random sequence checked"
