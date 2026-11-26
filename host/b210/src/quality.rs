@@ -678,6 +678,25 @@ mod tests {
     }
 
     #[test]
+    fn a_tone_reads_the_same_at_every_fft_size_and_segment_offset() {
+        // an artefact would be a frequency or level that depends on the
+        // analysis window: the same tone, four FFT sizes and three segment
+        // offsets, must read the same within one bin and 0.05 dB
+        let (rate, f, a) = (1e6, 123_456.7, 1000.0);
+        let s = signal(1 << 18, f / rate, a, 1.0, 0.0, (0.0, 0.0), 0.0);
+        let want_db = 20.0 * (a / crate::capture::FULL_SCALE).log10();
+        for n in [1024usize, 2048, 8192, 16384] {
+            for off in [0usize, 123, 4096] {
+                let r = analyze(&s[2 * off..], rate, n).unwrap();
+                let t = r.tone.as_ref().expect("a tone");
+                assert!((t.freq - f).abs() < r.rate / n as f64, "n {n} off {off}: freq {}", t.freq);
+                assert!((t.dbfs - want_db).abs() < 0.05, "n {n} off {off}: level {}", t.dbfs);
+                assert!((t.snr_db - 68.0).abs() < 2.0, "n {n} off {off}: snr {}", t.snr_db);
+            }
+        }
+    }
+
+    #[test]
     fn a_tone_near_dc_has_no_measurable_mirror() {
         // 9.4 bins from DC (outside the DC mask, so it is a tone) with a DC
         // offset: the mirror band reaches into the DC lobe, which used to be

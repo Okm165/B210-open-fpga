@@ -282,6 +282,22 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    The spur's kind is `Mirror` (not `Image`),
    matching the finding's word: an I/Q image and a real signal there are
    indistinguishable in one capture, and the LO-shift test is what decides.
+   No internal spur was found when moving through the band: with the LO
+   stepped 2.40 .. 2.50 GHz in 10 MHz steps (0.5 s each, 40 dB, 2.45 GHz
+   antenna), the floor stays -133.3 .. -134.3 dBFS/Hz (1.0 dB over 100 MHz)
+   and the only components above floor + 10 dB appear at 2410 and 2420 MHz,
+   each a cluster of lines about 1 MHz wide - modulated traffic, not tones.
+   No component recurs at a fixed baseband offset across the steps, which
+   is what an LO-independent (clock/DC/image) spur would do; the DC and
+   image handling is the mirror paragraph above. The analysis is also checked
+   for window artefacts by a test: one tone read at 1024, 2048, 8192 and
+   16384 FFT points and three segment offsets gives the same frequency
+   (within a bin), level (0.05 dB) and SNR (2 dB). The 2.45 GHz bursts are
+   real: in three 10 s captures, ch0 alone shows clusters of 204, 182 and
+   57 values >= 1500 codes (ch1, 6.4 dB cooler at this band, none), and a
+   5 s capture had exactly one sample time at the rail (frame 26 025 176,
+   Q = 2047 among 1413/1399) - a burst edge, not a data-path glitch: no
+   lost samples, no bad headers, and the PRBS eye test covers the pins.
    The AD9361's own BIST tone (fs/32, -6 dBFS at the chip's rx port, so the
    chip drives the pins the way RF does) now proves the pin capture at both
    rates: 0.9600 MHz at -6.02 dBFS, SNR 67.9 dB, ENOB 11.70 on both
