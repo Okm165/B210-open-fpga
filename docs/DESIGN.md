@@ -292,7 +292,14 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
    image handling is the mirror paragraph above. The analysis is also checked
    for window artefacts by a test: one tone read at 1024, 2048, 8192 and
    16384 FFT points and three segment offsets gives the same frequency
-   (within a bin), level (0.05 dB) and SNR (2 dB). The 2.45 GHz bursts are
+   (within a bin), level (0.05 dB) and SNR (2 dB). The window and metrics
+   follow IEEE 1241-2010 section 8.8.1.2 (and NI's ADC measurement note):
+   7-term Blackman-Harris when the tone is not coherently sampled, ENOB =
+   (SINAD - 1.76 - tone dBFS) / 6.02, harmonics folded with the same bin
+   mapping as the signal. The impulsive threshold (crest > 20 dB) is
+   deliberately above the > 15 dB used for acoustic impulsiveness
+   (Pekkarinen & Starck), because a modulated RF carrier raises the crest
+   without being an impulse. The 2.45 GHz bursts are
    real: in three 10 s captures, ch0 alone shows clusters of 204, 182 and
    57 values >= 1500 codes (ch1, 6.4 dB cooler at this band, none), and a
    5 s capture had exactly one sample time at the rail (frame 26 025 176,
