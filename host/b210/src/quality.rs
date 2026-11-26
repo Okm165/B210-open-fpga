@@ -53,6 +53,9 @@
 //!             bin width, dBFS/Hz.
 
 use crate::dsp::{self, Spectrum};
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub struct Level {
@@ -130,21 +133,73 @@ pub const SPUR_DB: f64 = 10.0;
 /// A tone must stand this far above the median bin to be analysed as one.
 const TONE_DB: f64 = 30.0;
 
-pub fn level(s: &[i16]) -> Level {
-    let n = (s.len() / 2).max(1) as f64;
-    let (mut si, mut sq, mut clip) = (0.0, 0.0, 0usize);
-    for p in s.as_chunks::<2>().0 {
-        si += p[0] as f64;
-        sq += p[1] as f64;
-        clip += (p[0] <= -2048 || p[0] >= 2047) as usize + (p[1] <= -2048 || p[1] >= 2047) as usize;
+/// The sums one streaming pass over a capture can carry: n sample times, I,
+/// Q, their squares and product, and the values at a code limit. Everything
+/// in `level` and `balance` follows from these, so a file can be analysed in
+/// bounded memory and a slice gets the same numbers from the same code.
+#[derive(Clone, Copy, Default)]
+struct Moments {
+    n: usize,
+    si: f64,
+    sq: f64,
+    si2: f64,
+    sq2: f64,
+    siq: f64,
+    clip: usize,
+}
+
+impl Moments {
+    fn add(&mut self, i: i16, q: i16) {
+        let (i, q) = (i as f64, q as f64);
+        self.n += 1;
+        self.si += i;
+        self.sq += q;
+        self.si2 += i * i;
+        self.sq2 += q * q;
+        self.siq += i * q;
+        self.clip += (i <= -2048.0 || i >= 2047.0) as usize + (q <= -2048.0 || q >= 2047.0) as usize;
     }
-    let (dc_i, dc_q) = (si / n, sq / n);
+
+    fn of(s: &[i16]) -> Moments {
+        let mut m = Moments::default();
+        for p in s.as_chunks::<2>().0 { m.add(p[0], p[1]); }
+        m
+    }
+
+    fn dc(&self) -> (f64, f64) {
+        let n = self.n.max(1) as f64;
+        (self.si / n, self.sq / n)
+    }
+
+    /// The balance with DC removed: Pi, Pq and Piq are the sums' DC-corrected
+    /// forms (E[x^2] - E[x]^2 and E[I Q] - E[I] E[Q], times n).
+    fn balance(&self) -> Balance {
+        let (di, dq) = self.dc();
+        let n = self.n as f64;
+        let (pi, pq, piq) = (self.si2 - n * di * di, self.sq2 - n * dq * dq, self.siq - n * di * dq);
+        if pi <= 0.0 || pq <= 0.0 {
+            return Balance { gain_db: 0.0, phase_deg: 0.0, irr_db: 0.0, rho: 0.0, circular: false };
+        }
+        let g = (pi / pq).sqrt();
+        let rho = piq / (pi * pq).sqrt();
+        let phi = rho.clamp(-1.0, 1.0).asin();
+        let c = 2.0 * g * phi.cos();
+        let irr = (1.0 + c + g * g) / (1.0 - c + g * g).max(1e-30);
+        Balance { gain_db: 20.0 * g.log10(), phase_deg: phi.to_degrees(), irr_db: 10.0 * irr.log10(), rho, circular: rho.abs() < 0.9 }
+    }
+}
+
+/// `Moments` plus one pass over the samples for the DC-removed power and
+/// peak: the mean is only known after the first pass.
+fn finish(m: &Moments, pairs: impl Iterator<Item = (i16, i16)>) -> Level {
+    let n = (m.n.max(1)) as f64;
+    let (dc_i, dc_q) = m.dc();
     let (mut pow, mut peak) = (0.0f64, 0.0f64);
-    for p in s.as_chunks::<2>().0 {
-        let (i, q) = (p[0] as f64 - dc_i, p[1] as f64 - dc_q);
-        let m = i * i + q * q;
-        pow += m;
-        peak = peak.max(m);
+    for (i, q) in pairs {
+        let (i, q) = (i as f64 - dc_i, q as f64 - dc_q);
+        let x = i * i + q * q;
+        pow += x;
+        peak = peak.max(x);
     }
     pow /= n;
     Level {
@@ -153,33 +208,45 @@ pub fn level(s: &[i16]) -> Level {
         rms_dbfs: dsp::dbfs(pow),
         peak_dbfs: dsp::dbfs(peak),
         crest_db: if pow > 0.0 { 10.0 * (peak / pow).log10() } else { 0.0 },
-        clipped: clip as f64 / (2.0 * n),
+        clipped: m.clip as f64 / (2.0 * n),
     }
-}
-
-pub fn balance(s: &[i16], dc_i: f64, dc_q: f64) -> Balance {
-    let (mut pi, mut pq, mut piq) = (0.0, 0.0, 0.0);
-    for p in s.as_chunks::<2>().0 {
-        let (i, q) = (p[0] as f64 - dc_i, p[1] as f64 - dc_q);
-        pi += i * i;
-        pq += q * q;
-        piq += i * q;
-    }
-    if pi <= 0.0 || pq <= 0.0 {
-        return Balance { gain_db: 0.0, phase_deg: 0.0, irr_db: 0.0, rho: 0.0, circular: false };
-    }
-    let g = (pi / pq).sqrt();
-    let rho = piq / (pi * pq).sqrt();
-    let phi = rho.clamp(-1.0, 1.0).asin();
-    let c = 2.0 * g * phi.cos();
-    let irr = (1.0 + c + g * g) / (1.0 - c + g * g).max(1e-30);
-    Balance { gain_db: 20.0 * g.log10(), phase_deg: phi.to_degrees(), irr_db: 10.0 * irr.log10(), rho, circular: rho.abs() < 0.9 }
 }
 
 pub fn analyze(s: &[i16], rate: f64, fft: usize) -> Option<Report> {
     let sp = dsp::welch(s, fft, rate, 64)?;
-    let level = level(s);
-    let balance = balance(s, level.dc_i, level.dc_q);
+    let m = Moments::of(s);
+    let level = finish(&m, s.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])));
+    report(sp, s.len() / 2, rate, level, m.balance())
+}
+
+/// `analyze` of a capture file, in bounded memory: one pass for the sums,
+/// one for the DC-removed power and peak, and one read per spectrum segment
+/// (at most 64 segments of `n` frames each). The file is the raw format of
+/// `iq`: interleaved little-endian i16, 4 bytes per sample time.
+pub fn analyze_file(path: &Path, rate: f64, fft: usize) -> io::Result<Option<Report>> {
+    let bytes = std::fs::metadata(path)?.len();
+    if !bytes.is_multiple_of(4) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            format!("{}: {bytes} bytes is not a whole number of I/Q pairs", path.display())));
+    }
+    let frames = (bytes / 4) as usize;
+    if frames < 16 { return Ok(None); }
+    let mut m = Moments::default();
+    for p in pairs(File::open(path)?) { let (i, q) = p?; m.add(i, q); }
+    let level = finish(&m, pairs(File::open(path)?).map(|p| p.expect("the length was checked")));
+    let mut f = File::open(path)?;
+    let Some(sp) = dsp::welch_read(frames, fft, rate, 64, |start, seg| {
+        use std::io::{Seek, SeekFrom};
+        f.seek(SeekFrom::Start(4 * start as u64)).expect("seek within the file");
+        let mut bytes = vec![0u8; 2 * seg.len()];
+        f.read_exact(&mut bytes).expect("the segment lies within the file");
+        for (v, b) in seg.iter_mut().zip(bytes.as_chunks::<2>().0) { *v = i16::from_le_bytes(*b); }
+    }) else { return Ok(None) };
+    Ok(report(sp, frames, rate, level, m.balance()))
+}
+
+/// The report both paths share: everything after the spectrum and the level.
+fn report(sp: Spectrum, frames: usize, rate: f64, level: Level, balance: Balance) -> Option<Report> {
     let n = sp.n();
     let mut sorted = sp.power.clone();
     sorted.sort_by(f64::total_cmp);
@@ -192,10 +259,31 @@ pub fn analyze(s: &[i16], rate: f64, fft: usize) -> Option<Report> {
     let has_tone = sp.power[peak] > median * 10f64.powf(TONE_DB / 10.0);
     let (tone, spurs) = if has_tone { tone(&sp, peak) } else { (None, spurs_of(&sp, None, floor_bin)) };
     Some(Report {
-        frames: s.len() / 2, rate, level, balance, tone, spurs,
+        frames, rate, level, balance, tone, spurs,
         floor_dbfs_bin: dsp::dbfs(floor_bin),
         floor_dbfs_hz: dsp::dbfs(floor_bin / sp.df()),
         fft: n,
+    })
+}
+
+/// The (I, Q) pairs of a raw capture file, one 64 KiB read at a time, so the
+/// whole file is never held. A file whose last read leaves a half pair is an
+/// error, since `iq` wrote 4 bytes per sample time.
+fn pairs<R: std::io::Read>(mut r: R) -> impl Iterator<Item = io::Result<(i16, i16)>> {
+    let mut buf = vec![0u8; 1 << 16];
+    let (mut filled, mut pos) = (0usize, 0usize);
+    std::iter::from_fn(move || {
+        if pos + 4 > filled {
+            filled = match r.read(&mut buf) { Ok(0) => return None, Ok(k) => k, Err(e) => return Some(Err(e)) };
+            pos = 0;
+            if filled % 4 != 0 {
+                return Some(Err(io::Error::new(io::ErrorKind::InvalidData, "a partial I/Q pair at the end")));
+            }
+        }
+        let i = i16::from_le_bytes([buf[pos], buf[pos + 1]]);
+        let q = i16::from_le_bytes([buf[pos + 2], buf[pos + 3]]);
+        pos += 4;
+        Some(Ok((i, q)))
     })
 }
 
@@ -462,6 +550,36 @@ mod tests {
         assert!((t.image_dbc + want).abs() < 0.5, "image {} dBc, want {}", t.image_dbc, -want);
         assert!(r.spurs.first().is_some_and(|s| s.kind == SpurKind::Image));
         assert!(findings(&r).iter().any(|f| f.starts_with("I/Q IMBALANCE")));
+    }
+
+    fn raw_file(name: &str, s: &[i16]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("b210-quality-{name}-{}.raw", std::process::id()));
+        let mut bytes = Vec::with_capacity(2 * s.len());
+        for v in s { bytes.extend_from_slice(&v.to_le_bytes()); }
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_file_analyses_to_the_same_report_as_a_slice() {
+        // the streaming path (sums, then peak/power, then segment seeks) must
+        // reproduce the in-memory one exactly, not approximately
+        let s = signal(1 << 17, 0.0143, 900.0, 1.003, 0.04, (3.0, -2.0), 0.3);
+        let path = raw_file("same", &s);
+        let a = analyze(&s, 1e6, 8192).unwrap();
+        let b = analyze_file(&path, 1e6, 8192).unwrap().unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_whole_pairs_is_an_error_and_a_short_one_is_none() {
+        let path = raw_file("odd", &[1, 2, 3]);
+        assert!(matches!(analyze_file(&path, 1e6, 1024), Err(e) if e.kind() == std::io::ErrorKind::InvalidData));
+        std::fs::remove_file(&path).ok();
+        let path = raw_file("short", &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(analyze_file(&path, 1e6, 1024).unwrap().is_none());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

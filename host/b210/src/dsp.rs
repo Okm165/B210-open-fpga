@@ -139,6 +139,23 @@ impl Spectrum {
 /// None when fewer than 16 sample times are given.
 pub fn welch(samples: &[i16], n: usize, rate: f64, max_segments: usize) -> Option<Spectrum> {
     let frames = samples.len() / 2;
+    welch_read(frames, n, rate, max_segments, |start, seg| {
+        seg.copy_from_slice(&samples[2 * start..2 * start + seg.len()]);
+    })
+}
+
+/// `welch` over a capture that is not in memory: `frames` sample times, each
+/// segment fetched by `read(first_frame, segment)`, which fills
+/// `2 n` interleaved I/Q values. The segment positions, window, scaling and
+/// averaging are `welch`'s, so a file and a slice analyse to the same
+/// numbers; only one segment is ever held.
+pub fn welch_read(
+    frames: usize,
+    n: usize,
+    rate: f64,
+    max_segments: usize,
+    mut read: impl FnMut(usize, &mut [i16]),
+) -> Option<Spectrum> {
     if frames < 16 {
         return None;
     }
@@ -151,11 +168,12 @@ pub fn welch(samples: &[i16], n: usize, rate: f64, max_segments: usize) -> Optio
     let start = |s: usize| if segments > 1 { s * (frames - n) / (segments - 1) } else { 0 };
     let mut acc = vec![0f64; n];
     let (mut re, mut im) = (vec![0f32; n], vec![0f32; n]);
+    let mut seg = vec![0i16; 2 * n];
     for s in 0..segments {
-        let b = 2 * start(s);
+        read(start(s), &mut seg);
         for k in 0..n {
-            re[k] = samples[b + 2 * k] as f32 * w[k];
-            im[k] = samples[b + 2 * k + 1] as f32 * w[k];
+            re[k] = seg[2 * k] as f32 * w[k];
+            im[k] = seg[2 * k + 1] as f32 * w[k];
         }
         fft(&mut re, &mut im);
         for k in 0..n {

@@ -479,8 +479,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     let mut clipped = Vec::new();
     for (ch, path) in paths.iter().enumerate() {
         iq::write_meta(path, &iq::Meta { rate_hz: rate, channel: ch, source: c.source.clone() })?;
-        let x = iq::read(path)?;
-        let Some(r) = quality::analyze(&x, rate, 16384) else { continue };
+        let Some(r) = quality::analyze_file(path, rate, 16384)? else { continue };
         if let Some(note) = quality::clipping_note(&r.level) { clipped.push((ch, note, quality::clipping_refuses(&r.level))); }
         let l = &r.level;
         print!("  ch{ch} {}: rms {:.1} dBFS, peak {:.1} dBFS, DC {:.1} dBFS", path.display(), l.rms_dbfs, l.peak_dbfs, l.dc_dbfs);

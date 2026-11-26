@@ -180,6 +180,16 @@ examples/config.toml     every configuration key
      two. The 47 dB came from the crest factor of that one sample, not
      from the signal, so the gain advice is given only in the material
      grade.
+   - `b210 capture` analyses its file in bounded memory (`quality::
+     analyze_file`: one pass for the sums, one for the DC-removed power and
+     peak, one read per spectrum segment), so a long capture no longer costs
+     4 bytes per sample time plus the file in RAM. Measured on a 30 s
+     2 x 30.72 MS/s sc12 capture (3.7 GB per channel as a Vec<i16>): peak
+     RSS 9.9 MB, same 918,449,400 sample times, every header checked. The
+     file path and the in-memory path share the moment sums, the level and
+     the Welch segment code, and a test requires their reports to be
+     identical, not merely close. `b210-plot` still loads the channel, since
+     its time, constellation and histogram views need the samples.
    - Soak (30.72 MS/s, sc12, both channels): 60 s of the pattern stream is
      1,840,041,456 sample times with 0 lost and every counter 0; 30 s of
      the tx loopback is 921,600,000 samples back at exactly their ticks;
