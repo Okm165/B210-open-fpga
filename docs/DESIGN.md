@@ -194,10 +194,19 @@ examples/config.toml     every configuration key
      tune() would have re-enabled it. On one station at 30.72 MS/s, 50 dB
      gain: image rejection 49.3 dB with tracking off, 78.9 dB with it on
      (93.2 dB after the fix, same capture settings). The plan now
-     re-enables tracking after a chains change with tx and rx on; a driver
-     unit test pins the calibration's 0xC0 and the plan's 0xCF, and the
-     golden traces are unchanged (UHD's own set_active_chains also leaves
-     tracking off; only its later tune() differs from our order).
+     re-enables tracking after every chains change with rx on - init leaves
+     it off too, so an rx-only config has nothing else to turn it on
+     (measured: 78.6 dB after the fix). A driver unit test pins the
+     calibration's 0xC0, a device test the plan's 0xCF for a full and for
+     an rx-only apply, and the golden traces are unchanged (UHD's own
+     set_active_chains also leaves tracking off; only its later tune()
+     differs from our order). The same register comparison was run across
+     the other transitions (2 x 2 -> 1 x 1 at 61.44 MS/s, and 2 x 2 ->
+     rx-only): the remaining differences are the disabled direction's
+     gains, TIA and filter values, the TX VCO divider with TX off, the
+     calibration scratch 0x0AA, calibration readback (0x0C7 .. 0x0C9,
+     0x090 .. 0x09D, 0x0A7/0x0A8), and the LO fractional word by one LSB
+     (80 MHz / 2^24 = 4.8 Hz) after a rate change.
    - `b210 capture` analyses its file in bounded memory (`quality::
      analyze_file`: one pass for the sums, one for the DC-removed power and
      peak, one read per spectrum segment), so a long capture no longer costs

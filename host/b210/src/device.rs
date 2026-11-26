@@ -400,12 +400,15 @@ impl<E: Exec> Device<E> {
             }
             Change::Chains(ch) => {
                 ad.set_channels(ch.rx, ch.tx)?;
-                // a chains change with a tx chain on runs the TX quadrature
+                // A chains change with a tx chain on runs the TX quadrature
                 // calibration, which turns RX IQ tracking off (0x169=0xC0);
                 // UHD re-enables it in tune(), which its runtime calls after
                 // the chains are set - this plan sets them after the LOs, so
-                // that step is here. Measured: IRR 49.3 dB off, 78.9 dB on
-                if ch.tx != 0 && ch.rx != 0 {
+                // that step is here. It is also the step that turns tracking
+                // on after init (UHD's initialize leaves it off too), which
+                // an rx-only config has nothing else to do. Measured: IRR
+                // 49.3 dB off, 78.9 dB on.
+                if ch.rx != 0 {
                     ad.enable_rx_iq_tracking()?;
                 }
                 return self.set_data_port(ch);
@@ -666,6 +669,22 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_fresh_rx_only_apply_leaves_rx_iq_tracking_on() {
+        // UHD's initialize leaves tracking off; with no tx chain nothing runs
+        // a calibration that would matter, so the chains change must be the
+        // step that turns it on (measured on an rx-only config: IRR 49.3 dB
+        // off, 78.9 dB on)
+        let mut f = Fpga::new(mock::settled);
+        let cfg = Config::parse("rate_hz = 30.72e6\nformat = \"sc12\"\n[rx]\nlo_hz = 100e6\nbandwidth_hz = 10e6\nch0 = { gain_db = 40 }\n").unwrap();
+        {
+            let mut d = Device::bring_up(&mut f).unwrap();
+            d.apply(&cfg).unwrap();
+        }
+        let ops = f.ops();
+        assert_eq!(spi_writes(&ops, 0x169).last(), Some(&0xCF));
     }
 
     #[test]
