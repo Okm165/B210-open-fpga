@@ -228,7 +228,13 @@ examples/config.toml     every configuration key
      the tx loopback is 921,600,000 samples back at exactly their ticks;
      a 30 s radio capture keeps 918,449,400 sample times per channel with
      0 lost, 0 bad values and 1 value at the code rail in 1.84 G (the
-     isolated grade above).
+     isolated grade above). The longer run: 300 s of the pattern is
+     9,212,807,912 sample times, 0 lost, every counter 0, and 120 s of the
+     full-duplex tx loopback is 3,686,400,000 samples back at exactly their
+     ticks (OVERFLOW, UNDERFLOW, LATE, SEQ_ERROR, BAD_PACKET and
+     rx_cdc_lost all 0, one BURST_ACK). Before and after those ~7 minutes
+     the radio floor is unchanged (ch0 -42.9 -> -43.3 dBFS, ch1 -49.7 ->
+     -49.8) and RX IQ tracking stays on.
    - The rx gain surface 0 .. 76 stands at every band: ADI's per-band
      "maximum gain" (73 / 71 / 62 dB) is not a clamp on the table index -
      at 2.45 GHz the measured noise floor rose 5.3 dB from index 70 to 76
