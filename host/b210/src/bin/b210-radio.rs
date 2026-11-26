@@ -3,10 +3,13 @@
 //! step with each step's time, the driver's polls and the PLL lock bits.
 
 use anyhow::{Context, Result, bail};
-use b210::ad9361::{Bus, Test};
+use b210::ad9361::{self, Bus, Test};
 use b210::config::Config;
 use b210::device::{self, Device, Exec, PollRecord, Spi};
 use b210::usb::{Ctrl, Usb, DEPTH_MS_DEFAULT};
+use b210::stream::{self, Check};
+use b210::prbs::Checker;
+use b210::proto::Format;
 use b210::regs;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -46,40 +49,91 @@ enum Cmd {
         #[arg(value_parser = ["none", "tone", "prbs", "loopback"])]
         mode: String,
     },
+    /// The rx data-port eye: the BIST PRBS at every clock and data delay of
+    /// the chip (0x006), `seconds` of streaming per point; the delays that
+    /// still give zero errors are the timing margin.
+    Scan {
+        config: PathBuf,
+        #[arg(long, default_value_t = 0.05)]
+        seconds: f64,
+    },
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let Usb { mut ctrl, .. } = Usb::open(DEPTH_MS_DEFAULT)?;
-    let version = ctrl.read(regs::VERSION)?;
+    // one handle: only the scan needs the data endpoints, and a second
+    // open of the interface is refused by the kernel (EBUSY)
+    let mut usb = Usb::open(DEPTH_MS_DEFAULT)?;
+    let version = usb.ctrl.read(regs::VERSION)?;
     println!("FPGA protocol {} build {}", version >> 16, version & 0xFFFF);
     match args.cmd {
         Cmd::Id => {
             let t = Instant::now();
-            let id = device::reset(&mut ctrl)?;
+            let id = device::reset(&mut usb.ctrl)?;
             println!("reset + read: {:.3} ms", ms(t));
             println!("AD9361 product id {PRODUCT:#05x} = {id:#04x} (product {:#04x}, revision {})", id & 0xF8, id & 7,
                      PRODUCT = device::PRODUCT_ID);
-            println!("radio register {:#05x} = {:#x}", regs::RADIO, ctrl.read(regs::RADIO)?);
+            println!("radio register {:#05x} = {:#x}", regs::RADIO, usb.ctrl.read(regs::RADIO)?);
             if id != device::PRODUCT_ID_VALUE {
                 bail!("expected {:#04x}", device::PRODUCT_ID_VALUE);
             }
         }
         Cmd::Peek { regs } => {
-            let mut spi = Spi::new(&mut ctrl);
+            let mut spi = Spi::new(&mut usb.ctrl);
             for r in regs {
                 let reg = u16::from_str_radix(r.trim_start_matches("0x"), 16).with_context(|| format!("register {r}"))?;
                 println!("{reg:#05x} = {:#04x}", spi.read([reg])?[0]);
             }
         }
         Cmd::Reset => {
-            device::hold_reset(&mut ctrl)?;
-            println!("radio register {:#05x} = {:#x}: AD9361 held in reset", regs::RADIO, ctrl.read(regs::RADIO)?);
+            device::hold_reset(&mut usb.ctrl)?;
+            println!("radio register {:#05x} = {:#x}: AD9361 held in reset", regs::RADIO, usb.ctrl.read(regs::RADIO)?);
         }
         Cmd::Apply { config, from } => {
             let new = load(&config)?;
             let old = from.as_deref().map(load).transpose()?;
-            apply(ctrl, old.as_ref(), &new)?;
+            apply(&mut usb.ctrl, old.as_ref(), &new)?;
+        }
+        Cmd::Scan { config, seconds } => {
+            let cfg = load(&config)?;
+            let depth = usb.depth;
+            let mut dev = apply(&mut usb.ctrl, None, &cfg)?;
+            dev.ad.set_test(Test::Prbs)?;
+            // the port's mode follows the configuration's rx channels
+            let mask = match cfg.rx.as_ref().map(|r| r.channels()).unwrap_or([None, None]) {
+                [Some(_), Some(_)] => 0b11,
+                [Some(_), None] => 0b01,
+                [None, Some(_)] => 0b10,
+                [None, None] => bail!("scan needs a [rx] section with channels"),
+            };
+            let s = stream::Shape { format: Format::Sc16, mask };
+            let expect = |_t: u64| [0i16; 4];
+            println!("scanning rx clock 0..15 x data 0..15, {seconds:.3} s each; o = 0 PRBS errors");
+            let mut pass = [[false; 16]; 16];
+            for clock in 0..16u8 {
+                for data in 0..16u8 {
+                    dev.ad.set_delays(clock << 4 | data, ad9361::TX_DELAYS)?;
+                    let mut check = Check::default();
+                    check.check_values = false;
+                    check.prbs = Some(Checker::default());
+                    let begin = Instant::now();
+                    let ctrl = &mut **dev.ad.bus().ctrl();
+                    stream::rx_stream(&mut usb.rx, ctrl, s, depth, &mut check, &expect,
+                                      |_, _| Ok(begin.elapsed().as_secs_f64() >= seconds))
+                        .with_context(|| format!("clock {clock}, data {data}"))?;
+                    pass[clock as usize][data as usize] =
+                        check.prbs.as_ref().is_some_and(|p| p.ok());
+                }
+                print!("  {clock:2} ");
+                for data in 0..16 { print!("{}", if pass[clock as usize][data] { 'o' } else { '.' }); }
+                println!();
+            }
+            println!("     {}", "0123456789abcdef");
+            dev.ad.set_delays(ad9361::RX_DELAYS, ad9361::TX_DELAYS)?;
+            dev.ad.set_test(Test::None)?;
+            let ok = pass.iter().flatten().filter(|p| **p).count();
+            println!("{ok} of 256 points pass; the chip's delays restored to {:#04x}", ad9361::RX_DELAYS);
+            if ok == 0 { bail!("no delay pair carries the PRBS: the port is not working"); }
         }
         Cmd::Test { config, mode } => {
             let test = match mode.as_str() {
@@ -88,7 +142,7 @@ fn main() -> Result<()> {
                 "prbs" => Test::Prbs,
                 _ => Test::Loopback,
             };
-            let mut dev = apply(ctrl, None, &load(&config)?)?;
+            let mut dev = apply(&mut usb.ctrl, None, &load(&config)?)?;
             dev.ad.set_test(test)?;
             println!("digital test mode {mode}: the AD9361 now drives its data port with it");
             println!("capture it with: b210 capture --source radio ...; any `apply` clears it");
@@ -157,7 +211,7 @@ fn print_polls(polls: &mut Vec<PollRecord>) {
     }
 }
 
-fn apply(ctrl: Ctrl, old: Option<&Config>, new: &Config) -> Result<Device> {
+fn apply<E: Exec>(ctrl: E, old: Option<&Config>, new: &Config) -> Result<Device<E>> {
     let mut configs = Vec::new();
     if let Some(old) = old {
         configs.push(("from", old));

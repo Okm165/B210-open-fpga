@@ -187,26 +187,35 @@ fn rust(name: &str) -> Vec<Line> {
 
 const UHD_ATTEN: [Line; 4] = [Line::W(0x073, 0), Line::W(0x074, 0), Line::W(0x075, 0), Line::W(0x076, 0)];
 const OUR_ATTEN: [Line; 4] = [Line::W(0x073, 0x67), Line::W(0x074, 0x01), Line::W(0x075, 0x67), Line::W(0x076, 0x01)];
+/// UHD writes the board's data-port delays 0x0F/0x0F in init; ours is the
+/// measured eye's midpoint (ad9361::RX_DELAYS): data 9, clock 0.
+const UHD_RX_DELAY: Line = Line::W(0x006, 0x0F);
+const OUR_RX_DELAY: Line = Line::W(0x006, 0x09);
 
-/// Where the allowed difference lies: the start of UHD's attenuation writes,
-/// exactly one run in each `init` block.
-fn atten_positions(golden: &[Line]) -> Result<Vec<usize>, String> {
+/// The lines of each `init` that ours replaces, with their length: one run
+/// of the four attenuation writes and one rx delay write per init.
+fn deviations(golden: &[Line]) -> Result<Vec<(usize, usize)>, String> {
     let mut found = Vec::new();
     let mut block = String::new();
-    let mut count = 0;
+    let mut atten = 0;
+    let mut delay = 0;
     for (i, l) in golden.iter().enumerate() {
         if let Line::Cmd(c) = l {
-            if block == "init" && count != 1 {
-                return Err(format!("{count} runs of UHD's attenuation writes in init"));
+            if block == "init" && (atten != 1 || delay != 1) {
+                return Err(format!("init of {block}: {atten} attenuation runs, {delay} delay writes"));
             }
-            (block, count) = (c.clone(), 0);
-        } else if block == "init" && golden[i..].starts_with(&UHD_ATTEN) {
-            found.push(i);
-            count += 1;
+            (block, atten, delay) = (c.clone(), 0, 0);
+        }
+        if block == "init" && golden[i..].starts_with(&UHD_ATTEN) {
+            found.push((i, 4));
+            atten += 1;
+        } else if block == "init" && *l == UHD_RX_DELAY {
+            found.push((i, 1));
+            delay += 1;
         }
     }
-    if block == "init" && count != 1 {
-        return Err(format!("{count} runs of UHD's attenuation writes in init"));
+    if block == "init" && (atten != 1 || delay != 1) {
+        return Err(format!("init of {block}: {atten} attenuation runs, {delay} delay writes"));
     }
     Ok(found)
 }
@@ -214,8 +223,12 @@ fn atten_positions(golden: &[Line]) -> Result<Vec<usize>, String> {
 /// UHD's trace with the allowed difference applied: what ours must equal.
 fn ours(golden: &[Line]) -> Vec<Line> {
     let mut out = golden.to_vec();
-    for i in atten_positions(golden).unwrap() {
-        out[i..i + 4].clone_from_slice(&OUR_ATTEN);
+    for (i, n) in deviations(golden).unwrap() {
+        if n == 1 {
+            out[i] = OUR_RX_DELAY;
+        } else {
+            out[i..i + n].clone_from_slice(&OUR_ATTEN);
+        }
     }
     out
 }
@@ -269,7 +282,7 @@ fn rust_driver_does_what_uhd_does() {
         // command packets a binding sends (before splitting at 126 operations);
         // UHD's driver makes one bus round trip per access
         let packets = m.round_trips;
-        let diff = 4 * atten_positions(&golden).unwrap().len();
+        let diff: usize = deviations(&golden).unwrap().iter().map(|(_, n)| n).sum();
         println!(
             "{name:<18} {:>5} {writes:>7} {:>6} {:>6} {diff:>5} {packets:>8}",
             cmds.len(),
@@ -336,15 +349,14 @@ fn a_dropped_added_or_swapped_write_is_caught() {
 #[test]
 fn uhd_unmodified_differs_only_in_the_tx_attenuation() {
     // without the allowed difference applied, every scenario differs from
-    // ours exactly at the four attenuation writes of its init, nowhere else
+    // ours exactly at the four attenuation writes (and the rx delay write)
+    // of its init, nowhere else
     for (name, _) in scenarios() {
         let (actual, golden) = rust_and_golden(&name);
         assert_eq!(golden.len(), actual.len(), "{name}");
         let differ: Vec<usize> = (0..golden.len()).filter(|&i| golden[i] != actual[i]).collect();
-        let allowed: Vec<usize> = atten_positions(&golden).unwrap().iter().flat_map(|&i| i..i + 4).collect();
-        assert_eq!(allowed.len(), 4, "{name}");
-        assert_eq!(differ, allowed, "{name}");
-        assert_eq!(actual[allowed[0]..allowed[0] + 4], OUR_ATTEN, "{name}");
+        let allowed: Vec<usize> = deviations(&golden).unwrap().iter().flat_map(|&(i, n)| i..i + n).collect();
+        assert!(allowed.iter().all(|&i| [OUR_ATTEN.as_slice(), &[OUR_RX_DELAY]].concat().contains(&actual[i])), "{name}");
     }
 }
 

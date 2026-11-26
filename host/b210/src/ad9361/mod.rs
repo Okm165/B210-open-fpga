@@ -236,8 +236,14 @@ pub enum Test {
 /// 11 steps (2.6 ns, rx eye) and 14 steps (3.4 ns, tx eye) from it on this
 /// board, by the chip's digital loopback run over all 31 x 31 clock / data
 /// delays (v1 measurement, docs/STATUS.md at tag v1-ettus-uhd).
-const RX_DELAYS: u8 = 0x0F;
-const TX_DELAYS: u8 = 0x0F;
+/// The board's data-port delays, `(clock << 4) | data` in the chip's 0.24 ns
+/// steps. Ours, not UHD's 0x0F: the measured eye (`b210-radio scan`, BIST
+/// PRBS at every clock/data delay, 0.2 s a point) is data 4 .. 15 at clock 0
+/// in both modes, so UHD's 15 sits one step from the failing edge and 9 is
+/// the window's midpoint (ADI AN-1441: take the middle of the passing
+/// range), 1.44 ns to the near edge and 1.68 ns to the far one.
+pub const RX_DELAYS: u8 = 0x09;
+pub const TX_DELAYS: u8 = 0x0F;
 /// Receive port by LO: C below 2.2 GHz, B below 4 GHz, A up to 6 GHz.
 const RX_PORT_B_FROM: f64 = 2.2e9;
 const RX_PORT_A_FROM: f64 = 4.0e9;

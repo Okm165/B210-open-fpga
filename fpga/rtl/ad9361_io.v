@@ -19,18 +19,21 @@
 //
 // Receive timing. The AD9361 launches a word tDDRX = 0 .. 1.5 ns (frame
 // tDDDV = 0 .. 1.0 ns) after a DATA_CLK edge (data sheet Rev. F, p. 6),
-// plus its rx data delay (0x006[3:0] = 0xF, UHD's b200_impl.cpp; 0.24 ns a
-// step measured on this board: 3.6 ns; v1 measurement, docs/STATUS.md at
-// tag v1-ettus-uhd). Here the capture clock reaches the
+// plus its rx data delay (0x006[3:0] = 0x9, ours, not UHD's 0xF: the
+// driver's own measured eye, see below). Here the capture clock reaches the
 // IDDRs 2.25 ns after the pad (pad -> BUFG, src/constraints/b210.xdc at tag v1-ettus-uhd),
 // and every rx pin passes an IDELAYE2 of RX_IDELAY_TAPS taps of 1 / (64 x
-// 200 MHz) = 78.125 ps (UG471 "IDELAYE2"; 20 taps = 1.56 ns, the value
-// that centres the capture: with it, at 61.44 MHz, the nearest data
-// transition lay 11 AD9361 delay steps = 2.6 ns from UHD's operating point
-// 0x006 = 0x007 = 0x0F, by the AD9361's digital loopback run over all
-// 31 x 31 clock / data delays (v1 measurement, docs/STATUS.md at tag
-// v1-ettus-uhd)). A word launched at edge k thus settles 3.6 +
-// 1.5 + 1.56 - 2.25 = 4.4 ns after the capture clock's edge k at the
+// 200 MHz) = 78.125 ps (UG471 "IDELAYE2"; 20 taps = 1.56 ns, UHD's value).
+//
+// The chip's rx eye, measured by this driver on this image with the BIST
+// PRBS (`b210-radio scan`): at clock delay 0, the data delays 4 .. 15 carry
+// the sequence with zero errors at 0.2 s per point, both in 2R2T at
+// 30.72 MS/s and 1R1T at 61.44 MS/s; UHD's 0xF sits one 0.24 ns step from
+// the failing edge (v1's claim of an 11-step margin from its 31 x 31
+// loopback held on one side only). The shipped value is the window's
+// midpoint (AN-1441's practice): data 9, 1.44 ns to the near edge, 1.68 ns
+// to the far one. A word launched at edge k thus settles 2.16 +
+// 1.5 + 1.56 - 2.25 = 2.97 ns after the capture clock's edge k at the
 // latest, and is taken by its next edge, T/2 = 8.14 ns later: the word
 // launched on the rising edge (I) by the falling edge, the one launched on
 // the falling edge (Q) by the next rising edge. IDDR SAME_EDGE (UG471

@@ -177,6 +177,14 @@ examples/config.toml     every configuration key
    50.0% ones on both. A single-channel read of the 2R2T stream also passes:
    decimating a maximal-length sequence by 2 is the same sequence shifted,
    so that is not an error detector.
+   The rx eye, measured by our own scan (`b210-radio scan`: the BIST PRBS
+   at every chip clock/data delay, 0.2 s a point): the passing window at
+   clock delay 0 is data 4 .. 15 in both modes, so UHD's shipped 0xF sat one
+   0.24 ns step from the failing edge. The shipped value is now the window's
+   midpoint (ADI AN-1441's practice): 0x006 = 0x9, 1.44 ns to the near edge
+   and 1.68 ns to the far one; 1,216,224,240 bits of PRBS at the new point,
+   0 mismatches; the BIST tone unchanged (SNR 67.9 dB). The golden test
+   records it as the second allowed difference from UHD.
    Mixed channel counts work: 2 rx + 1 tx at 30.72 MS/s applies with the
    port in 2R2T (0x005 = 30720), the 2-channel pattern stream is clean, a
    1-channel tx burst loops back exact (153.6 M samples), and a 2-channel
