@@ -154,6 +154,24 @@ examples/config.toml     every configuration key
    At 2.45 GHz one 0.5 ms broadband burst (Wi-Fi-like) reached -0.8 dBFS
    with no clipping and no overflow; it appeared on channel 0 only and not
    in a 5 s capture, so it is an external emitter, not the data path.
+   A band survey with the antenna (all 2-channel captures, LO-shift test
+   where a station is named, gain steps 1:1 confirmed on every band):
+   - FM band (LO 100.5 MHz, 5 MHz BW): crowded. At 70 dB gain the 12-bit
+     rail is exceeded (max |x| = 2048 > 2047, 1.8% of values within 8 LSB of
+     the rail) - the band overloads the converter; at 55 dB the peak is
+     -3.6 dBFS and at 45 dB -12.8 dBFS, clean. The strongest station is at
+     99.4 MHz (carrier -12 dBFS at 70 dB): it moved -0.5 MHz when the LO
+     moved +0.5 MHz. The tone-based SNR/SFDR figures are meaningless in a
+     crowded band (many stations, so SNR < 0 dB is expected, not a defect).
+   - 2.45 GHz ISM: broadband bursts (Wi-Fi/Bluetooth), ch0 rms -43.6 dBFS
+     at 60 dB, no clipping, no tone.
+   - 1.575 GHz (GPS L1, nominally quiet): input-referred level close to the
+     ISM band's, and 17.6 dB of a 20 dB gain cut follows it, so it is ~88%
+     external broadband energy, not the converter floor. Channel asymmetry
+     reverses between bands (ISM: ch0 6.4 dB hotter; 1.575 GHz: ch1 14.4 dB
+     hotter), so the two rx ports do not see the same RF: consistent with a
+     single antenna on one port and the other port's input effectively open.
+     Terminating or connecting the second port would settle it.
    The +/-1.31 MHz "pair" first reported as an internal spur was the
    spectrum's own noise maxima: with 64 averaged segments the largest noise
    bin sits 4-5 dB over the median (measured), and the plotter listed the
