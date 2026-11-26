@@ -199,6 +199,32 @@ examples/config.toml     every configuration key
   state 1010_0101 and the PA enables stay low; switching per state is not
   built (no configuration key until it is).
 
+## Mutation campaign
+
+`scripts/mutate.sh` (378 mutants: an operator swapped, a bit operation
+changed, a shift reversed, a constant flipped, one place at a time; comments
+skipped) runs the benches that read the mutated file. Measured on this tree:
+**366 of 378 killed (96.8 %)**, 0 build errors. The 12 survivors, each read
+and classified:
+
+- 8 in `ad9361_io.v`: the IDELAYE2's control inputs (DATAIN, C, CE, INC, LD,
+  LDPIPEEN, CINVCTRL, REGRST) inverted. With `IDELAY_TYPE("FIXED")` and
+  `DELAY_SRC("IDATAIN")` the primitive uses none of them, and the bench's
+  IDELAYE2 model models only IDATAIN -> DATAOUT, so the change cannot show.
+  REGRST is not modelled at all; that is a limit of the model, noted.
+- `rx_framer.v` `if (state == START) acc <= 0` inverted: `acc` is assigned
+  again later in the same always block whenever `in_body` (state == BODY),
+  which overrides it there; in the other states the value is unused.
+- `spi_master.v` the bit shifted into the SPI word after the last bit of a
+  24-bit frame: it would reach the output 22 shifts later, past the frame.
+- `tx_deframer.v` the EOB-only entry's `!s_valid || !s_full` made `&&`:
+  when a previous entry is consumed in the same cycle, the entry is emitted
+  one cycle later - latency only.
+- `command.v` `hw != 0 || w_room` made `hw == 0 || w_room`: after the first
+  header word the room was already reserved for the whole result, so the
+  change can only delay a header word while the host is not draining, never
+  reorder or corrupt it.
+
 ## Risks
 
 - Full duplex sc12 is 92 % of the 400 MB/s bus.

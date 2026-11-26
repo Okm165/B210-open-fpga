@@ -49,8 +49,14 @@ one() {
     [ -n "$b" ] || continue
     RTL=$dir/rtl LIMIT=${LIMIT:-1500} sh fpga/tests/run.sh "^$b " >> "$dir/log" 2>&1 || ok=0
   done
-  # every case gave the result it states: no bench noticed the change
-  verdict=KILLED; [ "$ok" -eq 1 ] && verdict=SURVIVED
+  # a mutant that does not build or run proves nothing: ERROR, not killed
+  if ! grep -q 'cases,' "$dir/log" 2>/dev/null; then
+    verdict=ERROR
+  elif [ "$ok" -eq 1 ]; then
+    verdict=SURVIVED   # every case gave the result it states
+  else
+    verdict=KILLED
+  fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$verdict" "$id" "$file" "$line" "$old" "$new"
 }
 

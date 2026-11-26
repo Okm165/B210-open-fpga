@@ -64,12 +64,21 @@ def mutants():
                     i = code.find(old, start)
                     if i < 0:
                         break
-                    # a swap must not create a longer operator of the other kind
-                    out.append((name, no, code.count(old[:1], 0, i), old, new, i))
+                    # the occurrence index of `old` in this line: the k-th
+                    # match, so apply() and the id agree on the place
+                    occ = code.count(old, 0, i)
+                    out.append((name, no, occ, old, new, i))
                     start = i + len(old)
-    # ids in file, line, occurrence order
-    out.sort(key=lambda m: (m[0], m[1], m[5], m[3]))
-    return out
+    # one entry per (file, line, occurrence, swap): there is no other identity
+    seen = set()
+    unique = []
+    for m in out:
+        key = (m[0], m[1], m[2], m[3], m[4])
+        if key not in seen:
+            seen.add(key)
+            unique.append(m)
+    unique.sort(key=lambda m: (m[0], m[1], m[5], m[3]))
+    return unique
 
 
 def manifest():
@@ -93,11 +102,15 @@ def apply(mid: int, dest: str):
         lines = f.readlines()
     # apply at the same place: the occ-th occurrence of `old` in that line
     target = lines[line - 1]
-    start = 0
+    i = -1
     for _ in range(occ + 1):
-        i = target.find(old, start)
-        start = i + len(old)
+        i = target.find(old, i + 1)
+        if i < 0:
+            sys.exit(f"mutant {mid}: occurrence {occ} of {old!r} not in line {line}")
     new_line = target[:i] + new + target[i + len(old):]
+    # exactly that occurrence changed: reversing the swap gives the line back
+    if new_line[:i] + old + new_line[i + len(new):] != target:
+        sys.exit(f"mutant {mid}: applied text differs from the recorded place")
     lines[line - 1] = new_line
     with open(path, "w") as f:
         f.writelines(lines)
