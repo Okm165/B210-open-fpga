@@ -20,7 +20,7 @@ use b210::proto::{self, Format};
 use b210::regs::{self, rx_source, Counters, COUNTER_NAMES};
 use b210::stream::{self, Check, Shape};
 use b210::usb::{self, Board, Ctrl, Usb, DEPTH_MS_DEFAULT};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
@@ -65,15 +65,47 @@ enum Cmd {
     },
 }
 
+/// The three rx sources of a capture: the register's own three names, so the
+/// flag cannot drift from `regs::rx_source`. `loopback` is the FPGA's tx path
+/// returned on rx - it is not the AD9361's `test tone` (its BIST tone, at the
+/// chip's data port) and not its `loopback` (the chip's own test mode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Source { Radio, Loopback, Pattern }
+
+impl Source {
+    /// The name the sidecar records (and `b210-plot` prints).
+    fn name(self) -> &'static str {
+        match self { Source::Radio => "radio", Source::Loopback => "loopback", Source::Pattern => "pattern" }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sidecar's `source` is what `b210-plot` shows and what a reader
+    /// will type back into --source: one name, and the parser accepts it.
+    #[test]
+    fn the_source_names_are_the_flag_values() {
+        for s in [Source::Radio, Source::Loopback, Source::Pattern] {
+            assert_eq!(Source::from_str(s.name(), true).unwrap(), s, "{}", s.name());
+        }
+        // negative control: the old name is not silently accepted
+        assert!(Source::from_str("tone", true).is_err());
+    }
+}
+
 #[derive(Args)]
 struct CaptureArgs {
     /// file name prefix: PREFIX_ch0.raw, PREFIX_ch1.raw (+ .toml sidecars)
     #[arg(long, default_value = "capture.raw")]
     out: std::path::PathBuf,
-    /// pattern: the FPGA's f(t); tone: a host tone through tx and the loopback;
-    /// radio: the AD9361, sample_times kept, not checked against a closed form
-    #[arg(long, default_value = "tone")]
-    source: String,
+    /// where the sample_times come from: radio (the AD9361, values not
+    /// checked), loopback (the FPGA's tx path fed a host tone and returned on
+    /// rx, every value checked) or pattern (the FPGA's f(t), every value
+    /// checked)
+    #[arg(long, value_enum, default_value_t = Source::Radio)]
+    source: Source,
     /// radio only: check every word's bit 0 against the AD9361's BIST
     /// pseudo-random sequence (`b210-radio test CONFIG prbs` first) instead
     /// of keeping the sample_times unchecked
@@ -396,23 +428,22 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     let s = shape(a)?;
     let nv = 2 * s.count();
     let paths: Vec<_> = (0..s.count()).map(|ch| capture::channel_path(&c.out, ch)).collect();
-    let src = match c.source.as_str() {
-        "pattern" => rx_source::PATTERN,
-        "tone" => rx_source::LOOPBACK,
-        "radio" => rx_source::RADIO,
-        x => bail!("--source pattern, tone or radio, not {x}"),
+    let src = match c.source {
+        Source::Pattern => rx_source::PATTERN,
+        Source::Loopback => rx_source::LOOPBACK,
+        Source::Radio => rx_source::RADIO,
     };
     let before = regs::setup(&mut usb.ctrl, src)?;
     let rate = regs::sample_rate(&mut usb.ctrl)?;
     s.check_bus(rate)?;
-    if c.source == "tone" && !(c.tone_hz.abs() < rate / 2.0 && c.tone_dbfs <= 0.0) {
+    if c.source == Source::Loopback && !(c.tone_hz.abs() < rate / 2.0 && c.tone_dbfs <= 0.0) {
         bail!("--tone-hz within +-rate/2 ({:.0} Hz), --tone-dbfs <= 0", rate / 2.0);
     }
-    println!("capture {} x{} from {}: {:.3} MS/s -> {}", a.format, a.channels, c.source, rate / 1e6,
+    println!("capture {} x{} from {}: {:.3} MS/s -> {}", a.format, a.channels, c.source.name(), rate / 1e6,
              paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
     let n = (a.seconds * rate) as u64;
     let tone = TestTone::new(c.tone_hz, rate, c.tone_dbfs);
-    if c.source == "tone" {
+    if c.source == Source::Loopback {
         println!("tone {:+.6} MHz (snapped to {} / {} of the rate) at {:.1} dBFS; channel 1 at the negative frequency",
                  tone.freq(rate) / 1e6, tone.m, TestTone::L, c.tone_dbfs);
     }
@@ -508,7 +539,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     // The sidecar is written before the verdict so a file that fails below can
     // still be read (and marked) by b210-plot.
     for (ch, path) in paths.iter().enumerate() {
-        capture::write_meta(path, &capture::Meta { rate_hz: rate, channel: ch, source: c.source.clone(),
+        capture::write_meta(path, &capture::Meta { rate_hz: rate, channel: ch, source: c.source.name().to_string(),
                                                    lost: check.lost })?;
     }
     if !check.clean() {
@@ -551,7 +582,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     // Only an ADC's values can be helped by a gain: a digital source
     // (pattern, tone) spans the codes by construction, so its rails are a
     // fact to report, not a saturation to refuse.
-    let refused = reports.iter().filter(|(_, r)| c.source == "radio" && quality::clipping_refuses(&r.level)).count();
+    let refused = reports.iter().filter(|(_, r)| c.source == Source::Radio && quality::clipping_refuses(&r.level)).count();
     if refused > 0 { bail!("capture: the ADC saturated on {refused} channel(s) - the sample_times are not the input (see above)"); }
     println!("{}; analyse with: b210-plot {}", if check.prbs.is_some() {
         "every header and the BIST pseudo-random sequence checked"

@@ -212,7 +212,7 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
      from the signal, so the gain advice is given only in the material
      grade.
    - The refusal is the ADC's alone. A digital source (--source pattern,
-     --source tone) spans the code range by construction and is checked
+     --source loopback) spans the code range by construction and is checked
      bit for bit, so its rails are a fact to report, not a saturation: the
      note names the fraction and the longest run and adds the gain advice
      as the rule for an ADC input, and the capture exits 0. Measured: the

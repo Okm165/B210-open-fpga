@@ -44,7 +44,7 @@ b210 write <ADDR> <VALUE>  # write a register
 b210 monitor [--interval-ms 500]       # live status, event counters, USB events
 b210 rx-test [STREAM]      # stream the pattern f(t); every sample and timestamp checked
 b210 loop-test [STREAM]    # one timed tx burst through the FPGA loopback, back on rx
-b210 capture [STREAM] [--out capture.raw] [--source pattern|tone|radio] [--prbs]
+b210 capture [STREAM] [--out capture.raw] [--source radio|loopback|pattern] [--prbs]
 b210-radio id|apply CONFIG.toml|peek REGS...|reset|test CONFIG.toml MODE|scan CONFIG.toml
 b210-plot <FILE> [--config FILE] [--rate HZ] [--view ...] [--fft N] [--lo HZ] [--hi HZ]
 ```
@@ -106,8 +106,9 @@ tone is only above the receiver's floor with the tx gain near 89.75 dB
 (0 dB attenuation): `cargo run --release --example rf_tone -- rf.toml`.
 
 `capture` exits 1 when the ADC saturates (lower the gain in the config's
-`gain_db`), only for `--source radio`: the pattern and the host tone reach
-the code rails by construction and are reported, not refused. A crowded
+`gain_db`), only for `--source radio` (the default): `--source pattern` and
+`--source loopback` reach the code rails by construction and are reported,
+not refused. A crowded
 band such as FM overloads at 70 dB and is clean from 55 dB down, so a strong
 band needs a lower gain than a weak one (`docs/DESIGN.md`, "antenna").
 
