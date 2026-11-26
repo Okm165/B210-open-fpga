@@ -254,7 +254,7 @@ returns every writable register to the value given.
 | 0x021 | rx_count | rw | sample times in the stream, 0 = until stopped (0) |
 | 0x022 / 0x023 | rx_at_lo / hi | rw | start time (with timed) (0) |
 | 0x024 | rx_spp | rw | [12:0] sample times per packet: a write above 8191 saturates to 8191; the stream clamps it to 16 .. the full count of section 3 (4096) |
-| 0x030 | radio | rw | AD9361 RESETB [0]: 0 holds the AD9361 in reset, 1 releases it (0); 2R2T [1]: 0 the data port carries one channel (1R1T: a sample time per DATA_CLK period, channel 1 reads 0), 1 two (2R2T: a sample time per two periods); it must match the AD9361's data-port setting and change only while no stream or burst runs (0) |
+| 0x030 | radio | rw | AD9361 RESETB [0]: 0 holds the AD9361 in reset, 1 releases it (0); 2R2T [1]: 0 the FPGA reads and drives one channel (1R1T: a sample time per DATA_CLK period, channel 1 reads 0), 1 two (2R2T: a sample time per two periods, channels alternate); the AD9361's own data port needs no change (its 0x010 stays 0xC8 for both, the frame it toggles marks channel 0), and the bit follows the channels a direction carries: set with the chains, only while no stream or burst runs (0) |
 | 0x031 | bands | rw | band-select switches, straight to the pins: rx_bandsel_a [0], rx_bandsel_b [1], rx_bandsel_c [2], tx_bandsel_a [3], tx_bandsel_b [4] (0) |
 | 0x080 + k - 1 | events | r | counter of event code k (section 5), k = 1 .. 6 |
 | 0x086 | rx_cdc_lost | r | sample times lost crossing to the bus clock (nonzero = a design error); also counted in event 1 OVERFLOW |
