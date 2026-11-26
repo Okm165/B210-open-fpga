@@ -200,7 +200,10 @@ examples/config.toml     every configuration key
      follows 1:1. So an earlier reading of "one antenna and the other port
      open" is rejected: both ports are live, they differ by band (ch1 is
      8 dB hotter at 100 MHz, ch0 6.4 dB hotter at 2.45 GHz), which is
-     coupling/orientation, not a data-path fault.
+     coupling/orientation, not a data-path fault. At 50 dB gain the
+     strongest station is 104.1 MHz on ch0 and 99.4 MHz on ch1, each
+     moving 1:1 with its LO in the shift test: the two ports carry
+     different mixes of real stations.
    The +/-1.31 MHz "pair" first reported as an internal spur was the
    spectrum's own noise maxima: with 64 averaged segments the largest noise
    bin sits 4-5 dB over the median (measured), and the plotter listed the
