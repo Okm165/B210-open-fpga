@@ -9,6 +9,9 @@
 # that runs out reports ERROR); exit status 1 if any result differs.
 set -eu
 cd "$(dirname "$0")/../.."
+# RTL: the directory the bench takes its RTL from (scripts/mutate.sh points it
+# at a mutated copy); the benches and models always come from fpga/tests.
+RTL=${RTL:-fpga/rtl}
 # each run its own directory, so runs in parallel never mix
 mkdir -p build/sim
 SIM=$(mktemp -d build/sim/run.XXXXXX)
@@ -131,7 +134,7 @@ one() {   # bench expect params...
   tag=$(echo "$bench $*" | tr ' =' '_-')
   params=""; for p in "$@"; do params="$params -Ptb_$bench.$p"; done
   # shellcheck disable=SC2046,SC2086
-  iverilog -g2005 -Wall -Wno-timescale -I fpga/rtl -o "$SIM/$tag" -s "tb_$bench" $params $(sources "$bench") \
+  iverilog -g2005 -Wall -Wno-timescale -I "$RTL" -o "$SIM/$tag" -s "tb_$bench" $params $(sources "$bench" | sed "s|fpga/rtl/|$RTL/|g") \
     > "$SIM/$tag.log" 2>&1 &&
   timeout "${LIMIT:-1500}" vvp -n "$SIM/$tag" >> "$SIM/$tag.log" 2>&1 || true
   got=$(sed -n "s/^RESULT: \([A-Z]*\).*/\1/p" "$SIM/$tag.log")

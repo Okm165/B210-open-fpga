@@ -39,6 +39,10 @@ test-host:
 # Both test suites
 check: test-fpga test-host
 
+# Mutation campaign: one small RTL change each, the benches must notice
+mutate jobs='48' filter='.':
+    sh scripts/mutate.sh {{ jobs }} '{{ filter }}'
+
 # Load an image into the board's FPGA (after a power-up, the FX3 firmware first)
 load img="build/fpga/usrp_v2.bin":
     host/target/release/b210 load {{ img }}

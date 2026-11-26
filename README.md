@@ -8,7 +8,9 @@ side is a Rust crate talking to the board over USB, with no UHD.
 
 - `fpga/rtl/`, `fpga/b210.xdc`: the FPGA; `fpga/tests/`: its benches
 - `host/b210/`: the Rust crate, binaries `b210`, `b210-radio` and `b210-plot`
-- `scripts/`: the build flow (`build.sh`, `assemble.sh`, `toolchain.sh`)
+- `scripts/`: the build flow (`build.sh`, `assemble.sh`, `toolchain.sh`) and
+  the mutation campaign (`mutate.sh`, `mutate.py`: one small RTL change per
+  mutant, the benches must notice; survivors are listed for classification)
 - `container/`: the Yosys / Project X-Ray image and the tool patches
 - `docs/PROTOCOL.md`: the USB protocol and register map; `docs/DESIGN.md`: the design
 
