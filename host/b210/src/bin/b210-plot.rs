@@ -15,6 +15,11 @@
 // overrides it, and is needed for a file without one). All levels are dBFS:
 // 0 dBFS is a full-scale complex tone, |I + jQ| = 2048 (b210::dsp).
 //
+// Memory: only the selected interval (t0/t1) is read, never the whole
+// channel, and --view report alone streams it (quality::analyze_file_range):
+// a report on a 233 MB file peaks at 3.3 MB. The other views hold their
+// interval, since they draw its samples.
+//
 // Views (--view takes a comma list):
 //   report     level, DC, I/Q balance, tone SNR/SINAD/SFDR/ENOB, noise floor,
 //              spurs, and findings with causes (b210::quality)
@@ -160,17 +165,19 @@ fn main() -> Result<()> {
         }
         None => Settings::default(),
     };
-    let s = iq::read(&cli.file).with_context(|| cli.file.display().to_string())?;
+    let bytes = std::fs::metadata(&cli.file).with_context(|| cli.file.display().to_string())?.len();
+    if !bytes.is_multiple_of(4) {
+        bail!("{}: {bytes} bytes is not a whole number of I/Q pairs", cli.file.display());
+    }
+    let frames = (bytes / 4) as usize;
     let meta = iq::read_meta(&cli.file).with_context(|| iq::meta_path(&cli.file).display().to_string())?;
     let a = Plot::from(cli.settings.over(file_settings), meta.as_ref().map(|m| m.rate_hz))?;
     let rate = a.rate;
-    let frames = s.len() / 2;
     let i0 = (a.t0 * rate) as usize;
     let i1 = a.t1.map_or(frames, |t| (t * rate) as usize).min(frames);
     if i1 < i0 + 64 {
         bail!("t0/t1 select {} sample times of {frames}: need at least 64", i1.saturating_sub(i0));
     }
-    let x = &s[2 * i0..2 * i1];
     let (lo, hi) = (a.lo.unwrap_or(-rate / 2.0).max(-rate / 2.0), a.hi.unwrap_or(rate / 2.0).min(rate / 2.0));
     if hi <= lo {
         bail!("lo {lo} must be below hi {hi}, both within +-rate/2");
@@ -181,15 +188,24 @@ fn main() -> Result<()> {
              meta.as_ref().map_or(String::new(), |m| format!(", channel {}, source {}", m.channel, m.source)),
              i0 as f64 / rate, i1 as f64 / rate);
     let g = Geometry { width: a.width, height: a.height, lo, hi, top: a.top_db, bottom: a.top_db - a.range_db };
+    // the report alone needs no samples in memory: it streams the interval
+    if let [View::Report] = a.views.as_slice() {
+        println!();
+        let r = quality::analyze_file_range(&cli.file, rate, n, i0, i1 - i0)?
+            .context("too short to analyse")?;
+        return report_of(&r);
+    }
+    // every other view needs its interval; read only that, not the channel
+    let x = iq::read_range(&cli.file, i0, i1 - i0).with_context(|| cli.file.display().to_string())?;
     for v in &a.views {
         println!();
         match v {
-            View::Report => report(x, rate, n)?,
-            View::Spectrum => spectrum(x, rate, n, &g)?,
-            View::Waterfall => waterfall(x, rate, n, &g),
+            View::Report => report(&x, rate, n)?,
+            View::Spectrum => spectrum(&x, rate, n, &g)?,
+            View::Waterfall => waterfall(&x, rate, n, &g),
             View::Time => time(&x[..2 * ((a.span * rate) as usize).clamp(16, i1 - i0)], rate, &g),
-            View::Hist => hist(x, &g),
-            View::Iq => constellation(x, &g),
+            View::Hist => hist(&x, &g),
+            View::Iq => constellation(&x, &g),
             View::All => unreachable!("expanded in Plot::from"),
         }
     }
@@ -218,6 +234,11 @@ fn mhz(f: f64) -> String { format!("{:+.4} MHz", f / 1e6) }
 
 fn report(x: &[i16], rate: f64, n: usize) -> Result<()> {
     let r = quality::analyze(x, rate, n).context("too short to analyse")?;
+    report_of(&r)
+}
+
+/// Print a `Report`; the report view and the streamed file path share it.
+fn report_of(r: &quality::Report) -> Result<()> {
     let l = &r.level;
     let b = &r.balance;
     println!("REPORT  ({} sample times, {}-point spectrum)", r.frames, r.fft);
@@ -235,7 +256,7 @@ fn report(x: &[i16], rate: f64, n: usize) -> Result<()> {
                             mhz(t.freq), t.dbfs, t.snr_db, t.sinad_db, t.sfdr_dbc, t.enob, t.image_dbc),
         None => println!("  tone      none ({} dB above the floor needed)", 30),
     }
-    println!("  floor     {:.1} dBFS per bin ({:.0} Hz) = {:.1} dBFS/Hz", r.floor_dbfs_bin, rate / r.fft as f64, r.floor_dbfs_hz);
+    println!("  floor     {:.1} dBFS per bin ({:.0} Hz) = {:.1} dBFS/Hz", r.floor_dbfs_bin, r.rate / r.fft as f64, r.floor_dbfs_hz);
     for s in &r.spurs {
         let unit = if r.tone.is_some() { "dBc" } else { "dBFS/bin" };
         println!("  spur      {} {:7.1} {unit}  {:?}", mhz(s.freq), s.db, s.kind);

@@ -229,17 +229,24 @@ pub fn analyze_file(path: &Path, rate: f64, fft: usize) -> io::Result<Option<Rep
         return Err(io::Error::new(io::ErrorKind::InvalidData,
             format!("{}: {bytes} bytes is not a whole number of I/Q pairs", path.display())));
     }
-    let frames = (bytes / 4) as usize;
+    analyze_file_range(path, rate, fft, 0, (bytes / 4) as usize)
+}
+
+/// `analyze_file` of `frames` sample times starting at `first`, which is
+/// what `b210-plot` selects with t0/t1: the same bounded memory and the same
+/// numbers as analysing that slice in memory.
+pub fn analyze_file_range(path: &Path, rate: f64, fft: usize, first: usize, frames: usize) -> io::Result<Option<Report>> {
     if frames < 16 { return Ok(None); }
     let mut m = Moments::default();
-    for p in pairs(File::open(path)?) { let (i, q) = p?; m.add(i, q); }
-    let level = finish(&m, pairs(File::open(path)?).map(|p| p.expect("the length was checked")));
+    for p in pairs(File::open(path)?).skip(first).take(frames) { let (i, q) = p?; m.add(i, q); }
+    let level = finish(&m, pairs(File::open(path)?).skip(first).take(frames)
+        .map(|p| p.expect("the length was checked")));
     let mut f = File::open(path)?;
     let Some(sp) = dsp::welch_read(frames, fft, rate, 64, |start, seg| {
         use std::io::{Seek, SeekFrom};
-        f.seek(SeekFrom::Start(4 * start as u64)).expect("seek within the file");
+        f.seek(SeekFrom::Start(4 * (first + start) as u64)).expect("the range was checked");
         let mut bytes = vec![0u8; 2 * seg.len()];
-        f.read_exact(&mut bytes).expect("the segment lies within the file");
+        f.read_exact(&mut bytes).expect("the segment lies within the range");
         for (v, b) in seg.iter_mut().zip(bytes.as_chunks::<2>().0) { *v = i16::from_le_bytes(*b); }
     }) else { return Ok(None) };
     Ok(report(sp, frames, rate, level, m.balance()))

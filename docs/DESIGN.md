@@ -188,8 +188,12 @@ examples/config.toml     every configuration key
      RSS 9.9 MB, same 918,449,400 sample times, every header checked. The
      file path and the in-memory path share the moment sums, the level and
      the Welch segment code, and a test requires their reports to be
-     identical, not merely close. `b210-plot` still loads the channel, since
-     its time, constellation and histogram views need the samples.
+     identical, not merely close. `b210-plot` reads only the selected
+     interval (t0/t1), and `--view report` streams it through
+     analyze_file_range: a report on a 233 MB channel peaks at 3.3 MB, and
+     its text equals the in-memory report of the same window. The drawing
+     views (spectrum, waterfall, time, hist, IQ) hold their interval,
+     because they draw its samples.
    - Soak (30.72 MS/s, sc12, both channels): 60 s of the pattern stream is
      1,840,041,456 sample times with 0 lost and every counter 0; 30 s of
      the tx loopback is 921,600,000 samples back at exactly their ticks;

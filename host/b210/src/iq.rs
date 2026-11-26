@@ -73,9 +73,44 @@ pub fn read(path: &Path) -> io::Result<Vec<i16>> {
     Ok(bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect())
 }
 
+/// `count` sample times of the channel starting at `first`, read in place:
+/// `b210-plot` needs only its selected interval, not the whole channel.
+pub fn read_range(path: &Path, first: usize, count: usize) -> io::Result<Vec<i16>> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    if !len.is_multiple_of(4) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            format!("{}: {len} bytes is not a whole number of I/Q pairs", path.display())));
+    }
+    let frames = (len / 4) as usize;
+    if first.saturating_add(count) > frames {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            format!("{}: sample times {first} .. {} of {frames}", path.display(), first + count)));
+    }
+    let mut bytes = vec![0u8; 4 * count];
+    f.seek(SeekFrom::Start(4 * first as u64))?;
+    f.read_exact(&mut bytes)?;
+    Ok(bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_range_reads_the_same_values_as_the_whole_file() {
+        let path = std::env::temp_dir().join(format!("b210-iq-range-{}.raw", std::process::id()));
+        let vals: Vec<i16> = (-1000..1000).collect();
+        let mut bytes = Vec::new();
+        for v in &vals { bytes.extend_from_slice(&v.to_le_bytes()); }
+        std::fs::write(&path, &bytes).unwrap();
+        // vals are (i, q) pairs: 1000 sample times
+        assert_eq!(read_range(&path, 0, 1000).unwrap(), vals);
+        assert_eq!(read_range(&path, 400, 100).unwrap(), vals[800..1000]);
+        assert!(read_range(&path, 999, 2).is_err());
+        std::fs::remove_file(&path).ok();
+    }
 
     #[test]
     fn channel_path_replaces_raw_and_keeps_other_extensions() {
