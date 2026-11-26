@@ -194,7 +194,11 @@ examples/stream.rs       the minimal end-to-end client: bring-up, apply, stream,
      ~10 effective bits through the analog path, against 11.7 through the
      digital one (the BIST tone); a calibrated RF source is needed to say
      whether that is the chip or this board, so it stays an open number,
-     not a claim.
+     not a claim. The data sheet has no ENOB to compare against: ADI
+     answers that the AD9361's ADC is sigma-delta and "ENOB will vary
+     depending on the configuration of the sigma delta ADC (depending on
+     OSR)" (EngineerZone 80646), so the number is a property of this rate
+     and filter, measured, not a specification to meet.
    - `b210 capture` refuses a clipped ADC stream: it prints the per-channel
      CLIPPING note (the same text `b210-plot` gives) and exits 1, because a
      saturated capture is not a measurement of the input. Measured: the FM
