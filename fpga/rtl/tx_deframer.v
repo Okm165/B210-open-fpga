@@ -17,6 +17,10 @@
 // A header-only START_OF_BURST without END_OF_BURST (L = 16, no samples)
 // fails the rule too: a burst cannot begin with nothing to play.
 // (Header-only START_OF_BURST + END_OF_BURST is legal: an empty burst.)
+// A packet with samples that neither carries START_OF_BURST nor continues
+// an open burst fails the rule as well: it belongs to no burst, and playing
+// it would put the sample side in a burst the deframer does not know about
+// (a cut-short one there would never end).
 // A packet that fails the rule is not played and `bad_packets` rises by
 // exactly one; it is checked before its samples, so its sequence field and
 // the expected sequence are left untouched (and the burst state too): the
@@ -147,6 +151,10 @@ module tx_deframer (
                       len >= 16 && len <= 16384 && back == pbytes;
   // header-only START_OF_BURST without END_OF_BURST: malformed
   wire        sob_empty = n_hdr == 0 && h1[START_OF_BURST] && !h1[END_OF_BURST];
+  // samples but neither starting a burst nor continuing one: a tail with no
+  // head. Played, it would put sample_domain in a burst the deframer does not
+  // know about, and a cut-short packet there could never end it.
+  wire        orphan = n_hdr != 0 && !h1[START_OF_BURST] && !in_burst;
 
   // decoding: take a word when the next sample time is not complete and the
   // buffer has words left; give a sample time when it is complete
@@ -181,7 +189,7 @@ module tx_deframer (
         if (hw == 3) state <= CHECK;
         else if (r_last) begin bad_packets <= bad_packets + 1; state <= IDLE; end   // shorter than a header
       end
-      CHECK: if (!good || h1[31:20] != 0 || sob_empty) begin
+      CHECK: if (!good || h1[31:20] != 0 || sob_empty || orphan) begin
         bad_packets <= bad_packets + 1; state <= ended ? IDLE : SKIP;
       end else begin
         if (in_burst && !h1[START_OF_BURST] && h1[15:0] != seq_next) seq_errors <= seq_errors + 1;

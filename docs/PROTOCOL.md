@@ -123,10 +123,11 @@ no tx configuration register. Rules, as built:
 
 - **Malformed** (version, type, format, channels, reserved bits, or L not
   16 + a whole number of sample times, L <= 16384; also a header-only
-  START_OF_BURST without END_OF_BURST, L = 16): not played, counted once
+  START_OF_BURST without END_OF_BURST, L = 16; also samples with neither
+  START_OF_BURST nor an open burst to continue): not played, counted once
   in BAD_PACKET; neither the sequence expectation nor the burst state
   moves. (Header-only START_OF_BURST + END_OF_BURST is legal: an empty
-  burst.)
+  burst. A header-only packet without flags is legal and plays nothing.)
 - **Cut short** (the buffer ends before its last sample time): the sample
   times whose words all arrived play, the packet consumes its sequence, it
   carries no END_OF_BURST, and it counts once in BAD_PACKET. If a burst is

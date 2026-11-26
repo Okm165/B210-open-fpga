@@ -50,7 +50,7 @@
 // Coverage: every state must be entered (state_seen) and every output kind
 // must occur at least once (cov_sobt, cov_sobu, cov_eobonly, cov_abort,
 // cov_ovf and bad_packets); each burst-rule case must have been modelled
-// (cov_cut_open, cov_cut_eob, cov_cut_free, cov_hdr_abort, cov_sob_empty);
+// (cov_cut_open, cov_cut_eob, cov_hdr_abort, cov_sob_empty, cov_orphan);
 // the run fails and names whatever never ran.
 //
 // FAULT 1: a bit is flipped in the ring 30 words ahead of the reader. The
@@ -161,6 +161,8 @@ module tb_tx_deframer;
     end
   endtask
 
+  integer cov_orphan = 0;        // samples with no START_OF_BURST and no burst open
+
   // -- the model of the sequence check (independent of the DUT) ---------------------------
   reg        m_burst = 0;        // the model's burst state
   reg [15:0] m_next = 0;         // the sequence the next good packet must carry
@@ -189,12 +191,16 @@ module tb_tx_deframer;
 
   // everything a packet with a good header rule does, n sample times of
   // which kmax arrived (kmax < n: cut short)
-  integer cov_cut_open = 0, cov_cut_eob = 0, cov_cut_free = 0, cov_hdr_abort = 0, cov_sob_empty = 0;
+  integer cov_cut_open = 0, cov_cut_eob = 0, cov_hdr_abort = 0, cov_sob_empty = 0;
   task model(input integer n, input integer kmax, input integer sob, input integer eob,
              input integer ht, input [15:0] sq, input [63:0] t);
     reg was, open;
     begin
-      if (n == 0 && sob && !eob) begin
+      if (n != 0 && !sob && !m_burst) begin
+        // samples with neither START_OF_BURST nor an open burst: malformed,
+        // nothing plays, nothing moves
+        exp_bad = exp_bad + 1; cov_orphan = cov_orphan + 1;
+      end else if (n == 0 && sob && !eob) begin
         // header-only START_OF_BURST: malformed, nothing moves
         exp_bad = exp_bad + 1; cov_sob_empty = cov_sob_empty + 1;
       end else begin
@@ -208,10 +214,11 @@ module tb_tx_deframer;
         end
         if (kmax < n) begin
           exp_bad = exp_bad + 1;
-          if (open) begin
-            expect(0, 1, 1, 0, 0, 0); m_burst = 0;
-            if (eob) cov_cut_eob = cov_cut_eob + 1; else cov_cut_open = cov_cut_open + 1;
-          end else cov_cut_free = cov_cut_free + 1;
+          // a cut-short packet outside a burst cannot exist: without
+          // START_OF_BURST it is the malformed case above, with it a burst
+          // is open, so `open` always holds here
+          expect(0, 1, 1, 0, 0, 0); m_burst = 0;
+          if (eob) cov_cut_eob = cov_cut_eob + 1; else cov_cut_open = cov_cut_open + 1;
         end
       end
     end
@@ -335,6 +342,17 @@ module tb_tx_deframer;
       // header-only packet with no flag outside a burst: legal, plays
       // nothing, and its arbitrary sequence is not checked (no burst)
       good(1, 3, 0, 0, 0, 0, 16'h4321, 64'd0);                         put_pkt;
+
+      // samples with neither START_OF_BURST nor an open burst: malformed,
+      // nothing plays and the sequence is not consumed
+      good(1, 3, 2, 0, 0, 0, 16'h0BAD, 64'd0);                         put_pkt;
+      // ... also when it claims END_OF_BURST (a tail with no head)
+      good(2, 1, 3, 0, 1, 0, 16'h0BAE, 64'd0);                         put_pkt;
+      // the same shape inside a burst is a continuation and plays
+      good(1, 3, 2, 1, 0, 0, 16'h4444, 64'd0);                         put_pkt;
+      good(1, 3, 2, 0, 1, 0, m_next, 64'd0);                           put_pkt;
+      // after the burst, samples with no flag are malformed again
+      good(1, 3, 1, 0, 0, 0, 16'h0BAF, 64'd0);                         put_pkt;
 
       // rule 3: a header-only START_OF_BURST without END_OF_BURST is
       // malformed and opens nothing: the next packet's jump is outside a
@@ -465,8 +483,12 @@ module tb_tx_deframer;
 
   // -- faults -----------------------------------------------------------------------------
   initial if (FAULT == 1) begin
-    wait (sent >= 20); wait (ring.wp - ring.rp > 40);
-    ring.mem[(ring.rp + 30) % 16384] = ring.mem[(ring.rp + 30) % 16384] ^ 33'h100;
+    // a bit inside the body of a packet being played: the packet is legal
+    // (not one of the rejects), so the wrong sample must show as a mismatch.
+    // 8 words past the read pointer is beyond the three the FIFO prefetches
+    // and well inside a packet with more than 40 sample times left.
+    wait (dut.state == 3'd3 && !dut.ended && dut.n > 40 && ring.wp - ring.rp > 12);
+    ring.mem[(ring.rp + 8) % 16384] = ring.mem[(ring.rp + 8) % 16384] ^ 33'h100;
   end
   initial if (FAULT == 2) begin
     wait (nout > 100);
@@ -488,7 +510,13 @@ module tb_tx_deframer;
     while (qr != qw && idle < 200000) begin
       @(posedge clk); idle = (s_valid && !s_full) ? 0 : idle + 1;
     end
-    repeat (1000) @(posedge clk);
+    // the entries can all have arrived while the last packets (all rejects,
+    // which emit none) are still being read: wait for the deframer itself
+    idle = 0;
+    while ((r_avail != 0 || dut.state != 0) && idle < 200000) begin
+      @(posedge clk); idle = idle + 1;
+    end
+    if (idle >= 200000) begin errors = errors + 1; $display("the deframer never went idle"); end
     if (qw > QN) begin errors = errors + 1; $display("bench: %0d entries overflow the queue", qw); end
     if (qr != qw) begin errors = errors + 1; $display("%0d entries expected, %0d came", qw, qr); end
     if (bad_packets !== exp_bad) begin
@@ -506,9 +534,10 @@ module tb_tx_deframer;
     if (cov_sobu == 0)  begin errors = errors + 1; $display("coverage: no SOB-untimed entry"); end
     if (cov_eobonly == 0) begin errors = errors + 1; $display("coverage: no EOB-only entry"); end
     if (cov_abort == 0) begin errors = errors + 1; $display("coverage: no abort entry"); end
+    if (cov_orphan == 0) begin errors = errors + 1; $display("coverage: no orphan packet"); end
+    if (cov_orphan < 3) begin errors = errors + 1; $display("coverage: %0d orphan packets, at least the 3 directed expected", cov_orphan); end
     if (cov_cut_open == 0)  begin errors = errors + 1; $display("coverage: no cut-short packet inside a burst"); end
     if (cov_cut_eob == 0)   begin errors = errors + 1; $display("coverage: no cut-short END_OF_BURST packet"); end
-    if (cov_cut_free == 0)  begin errors = errors + 1; $display("coverage: no cut-short packet outside a burst"); end
     if (cov_hdr_abort == 0) begin errors = errors + 1; $display("coverage: no empty burst during a burst"); end
     if (cov_sob_empty == 0) begin errors = errors + 1; $display("coverage: no header-only START_OF_BURST"); end
     if (cov_ovf == 0)   begin errors = errors + 1; $display("coverage: no tx packet with OVERFLOW"); end
@@ -523,8 +552,8 @@ module tb_tx_deframer;
     $display("%0d packets, %0d entries; bad %0d, seq jumps %0d", sent, nout, bad_packets, seq_errors);
     $display("coverage: states %b, SOB-timed %0d, SOB-untimed %0d, EOB-only %0d, abort %0d, OVERFLOW-hdr %0d, BAD %0d",
              state_seen, cov_sobt, cov_sobu, cov_eobonly, cov_abort, cov_ovf, bad_packets);
-    $display("coverage: cut short in a burst %0d, on END_OF_BURST %0d, outside %0d; empty burst in a burst %0d; header-only SOB %0d; reset in flight %0d",
-             cov_cut_open, cov_cut_eob, cov_cut_free, cov_hdr_abort, cov_sob_empty, cov_reset);
+    $display("coverage: cut short in a burst %0d, on END_OF_BURST %0d; empty burst in a burst %0d; header-only SOB %0d; reset in flight %0d",
+             cov_cut_open, cov_cut_eob, cov_hdr_abort, cov_sob_empty, cov_reset);
     $display("RESULT: %0s", errors == 0 ? "PASS" : "FAIL");
     $finish;
   end
