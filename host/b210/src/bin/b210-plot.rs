@@ -254,13 +254,21 @@ fn report(x: &[i16], rate: f64, n: usize) -> Result<()> {
     report_of(&r)
 }
 
+/// The clipped fraction as a percentage that never rounds a real value to
+/// zero: 3.3e-9 of the values is "3.3e-7%", not "0.0000%" (the finding
+/// beside it already prints the fraction, and the two must not contradict).
+fn clipped_pct(fraction: f64) -> String {
+    let pct = 100.0 * fraction;
+    if pct > 0.0 && pct < 1e-4 * 0.999 { format!("{pct:.1e}%") } else { format!("{pct:.4}%") }
+}
+
 /// Print a `Report`; the report view and the streamed file path share it.
 fn report_of(r: &quality::Report) -> Result<()> {
     let l = &r.level;
     let b = &r.balance;
     println!("REPORT  ({} sample times, {}-point spectrum)", r.frames, r.fft);
-    println!("  level     rms {:.1} dBFS, peak {:.1} dBFS, crest factor {:.1} dB, clipped {:.4}% of values",
-             l.rms_dbfs, l.peak_dbfs, l.crest_db, 100.0 * l.clipped);
+    println!("  level     rms {:.1} dBFS, peak {:.1} dBFS, crest factor {:.1} dB, clipped {} of values",
+             l.rms_dbfs, l.peak_dbfs, l.crest_db, clipped_pct(l.clipped));
     println!("  DC        I {:+.2}, Q {:+.2} codes = {:.1} dBFS", l.dc_i, l.dc_q, l.dc_dbfs);
     if b.circular {
         println!("  balance   gain {:+.3} dB, phase {:+.3} deg -> image rejection {:.1} dB (I/Q correlation {:+.3})",
@@ -699,6 +707,15 @@ mod tests {
         assert!(toml::from_str::<Settings>("ftt = 4096\n").is_err());
         assert!(Plot::from(Settings::default(), None).is_err());
         assert!(Plot::from(Settings { width: Some(5), ..Default::default() }, Some(1e6)).is_err());
+    }
+
+    #[test]
+    fn a_real_clipped_fraction_never_prints_as_zero() {
+        assert_eq!(clipped_pct(0.0), "0.0000%");
+        assert_eq!(clipped_pct(3.3e-9), "3.3e-7%");
+        assert_eq!(clipped_pct(1e-6), "0.0001%"); // the refusal threshold
+        assert_eq!(clipped_pct(0.5e-6), "5.0e-5%");
+        assert_eq!(clipped_pct(0.01), "1.0000%");
     }
 
     #[test]

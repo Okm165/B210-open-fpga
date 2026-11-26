@@ -367,6 +367,12 @@ fn monitor(usb: &mut Usb, interval_ms: u64) -> Result<()> {
 /// ~130 ms at the highest rate.
 const WRITE_QUEUE: usize = 4096;
 
+/// FFT points of the per-channel summary: 16 384 bins at 30.72 MS/s is
+/// 1.875 kHz, fine enough to separate close carriers in one line. The plot
+/// view defaults to 4096 (a wider lobe, fewer bins); each prints its size,
+/// since SFDR and the strongest bin depend on it.
+const SUMMARY_FFT: usize = 16_384;
+
 /// Stream the rx source into one file per channel (interleaved i16 I, Q;
 /// capture::channel_path names them) with a .toml sidecar each, and print each
 /// channel's level and quality.
@@ -480,15 +486,23 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     println!("kept {kept} sample times per channel; rx lost {}, bad values {}, bad headers {}",
              check.lost, check.bad_values, check.bad_headers);
     let mut clipped = Vec::new();
+    println!("analysis: {SUMMARY_FFT}-point spectrum per channel (b210-plot defaults to 4096)");
     for (ch, path) in paths.iter().enumerate() {
         capture::write_meta(path, &capture::Meta { rate_hz: rate, channel: ch, source: c.source.clone() })?;
-        let Some(r) = quality::analyze_file(path, rate, 16384)? else { continue };
+        let Some(r) = quality::analyze_file(path, rate, SUMMARY_FFT)? else { continue };
         if let Some(note) = quality::clipping_note(&r.level) { clipped.push((ch, note, quality::clipping_refuses(&r.level))); }
         let l = &r.level;
         print!("  ch{ch} {}: rms {:.1} dBFS, peak {:.1} dBFS, DC {:.1} dBFS", path.display(), l.rms_dbfs, l.peak_dbfs, l.dc_dbfs);
         match &r.tone {
-            Some(t) => println!(", tone {:+.4} MHz {:.2} dBFS, SNR {:.1} dB, SFDR {:.1} dBc, ENOB {:.2}",
-                                t.freq / 1e6, t.dbfs, t.snr_db, t.sfdr_dbc, t.enob),
+            Some(t) => {
+                print!(", tone {:+.4} MHz {:.2} dBFS, SNR {:.1} dB, SFDR {:.1} dBc, ENOB {:.2}",
+                       t.freq / 1e6, t.dbfs, t.snr_db, t.sfdr_dbc, t.enob);
+                if t.share < 0.9 {
+                    print!(" [largest of several components, {:.0}% of the power; SNR/SFDR/ENOB describe it only - \
+                            b210-plot's report has the findings]", 100.0 * t.share);
+                }
+                println!();
+            }
             None => println!(", no tone"),
         }
     }

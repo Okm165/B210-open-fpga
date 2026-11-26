@@ -51,7 +51,9 @@ fn main() -> Result<()> {
     println!("{:.3} MS/s, {} channel(s), {seconds} s", rate / 1e6, s.count());
 
     let nv = 2 * s.count();
-    let (mut sum, mut peak) = (vec![0f64; s.count()], vec![0f64; s.count()]);
+    // the sums quality.rs uses: n, I, Q and |x|^2, so the level is the same
+    // DC-removed rms every tool prints, not a raw one
+    let (mut si, mut sq, mut sum) = (vec![0f64; s.count()], vec![0f64; s.count()], vec![0f64; s.count()]);
     let mut check = Check::default();
     check.check_values = false; // the radio has no closed form to compare against
     let begin = Instant::now();
@@ -63,8 +65,9 @@ fn main() -> Result<()> {
                 for frame in v.chunks(nv) {
                     for (ch, p) in frame.as_chunks::<2>().0.iter().enumerate() {
                         let (i, q) = (p[0] as f64, p[1] as f64);
+                        si[ch] += i;
+                        sq[ch] += q;
                         sum[ch] += i * i + q * q;
-                        peak[ch] = peak[ch].max((i * i + q * q).sqrt());
                     }
                 }
             }
@@ -74,9 +77,11 @@ fn main() -> Result<()> {
 
     let frames = check.samples.max(1) as f64;
     for ch in 0..s.count() {
-        let rms = (sum[ch] / frames).sqrt().max(1e-12);
-        println!("ch{ch}: rms {:.1} dBFS, peak {:.1} dBFS",
-                 20.0 * (rms / 2048.0).log10(), 20.0 * (peak[ch] / 2048.0).log10());
+        // the DC-removed power, as quality.rs computes it: E[x^2] - E[x]^2
+        let (di, dq) = (si[ch] / frames, sq[ch] / frames);
+        let rms = ((sum[ch] / frames - di * di - dq * dq).max(0.0)).sqrt().max(1e-12);
+        println!("ch{ch}: rms {:.1} dBFS (DC removed), DC {di:+.2}/{dq:+.2} codes",
+                 20.0 * (rms / 2048.0).log10());
     }
     println!("{} sample times in {streamed:.2} s; lost {}, bad values {}, bad headers {}, overflow flags {}",
              check.samples, check.lost, check.bad_values, check.bad_headers, check.overflow_flags);
