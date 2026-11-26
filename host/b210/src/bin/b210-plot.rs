@@ -265,7 +265,7 @@ fn report_of(r: &quality::Report) -> Result<()> {
         println!("  spur      none above the floor + {:.0} dB", quality::SPUR_DB);
     }
     println!("FINDINGS");
-    for (k, f) in quality::findings(&r).iter().enumerate() {
+    for (k, f) in quality::findings(r).iter().enumerate() {
         println!("  {}. {f}", k + 1);
     }
     Ok(())
