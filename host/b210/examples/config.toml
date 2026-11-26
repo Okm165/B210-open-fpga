@@ -5,15 +5,11 @@
 rate_hz   = 30.72e6     # sample rate of every channel, Hz (the AD9361 has one)
 reference = "internal"  # the 40 MHz TCXO free-running (default; "external",
                         # locked to 10 MHz at REF, is not built yet)
-format    = "sc12"      # samples on the wire: "sc12" 3 bytes, "sc16" 4 bytes
-                        # per complex sample
 
 [rx]                    # present = receiving; absent = both rx channels off
 lo_hz        = 2.45e9   # one synthesizer for both rx channels, Hz
 bandwidth_hz = 20e6     # one analog filter setting for both rx channels, Hz
                         # (800e3 .. 56e6, at most rate_hz)
-spp          = 1024     # sample times per packet (latency 1024 / rate =
-                        # 33 us); default: a full 16 KiB packet
 # 0 .. 76 dB in 1 dB steps. The chip's own output floor is about
 # -134 dBFS/Hz (-60 dBFS over 30.72 MHz), so below ~45 dB gain a room
 # temperature antenna stays under it; measured: a 100 MHz station rose

@@ -678,7 +678,7 @@ mod tests {
         // step that turns it on (measured on an rx-only config: IRR 49.3 dB
         // off, 78.9 dB on)
         let mut f = Fpga::new(mock::settled);
-        let cfg = Config::parse("rate_hz = 30.72e6\nformat = \"sc12\"\n[rx]\nlo_hz = 100e6\nbandwidth_hz = 10e6\nch0 = { gain_db = 40 }\n").unwrap();
+        let cfg = Config::parse("rate_hz = 30.72e6\n[rx]\nlo_hz = 100e6\nbandwidth_hz = 10e6\nch0 = { gain_db = 40 }\n").unwrap();
         {
             let mut d = Device::bring_up(&mut f).unwrap();
             d.apply(&cfg).unwrap();

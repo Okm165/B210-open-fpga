@@ -2,7 +2,7 @@
 //! loop every streaming command runs, the checker it applies to every
 //! packet that arrives, and tx bursts.
 
-use crate::proto::{self, flag, Format, Header, Kind};
+use crate::proto::{self, flag, Format, Header, Kind, BUS_BYTES_PER_SEC};
 use crate::regs::{self, rx};
 use crate::usb::{self, zero_copy, Ctrl};
 use nusb::transfer::{Bulk, In, Out, TransferError};
@@ -43,6 +43,14 @@ pub enum Error {
     Stream(proto::Error),
     #[error("{0}")]
     Sink(&'static str),
+    /// rate x bytes per sample time is not below the bus's 400 MB/s.
+    #[error("stream {rate_hz} Hz x {channels} channel(s) at {format}: {bytes_per_s} B/s is not below \
+             the bus's {BUS_BYTES_PER_SEC} B/s; use sc12, fewer channels or a lower rate")]
+    Bus { rate_hz: f64, channels: usize, format: proto::Format, bytes_per_s: f64 },
+    /// The stream's channel count and the data port's interleave disagree.
+    #[error("the data port is {port}, but the stream asks for {channels} channel(s): apply a \
+             configuration with the same channel count")]
+    Port { channels: usize, port: &'static str },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -67,6 +75,35 @@ impl Shape {
 
     pub fn bytes_per_time(self) -> usize {
         self.format.bytes_per_time(self.count())
+    }
+
+    /// The stream's channel count is the data port's: 2R2T carries two, 1R1T
+    /// one. The port is a property of the applied configuration (radio
+    /// register 0x030 bit 1), the mask of the stream.
+    pub fn port_matches(self, radio: u32) -> bool {
+        let two = radio & crate::device::TWO_R2T != 0;
+        self.count() == if two { 2 } else { 1 }
+    }
+
+    /// The bus cannot carry this stream alone (32 bits x 100 MHz,
+    /// PROTOCOL.md 3).
+    pub fn check_bus(self, rate_hz: f64) -> Result<()> {
+        self.check_load(rate_hz, 1)
+    }
+
+    /// ... nor this stream and a stream of the same shape the other way (a
+    /// full-duplex test carries both at once: 2 x 2 channels, sc16, 30.72
+    /// MS/s is 491.52 MB/s and does not fit).
+    pub fn check_bus_full_duplex(self, rate_hz: f64) -> Result<()> {
+        self.check_load(rate_hz, 2)
+    }
+
+    fn check_load(self, rate_hz: f64, directions: usize) -> Result<()> {
+        let bytes_per_s = directions as f64 * rate_hz * self.bytes_per_time() as f64;
+        if bytes_per_s >= BUS_BYTES_PER_SEC {
+            return Err(Error::Bus { rate_hz, channels: self.count(), format: self.format, bytes_per_s });
+        }
+        Ok(())
     }
 }
 
@@ -266,6 +303,14 @@ pub fn rx_stream(
     expect: &impl Fn(u64) -> [i16; 4],
     packet: impl FnMut(Option<(&Header, &[i16])>, &Check) -> Result<bool>,
 ) -> Result<f64> {
+    // the AD9361's data port is set by the applied configuration (radio
+    // register 0x030 bit 1: 2R2T); a stream of a different width would
+    // interleave the samples wrongly, so refuse it here
+    let radio = ctrl.read(regs::RADIO)?;
+    if !s.port_matches(radio) {
+        let port = if radio & crate::device::TWO_R2T != 0 { "2R2T" } else { "1R1T" };
+        return Err(Error::Port { channels: s.count(), port });
+    }
     ctrl.write(regs::RX_SPP, s.spp() as u32)?;
     ctrl.write(regs::RX_COUNT, 0)?;
     flush_rx(rx);
@@ -402,6 +447,33 @@ mod tests {
     use super::*;
 
     const S: Shape = Shape { format: Format::Sc12, mask: 0b11 };
+
+    #[test]
+    fn the_bus_limit_is_checked_where_a_stream_starts() {
+        let two_sc16 = Shape { format: Format::Sc16, mask: 0b11 };
+        assert!(two_sc16.check_bus(30.72e6).is_ok()); // 245.76 MB/s
+        let e = two_sc16.check_bus(61.44e6).unwrap_err();
+        assert!(matches!(e, Error::Bus { .. }) && e.to_string().contains("491520000"), "{e}");
+        // exactly 400 MB/s is not below the limit
+        let e = two_sc16.check_bus(50e6).unwrap_err();
+        assert!(e.to_string().contains("400"), "{e}");
+        assert!(Shape { format: Format::Sc16, mask: 0b01 }.check_bus(61.44e6).is_ok());
+        assert!(S.check_bus(61.44e6).is_ok()); // sc12, 2 channels: 368.64
+        // full duplex: 2 x 2 sc16 at 30.72 is 491.52 MB/s, over the bus
+        assert!(two_sc16.check_bus(30.72e6).is_ok());
+        let e = two_sc16.check_bus_full_duplex(30.72e6).unwrap_err();
+        assert!(e.to_string().contains("491520000"), "{e}");
+        assert!(S.check_bus_full_duplex(30.72e6).is_ok()); // sc12: 368.64
+    }
+
+    #[test]
+    fn a_stream_must_match_the_data_port() {
+        use crate::device::TWO_R2T;
+        assert!(Shape { format: Format::Sc12, mask: 0b01 }.port_matches(0));
+        assert!(!Shape { format: Format::Sc12, mask: 0b11 }.port_matches(0));
+        assert!(S.port_matches(TWO_R2T));
+        assert!(!Shape { format: Format::Sc12, mask: 0b01 }.port_matches(TWO_R2T));
+    }
 
     fn rx_header(time: u64, sequence: u16, flags: u16) -> Header {
         Header { length: 0, kind: Kind::Rx, format: Some(S.format), mask: S.mask, sequence, flags: flag::HAS_TIME | flags, time }

@@ -10,11 +10,9 @@
 //! | --- | --- | --- |
 //! | `rate_hz` | Hz, 520834 ..= 61.44e6 (30.72e6 with 2 channels in a direction) | sample rate of every channel |
 //! | `reference` | `"internal"` (default); `"external"` is rejected: not built yet | the 40 MHz TCXO free-running (external: locked by the ADF4001 to 10 MHz at REF) |
-//! | `format` | `"sc12"` (3 bytes) or `"sc16"` (4 bytes per complex sample) | samples on the wire, both directions (PROTOCOL.md 3) |
 //! | `[rx]`, `[tx]` | present = in use | a direction; absent = both its channels off |
 //! | `lo_hz` | Hz, 70e6 ..= 6e9 | the direction's one synthesizer |
 //! | `bandwidth_hz` | Hz, rx 800e3 ..= 56e6, tx 1.08e6 ..= 40e6, and <= `rate_hz` | the direction's one analog filter setting |
-//! | `rx.spp` | sample times, 16 ..= full packet (default full) | rx packet size; latency = spp / rate_hz |
 //! | `ch0`, `ch1` | present = enabled | a channel (bit c of PROTOCOL.md's channel mask); rx and tx
 //! may differ (2 rx + 1 tx measured on the board: 2R2T, the single channel uses channel 0) |
 //! | `rx.chC.gain_db` | dB, 0 ..= 76 in 1 dB steps | rx gain index of the AD9361 gain table |
@@ -30,17 +28,14 @@
 //!   a disabled channel has no settings, so no key in a file is without
 //!   effect (DESIGN.md: nothing kept "for later"). For the same reason a
 //!   section without a channel is rejected.
-//! - The rx packet size is `spp`, the register rx_spp itself, rather than
-//!   a latency target, which would have to be rounded and clamped into
-//!   16 ..= full: the file says exactly what runs. tx packets describe
-//!   themselves (PROTOCOL.md 6), so tx has no such key.
-//! - One wire format for both directions: sc12 and sc16 carry the same
-//!   12-bit codes (both lossless), so the choice only trades bus load for
-//!   host work, and one key says it.
-//! - Defaults only where the board has a natural state: reference
-//!   internal (needs no cable), spp a full packet (the least bus overhead).
-//!   Everything else must be written. AGC is out of scope: gains are manual
-//!   only.
+//! - A stream's wire format (sc12/sc16), channel mask and packet size are
+//!   not radio state: they travel with every stream (`b210 --format`,
+//!   `--channels`; a full packet), so the file has no key for them. The bus
+//!   limit follows: it is checked when a stream starts against the rate the
+//!   board reports (proto::BUS_BYTES_PER_SEC), not at apply time.
+//! - Defaults only where the board has a natural state: reference internal
+//!   (needs no cable). Everything else must be written. AGC is out of
+//!   scope: gains are manual only.
 //! - Only what this FPGA image can run: no register drives ref_sel and the
 //!   ADF4001 yet, so `reference = "external"` is rejected; nor the antenna
 //!   switches, so there is no antenna key (the port the switches' reset
@@ -76,9 +71,6 @@
 //!   attenuated before it, which software cannot do.
 //! - tx gain_db in 0 ..= 89.75, a multiple of 0.25: the attenuation word
 //!   counts 0.25 dB (UHD set_gain, AD9361_MAX_GAIN = 89.75).
-//! - rate_hz x (b(rx channels) + b(tx channels)) < 400e6 bytes/s, the bus
-//!   (32 bits x 100 MHz; PROTOCOL.md 3). 2 x 2 x 30.72 MS/s needs sc12.
-//! - 16 <= spp <= the full packet's sample times (PROTOCOL.md 3 table).
 //!
 //! # The plan
 //!
@@ -126,9 +118,10 @@
 //! 8. **Gains**, rx then tx. Reason: tx gain last, so that nothing above
 //!    runs while a tx chain is loud.
 //!
-//! `format` and `rx.spp` are stream settings, not radio operations: they go
-//! with every stream (rx_ctrl's START word and rx_spp, every tx header), so
-//! the plan has no step for them.
+//! The wire format and packet size are stream settings, not radio
+//! operations: they go with every stream (rx_ctrl's START word and
+//! rx_spp, every tx header), so the plan has no step for them and the file
+//! has no key.
 //!
 //! Operations that could transmit (step 1 mutes for them), with reason:
 //! reference (the synthesizers relock, LOs move meanwhile); rate (UHD's
@@ -144,14 +137,12 @@
 //! 2 rx + 1 tx is 2-channel at both ends but 1-channel between). An rx bandwidth change only
 //! recalibrates rx filters and does not mute.
 
-use crate::proto::Format;
 use serde::Deserialize;
 
 use crate::ad9361::{
     Dir, MAX_LO, MAX_RATE, MAX_RATE_2CH, MAX_RX_BANDWIDTH, MAX_RX_GAIN, MAX_TX_BANDWIDTH, MAX_TX_GAIN, MIN_LO, MIN_RATE,
     MIN_RX_BANDWIDTH, MIN_TX_BANDWIDTH, RX_GAIN_STEP, TX_GAIN_STEP,
 };
-use crate::proto::{BUS_BYTES_PER_SEC, MIN_SPP};
 
 // -- the file ---------------------------------------------------------------
 
@@ -163,7 +154,6 @@ pub struct Config {
     pub rate_hz: f64,
     #[serde(default)]
     pub reference: Reference,
-    pub format: Format,
     pub rx: Option<Rx>,
     pub tx: Option<Tx>,
 }
@@ -188,8 +178,6 @@ pub struct Rx {
     pub lo_hz: f64,
     /// The rx analog filter, both channels, Hz.
     pub bandwidth_hz: f64,
-    /// Sample times per rx packet; None: a full packet.
-    pub spp: Option<u32>,
     pub ch0: Option<RxChannel>,
     pub ch1: Option<RxChannel>,
 }
@@ -302,13 +290,6 @@ pub enum Error {
     /// `key` = `value` names something this FPGA image cannot do yet.
     #[error("{key} = \"{value}\": not built yet ({why})")]
     NotBuilt { key: &'static str, value: &'static str, why: &'static str },
-    /// The bus load, bytes/s, not below 400e6.
-    #[error(
-        "bus load {} MB/s (rate_hz x bytes per sample time, rx + tx) is not below 400 MB/s; {}",
-        .bytes_per_s / 1e6,
-        if *.format == Format::Sc16 { "use format = \"sc12\", fewer channels or a lower rate" } else { "use fewer channels or a lower rate" }
-    )]
-    Bus { bytes_per_s: f64, format: Format },
 }
 
 fn range(key: &str, value: f64, min: f64, max: f64, unit: &'static str) -> Result<(), Error> {
@@ -367,10 +348,6 @@ impl Config {
                     step(&key, ch.gain_db, RX_GAIN_STEP)?;
                 }
             }
-            if let Some(spp) = rx.spp {
-                let full = self.format.full_spp(chains.rx_count());
-                range("rx.spp", spp as f64, MIN_SPP as f64, full as f64, "sample times")?;
-            }
         }
         if let Some(tx) = &self.tx {
             if chains.tx_count() == 0 {
@@ -386,11 +363,6 @@ impl Config {
                 }
             }
         }
-        let load = self.bus_bytes_per_s();
-        // load is finite: rate_hz passed its range
-        if load >= BUS_BYTES_PER_SEC {
-            return Err(Error::Bus { bytes_per_s: load, format: self.format });
-        }
         Ok(())
     }
 
@@ -398,18 +370,6 @@ impl Config {
         let rx = self.rx.as_ref().map_or(0, |r| mask(r.channels()));
         let tx = self.tx.as_ref().map_or(0, |t| mask(t.channels()));
         Chains { rx, tx }
-    }
-
-    /// Bus load, bytes/s: rate_hz x (b(rx channels) + b(tx channels)).
-    pub fn bus_bytes_per_s(&self) -> f64 {
-        let c = self.chains();
-        self.rate_hz * (self.format.bytes_per_time(c.rx_count()) + self.format.bytes_per_time(c.tx_count())) as f64
-    }
-
-    /// Sample times per rx packet as run (None without rx).
-    pub fn rx_spp(&self) -> Option<u32> {
-        let rx = self.rx.as_ref()?;
-        Some(rx.spp.unwrap_or_else(|| self.format.full_spp(self.chains().rx_count()) as u32))
     }
 
     /// The operations that take a radio configured as `old` (None: in an
@@ -587,7 +547,7 @@ mod tests {
     use Dir::{Rx as DRx, Tx as DTx};
 
     const EXAMPLE: &str = include_str!("../examples/config.toml");
-    const MINIMAL: &str = "rate_hz = 1e6\nformat = \"sc16\"\n\
+    const MINIMAL: &str = "rate_hz = 1e6\n\
                            [rx]\nlo_hz = 100e6\nbandwidth_hz = 1e6\nch0 = { gain_db = 30 }\n";
 
     fn example() -> Config {
@@ -598,7 +558,7 @@ mod tests {
     /// test moves one value to its boundary.
     fn base() -> Config {
         Config::parse(
-            "rate_hz = 10e6\nformat = \"sc12\"\n\
+            "rate_hz = 10e6\n\
              [rx]\nlo_hz = 1e9\nbandwidth_hz = 5e6\nch0 = { gain_db = 30 }\n\
              [tx]\nlo_hz = 1e9\nbandwidth_hz = 5e6\nch0 = { gain_db = 30 }\n",
         )
@@ -632,18 +592,15 @@ mod tests {
     #[test]
     fn parses_the_example() {
         let c = example();
-        assert_eq!((c.rate_hz, c.reference, c.format), (30.72e6, Reference::Internal, Format::Sc12));
+        assert_eq!((c.rate_hz, c.reference), (30.72e6, Reference::Internal));
         let r = c.rx.as_ref().unwrap();
-        assert_eq!((r.lo_hz, r.bandwidth_hz, r.spp), (2.45e9, 20e6, Some(1024)));
+        assert_eq!((r.lo_hz, r.bandwidth_hz), (2.45e9, 20e6));
         assert_eq!(r.ch0, Some(RxChannel { gain_db: 60.0 }));
         assert_eq!(r.ch1, Some(RxChannel { gain_db: 55.0 }));
         let t = c.tx.as_ref().unwrap();
         assert_eq!((t.lo_hz, t.bandwidth_hz), (2.45e9, 20e6));
         assert_eq!((t.ch0, t.ch1), (Some(TxChannel { gain_db: 60.0 }), Some(TxChannel { gain_db: 55.5 })));
         assert_eq!(c.chains(), Chains { rx: 0b11, tx: 0b11 });
-        // 30.72e6 x (6 + 6) bytes: PROTOCOL.md's 369 MB/s
-        assert_eq!(c.bus_bytes_per_s(), 368.64e6);
-        assert_eq!(c.rx_spp(), Some(1024));
     }
 
     #[test]
@@ -652,18 +609,17 @@ mod tests {
         assert_eq!(c.reference, Reference::Internal);
         assert_eq!(c.tx, None);
         assert_eq!(c.chains(), Chains { rx: 0b01, tx: 0 });
-        assert_eq!(c.rx_spp(), Some(4092)); // full sc16 packet, 1 channel
     }
 
     #[test]
     fn what_this_image_cannot_run_is_rejected() {
-        let external = MINIMAL.replace("format", "reference = \"external\"\nformat");
+        let external = MINIMAL.replace("rate_hz = 1e6", "rate_hz = 1e6\nreference = \"external\"");
         let e = Config::parse(&external).unwrap_err();
         assert!(matches!(e, Error::NotBuilt { key: "reference", value: "external", .. }), "{e:?}");
         assert_eq!(e.to_string(),
                    "reference = \"external\": not built yet (no FPGA register drives ref_sel or the ADF4001 in this image)");
         // negative control: internal, written out, is fine
-        assert!(Config::parse(&MINIMAL.replace("format", "reference = \"internal\"\nformat")).is_ok());
+        assert!(Config::parse(&MINIMAL.replace("rate_hz = 1e6", "rate_hz = 1e6\nreference = \"internal\"")).is_ok());
         // no antenna key: the switches are not driven
         match Config::parse(&MINIMAL.replace("gain_db = 30", "gain_db = 30, antenna = \"RX2\"")) {
             Err(Error::Toml(m)) => assert!(m.contains("unknown field `antenna`"), "{m}"),
@@ -674,17 +630,15 @@ mod tests {
     #[test]
     fn rejects_unknown_misspelled_and_missing_keys() {
         let cases = [
-            (MINIMAL.replace("format", "gain = 3\nformat"), "unknown field `gain`"),
+            (MINIMAL.replace("rate_hz = 1e6", "rate_hz = 1e6\ngain = 3"), "unknown field `gain`"),
             (MINIMAL.replace("bandwidth_hz", "agc = false\nbandwidth_hz"), "unknown field `agc`"),
             (MINIMAL.replace("gain_db = 30", "gain_db = 30, agc = true"), "unknown field `agc`"),
             (MINIMAL.replace("ch0", "ch2"), "unknown field `ch2`"),
             (MINIMAL.replace("lo_hz", "freq"), "unknown field `freq`"),
             (format!("{MINIMAL}[tx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\nch0 = {{ gain_db = 1, antenna = \"TX/RX\" }}\n"),
              "unknown field `antenna`"),
-            (MINIMAL.replace("format = \"sc16\"\n", ""), "missing field `format`"),
             (MINIMAL.replace("gain_db = 30", ""), "missing field `gain_db`"),
-            (MINIMAL.replace("format", "reference = \"gpsdo\"\nformat"), "gpsdo"),
-            (MINIMAL.replace("sc16", "sc8"), "sc8"),
+            (MINIMAL.replace("rate_hz = 1e6", "rate_hz = 1e6\nreference = \"gpsdo\""), "gpsdo"),
         ];
         for (text, needle) in cases {
             match Config::parse(&text) {
@@ -790,25 +744,6 @@ mod tests {
     }
 
     #[test]
-    fn spp_limits_follow_format_and_channels() {
-        // full counts from PROTOCOL.md section 3's table
-        for (format, two, full) in [(Format::Sc12, false, 5456), (Format::Sc12, true, 2728), (Format::Sc16, false, 4092), (Format::Sc16, true, 2046)] {
-            let set = |spp| move |c: &mut Config| {
-                c.format = format;
-                c.tx = None; // sc16 with 2 rx: inside the bus budget at 10 MS/s either way
-                if two {
-                    rx(c).ch1 = Some(RxChannel { gain_db: 0.0 });
-                }
-                rx(c).spp = Some(spp);
-            };
-            assert_eq!(with(set(16)), Ok(()));
-            assert_eq!(with(set(full)), Ok(()));
-            assert_eq!(range_of(with(set(15))), ("rx.spp".into(), 15.0));
-            assert_eq!(range_of(with(set(full + 1))), ("rx.spp".into(), (full + 1) as f64));
-        }
-    }
-
-    #[test]
     fn a_section_needs_a_channel() {
         assert_eq!(with(|c| rx(c).ch0 = None), Err(Error::NoChannel("rx")));
         assert_eq!(with(|c| tx(c).ch0 = None), Err(Error::NoChannel("tx")));
@@ -816,38 +751,10 @@ mod tests {
     }
 
     #[test]
-    fn bus_budget() {
-        let mut c = example(); // 2 x 2 at 30.72 MS/s
-        c.format = Format::Sc16;
-        assert_eq!(c.validate(), Err(Error::Bus { bytes_per_s: 491.52e6, format: Format::Sc16 }));
-        c.format = Format::Sc12;
-        assert_eq!(c.validate(), Ok(()));
-        // 1 x 1 at 61.44 MS/s: the same loads
-        let one = |format| with(|c| { c.rate_hz = 61.44e6; c.format = format });
-        assert_eq!(one(Format::Sc16), Err(Error::Bus { bytes_per_s: 491.52e6, format: Format::Sc16 }));
-        assert_eq!(one(Format::Sc12), Ok(()));
-        // exactly 400 MB/s is not below: 2 x 2 sc16 at 25 MS/s = 25e6 x 16
-        c.format = Format::Sc16;
-        c.rate_hz = 25e6;
-        assert_eq!(c.validate(), Err(Error::Bus { bytes_per_s: 400e6, format: Format::Sc16 }));
-        c.rate_hz = 24_999_999.0;
-        assert_eq!(c.validate(), Ok(()));
-        // rx alone at sc16 fits at the top rate
-        assert_eq!(with(|c| { c.rate_hz = 61.44e6; c.format = Format::Sc16; c.tx = None }), Ok(()));
-    }
-
-    #[test]
     fn messages_name_the_key_the_value_and_the_way_out() {
         let text = |r: Result<(), Error>| r.unwrap_err().to_string();
         assert_eq!(text(with(|c| rx(c).lo_hz = 6_000_000_001.0)), "rx.lo_hz = 6000000001: outside 70000000 ..= 6000000000 Hz");
         assert_eq!(text(with(|c| tx(c).ch0.as_mut().unwrap().gain_db = 0.1)), "tx.ch0.gain_db = 0.1: not a multiple of 0.25 dB");
-        let mut c = example();
-        c.format = Format::Sc16;
-        assert_eq!(
-            c.validate().unwrap_err().to_string(),
-            "bus load 491.52 MB/s (rate_hz x bytes per sample time, rx + tx) is not below 400 MB/s; \
-             use format = \"sc12\", fewer channels or a lower rate"
-        );
         assert_eq!(text(with(|c| rx(c).ch0 = None)), "[rx] has no channel: add ch0 and/or ch1, or remove the section");
     }
 
@@ -894,19 +801,6 @@ mod tests {
         one(|c| tx(c).ch0.as_mut().unwrap().gain_db = 61.25, C::Gain { direction: DTx, channel: 0, db: 61.25 });
         // an rx filter change does not transmit: no mute
         one(|c| rx(c).bandwidth_hz = 10e6, C::Bandwidth { direction: DRx, hz: 10e6 });
-    }
-
-    #[test]
-    fn stream_settings_are_no_radio_operation() {
-        // format and spp go with every stream (rx_ctrl START, rx_spp, the tx
-        // headers): nothing to change on the radio
-        let old = Config::parse(MINIMAL).unwrap();
-        let new = Config::parse(&MINIMAL.replace("sc16", "sc12")).unwrap();
-        assert_eq!(Config::changes(Some(&old), &new), []);
-        assert_eq!((old.rx_spp(), new.rx_spp()), (Some(4092), Some(5456)));
-        let mut spp = old.clone();
-        rx(&mut spp).spp = Some(2000);
-        assert_eq!(Config::changes(Some(&old), &spp), []);
     }
 
     #[test]
@@ -958,7 +852,7 @@ mod tests {
     #[test]
     fn channel_count_falls_before_a_rate_rise_and_rises_after_a_rate_fall() {
         // 2 rx at 30.72 MS/s <-> 1 rx at 61.44 MS/s (sc12, rx only)
-        let two = Config::parse("rate_hz = 30.72e6\nformat = \"sc12\"\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 20e6\n\
+        let two = Config::parse("rate_hz = 30.72e6\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 20e6\n\
                                  ch0 = { gain_db = 10 }\nch1 = { gain_db = 10 }\n").unwrap();
         let mut one = two.clone();
         one.rate_hz = 61.44e6;
@@ -979,7 +873,7 @@ mod tests {
     fn a_port_mode_dip_between_the_ends_is_muted() {
         // 1 rx + 2 tx -> 2 rx + 1 tx: 2-channel at both ends, 1 + 1 after
         // step 2 (found by the generated pairs)
-        let old = Config::parse("rate_hz = 25e6\nformat = \"sc12\"\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\n\
+        let old = Config::parse("rate_hz = 25e6\n[rx]\nlo_hz = 1e9\nbandwidth_hz = 1e6\n\
                                  ch1 = { gain_db = 0 }\n[tx]\nlo_hz = 1e9\nbandwidth_hz = 2e6\n\
                                  ch0 = { gain_db = 40 }\nch1 = { gain_db = 40 }\n").unwrap();
         let mut new = old.clone();
@@ -1275,7 +1169,6 @@ mod tests {
     const LOS: [f64; 4] = [70e6, 915e6, 2.45e9, 6e9];
     const RX_BANDWIDTHS: [f64; 4] = [800e3, 1e6, 20e6, 56e6];
     const TX_BANDWIDTHS: [f64; 4] = [1.08e6, 2e6, 20e6, 40e6];
-    const SPPS: [Option<u32>; 4] = [None, Some(16), Some(1000), Some(2046)];
     const RX_GAINS: [f64; 3] = [0.0, 31.0, 76.0];
     const TX_GAINS: [f64; 3] = [0.0, 40.25, 89.75];
 
@@ -1288,7 +1181,7 @@ mod tests {
     }
 
     fn random_rx(r: &mut Rng) -> Rx {
-        Rx { lo_hz: r.pick(&LOS), bandwidth_hz: r.pick(&RX_BANDWIDTHS), spp: r.pick(&SPPS), ch0: rx_channel(r), ch1: rx_channel(r) }
+        Rx { lo_hz: r.pick(&LOS), bandwidth_hz: r.pick(&RX_BANDWIDTHS), ch0: rx_channel(r), ch1: rx_channel(r) }
     }
 
     fn random_tx(r: &mut Rng) -> Tx {
@@ -1300,7 +1193,6 @@ mod tests {
             let c = Config {
                 rate_hz: r.pick(&RATES),
                 reference: Reference::Internal,
-                format: r.pick(&[Format::Sc16, Format::Sc12]),
                 rx: (r.below(5) != 0).then(|| random_rx(r)),
                 tx: (r.below(3) != 0).then(|| random_tx(r)),
             };
@@ -1315,18 +1207,16 @@ mod tests {
         loop {
             let mut m = c.clone();
             for _ in 0..1 + r.below(3) {
-                match r.below(12) {
+                match r.below(10) {
                     0 => m.rate_hz = r.pick(&RATES),
                     1 => {}
-                    2 => m.format = r.pick(&[Format::Sc16, Format::Sc12]),
-                    3 => m.rx = if m.rx.is_some() { None } else { Some(random_rx(r)) },
-                    4 => m.tx = if m.tx.is_some() { None } else { Some(random_tx(r)) },
-                    5 => if let Some(x) = &mut m.rx { x.lo_hz = r.pick(&LOS) },
-                    6 => if let Some(x) = &mut m.tx { x.lo_hz = r.pick(&LOS) },
-                    7 => if let Some(x) = &mut m.rx { x.bandwidth_hz = r.pick(&RX_BANDWIDTHS) },
-                    8 => if let Some(x) = &mut m.tx { x.bandwidth_hz = r.pick(&TX_BANDWIDTHS) },
-                    9 => if let Some(x) = &mut m.rx { x.spp = r.pick(&SPPS) },
-                    10 => if let Some(x) = &mut m.rx {
+                    2 => m.rx = if m.rx.is_some() { None } else { Some(random_rx(r)) },
+                    3 => m.tx = if m.tx.is_some() { None } else { Some(random_tx(r)) },
+                    4 => if let Some(x) = &mut m.rx { x.lo_hz = r.pick(&LOS) },
+                    5 => if let Some(x) = &mut m.tx { x.lo_hz = r.pick(&LOS) },
+                    6 => if let Some(x) = &mut m.rx { x.bandwidth_hz = r.pick(&RX_BANDWIDTHS) },
+                    7 => if let Some(x) = &mut m.tx { x.bandwidth_hz = r.pick(&TX_BANDWIDTHS) },
+                    8 => if let Some(x) = &mut m.rx {
                         if r.coin() { x.ch0 = rx_channel(r) } else { x.ch1 = rx_channel(r) }
                     },
                     _ => if let Some(x) = &mut m.tx {

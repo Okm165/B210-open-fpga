@@ -247,6 +247,7 @@ fn rx_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     let s = shape(a)?;
     let before = regs::setup(&mut usb.ctrl, rx_source::PATTERN)?;
     let rate = regs::sample_rate(&mut usb.ctrl)?;
+    s.check_bus(rate)?;
     println!("rx-test {} x{}: {:.3} MS/s, {:.1} MB/s", a.format, a.channels, rate / 1e6, mbytes(s, rate));
     let pattern = |t: u64| std::array::from_fn(|k| rx_source::pattern(t, k));
     let begin = Instant::now();
@@ -279,6 +280,7 @@ fn loop_test(usb: &mut Usb, a: &StreamArgs) -> Result<()> {
     let s = shape(a)?;
     let before = regs::setup(&mut usb.ctrl, rx_source::LOOPBACK)?;
     let rate = regs::sample_rate(&mut usb.ctrl)?;
+    s.check_bus_full_duplex(rate)?;
     println!("loop-test {} x{}: {:.3} MS/s, {:.1} MB/s each way", a.format, a.channels, rate / 1e6, mbytes(s, rate));
     let at = regs::now(&mut usb.ctrl)? + (LEAD * rate) as u64;
     let n = (a.seconds * rate) as u64;
@@ -389,6 +391,7 @@ fn capture(usb: &mut Usb, a: &StreamArgs, c: &CaptureArgs) -> Result<()> {
     };
     let before = regs::setup(&mut usb.ctrl, src)?;
     let rate = regs::sample_rate(&mut usb.ctrl)?;
+    s.check_bus(rate)?;
     if c.source == "tone" && !(c.tone_hz.abs() < rate / 2.0 && c.tone_dbfs <= 0.0) {
         bail!("--tone-hz within +-rate/2 ({:.0} Hz), --tone-dbfs <= 0", rate / 2.0);
     }
