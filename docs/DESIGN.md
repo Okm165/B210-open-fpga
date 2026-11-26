@@ -171,7 +171,21 @@ examples/config.toml     every configuration key
    - `b210 capture` refuses a clipped stream: it prints the per-channel
      CLIPPING note (the same text `b210-plot` gives) and exits 1, because a
      saturated capture is not a measurement of the input. Measured: the FM
-     config at 70 dB exits 1 (0.47% / 15.4% clipped), at 30 dB exits 0.
+     config at 70 dB exits 1 (0.50% / 15.0% clipped), at 30 dB exits 0.
+     Refusal needs clipping at or above 1e-6 of the I/Q values
+     (`quality::CLIP_REFUSE`, about one clipped value per 64 x 16384
+     analysis block); below that the note says "isolated" and the capture
+     is kept - a soak found one rail code in 1.84 G values, which refused
+     the capture and advised a 47 dB gain cut before the rule was split in
+     two. The 47 dB came from the crest factor of that one sample, not
+     from the signal, so the gain advice is given only in the material
+     grade.
+   - Soak (30.72 MS/s, sc12, both channels): 60 s of the pattern stream is
+     1,840,041,456 sample times with 0 lost and every counter 0; 30 s of
+     the tx loopback is 921,600,000 samples back at exactly their ticks;
+     a 30 s radio capture keeps 918,449,400 sample times per channel with
+     0 lost, 0 bad values and 1 value at the code rail in 1.84 G (the
+     isolated grade above).
    - The rx gain surface 0 .. 76 stands at every band: ADI's per-band
      "maximum gain" (73 / 71 / 62 dB) is not a clamp on the table index -
      at 2.45 GHz the measured noise floor rose 5.3 dB from index 70 to 76

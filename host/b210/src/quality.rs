@@ -273,13 +273,35 @@ fn spurs_of(sp: &Spectrum, tone: Option<(usize, f64, f64)>, floor_bin: f64) -> V
     }).collect()
 }
 
-/// The ADC saturated: what it means and how much gain to take out. A capture
-/// with any clipped value is not a measurement of the input; `b210 capture`
-/// refuses it and `b210-plot` prints this first.
+/// The clipped fraction at which a capture stops being a measurement of the
+/// input. One value in a million: in a 1,048,576-sample analysis (64 x 16384,
+/// `analyze`) that is about one clipped value per block, and every further
+/// step adds broadband distortion above the 12-bit floor. Below it, isolated
+/// values are reported but the capture is kept - an input may legitimately
+/// exceed full scale for one sample, and refusing 918 M good samples over one
+/// rail code is not a measurement rule.
+pub const CLIP_REFUSE: f64 = 1e-6;
+
+/// Is the clipping enough that the capture must be refused?
+pub fn clipping_refuses(l: &Level) -> bool {
+    l.clipped >= CLIP_REFUSE
+}
+
+/// What the clipping means, in two grades: material (refused; the gain advice
+/// is the peak over the rails plus 3 dB of headroom) and isolated (reported,
+/// kept).
 pub fn clipping_note(l: &Level) -> Option<String> {
-    (l.clipped > 0.0).then(|| format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
-        spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom).",
-        100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
+    if l.clipped >= CLIP_REFUSE {
+        Some(format!("CLIPPING: {:.4}% of I/Q values sit at the code limits - the ADC saturates, so every \
+            spectral number is distorted. Lower the rx gain by at least {:.0} dB (crest factor + 3 dB headroom).",
+            100.0 * l.clipped, (l.peak_dbfs + l.crest_db + 3.0).max(3.0)))
+    } else if l.clipped > 0.0 {
+        Some(format!("CLIPPING, isolated: {:.1e} of I/Q values sit at the code limits, below the {:.0e} at which \
+            a capture is refused; the input exceeded full scale for those samples only.",
+            l.clipped, CLIP_REFUSE))
+    } else {
+        None
+    }
 }
 
 /// What the numbers say, most serious first, each with its cause and fix.
@@ -440,6 +462,23 @@ mod tests {
         assert!((t.image_dbc + want).abs() < 0.5, "image {} dBc, want {}", t.image_dbc, -want);
         assert!(r.spurs.first().is_some_and(|s| s.kind == SpurKind::Image));
         assert!(findings(&r).iter().any(|f| f.starts_with("I/Q IMBALANCE")));
+    }
+
+    #[test]
+    fn clipping_is_refused_only_above_one_value_in_a_million() {
+        let level = |clipped| Level { dc_i: 0.0, dc_q: 0.0, dc_dbfs: -200.0, rms_dbfs: -20.0,
+                                      peak_dbfs: 0.0, crest_db: 3.0, clipped };
+        let limit = 1.0 / 1_000_000.0;
+        assert!(!clipping_refuses(&level(0.0)));
+        assert!(!clipping_refuses(&level(limit / 2.0)));
+        assert!(clipping_refuses(&level(limit)));
+        assert!(clipping_note(&level(0.0)).is_none());
+        // isolated: reported, kept, and with no gain advice that a single
+        // rail code cannot support
+        let sparse = clipping_note(&level(limit / 10.0)).unwrap();
+        assert!(sparse.contains("isolated") && !sparse.contains("Lower the rx gain"), "{sparse}");
+        // material: the saturated-capture text, with the headroom advice
+        assert!(clipping_note(&level(0.01)).unwrap().contains("Lower the rx gain"));
     }
 
     #[test]
