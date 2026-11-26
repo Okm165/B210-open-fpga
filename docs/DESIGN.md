@@ -150,7 +150,9 @@ examples/config.toml     every configuration key
    test) rose 65 dB for 70 dB of rx gain, so the gain control is 1:1; the
    chip's own output floor is about -134 dBFS/Hz, which is why at 2.45 GHz
    nothing moves below ~45 dB gain and the example config now asks 60/55 dB.
-   No clipping (peak -13.1 dBFS), DC -106 dBFS, image rejection 55-62 dB.
+   No clipping (peak -13.1 dBFS), DC -106 dBFS, image rejection 55-62 dB
+   (that run had RX IQ tracking off, the plan bug found later: 78-93 dB
+   with it on).
    At 2.45 GHz one 0.5 ms broadband burst (Wi-Fi-like) reached -0.8 dBFS
    with no clipping and no overflow; it appeared on channel 0 only and not
    in a 5 s capture, so it is an external emitter, not the data path.
